@@ -1,0 +1,9 @@
+[package]
+name = "stracer"
+version = "0.1.0"
+authors = ["gatowololo <gatowololo@gmail.com>"]
+
+[dependencies]
+nix = "0.10.0"
+libc = "0.2"
+structopt = "0.2"
