@@ -1,4 +1,3 @@
-#![feature(generators, generator_trait)]
 extern crate libc;
 extern crate nix;
 extern crate byteorder;
@@ -9,6 +8,7 @@ extern crate env_logger;
 mod system_call_names;
 mod util;
 mod args;
+mod ptracer;
 
 use util::*;
 use args::*;
@@ -16,24 +16,20 @@ use structopt::StructOpt;
 
 use system_call_names::SYSTEM_CALL_NAMES;
 
-use libc::{c_void, user_regs_struct};
+use libc::{user_regs_struct};
 use nix::sys::ptrace;
 use nix::sys::wait::*;
 use nix::unistd::*;
 use std::ffi::CString;
 
-use std::ops::{Generator, GeneratorState};
-
-use nix::sys::wait::WaitStatus::*;
-use nix::sys::ptrace::Event;
 use nix::sys::ptrace::Event::*;
 use nix::sys::signal::Signal;
-use nix::Error::Sys;
 use nix::sys::signal::raise;
 
 use log::Level;
 use std::collections::HashMap;
 use std::process::exit;
+use ptracer::SystemCallMode;
 
 struct Command(String, Vec<String>);
 
@@ -85,21 +81,39 @@ fn run_tracee(command: Command) -> nix::Result<()> {
     Ok(())
 }
 
-fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
-    /// As we're accepting arbitrary interleaving between ptrace child processes
-    /// we must keep track of whether we have already ptrace-continued a process and are
-    /// merely waiting for it's even to return through wait() or we must ptrace first.
-    #[derive(PartialEq)]
-    enum PtraceNextAction {
-        Continue,
-        Wait,
-    }
-    use nix::sys::wait::WaitStatus::*;
-    let mut process_status : HashMap<Pid, PtraceNextAction> = HashMap::new();
-    let mut signal_to_deliver : HashMap<Pid, Option<Signal>> = HashMap::new();
-    process_status.insert(starting_pid, PtraceNextAction::Continue);
-    signal_to_deliver.insert(starting_pid, None);
+struct ProcessStatus {
+    action: ptracer::NextAction,
+    // Signal to deliver next.
+    signal: Option<Signal>,
+    syscall_mode: ptracer::SystemCallMode,
+}
 
+impl ProcessStatus {
+    fn new() -> ProcessStatus {
+        ProcessStatus {
+            action: ptracer::NextAction::Continue,
+            signal: None,
+            syscall_mode: ptracer::SystemCallMode::PreHook,
+        }
+    }
+
+    fn reset_signal(&mut self){
+        self.signal = None;
+    }
+
+    fn to_action_continue(&mut self){
+        self.action = ptracer::NextAction::Continue;
+    }
+
+    fn to_action_wait(&mut self){
+        self.action = ptracer::NextAction::Wait;
+    }
+}
+
+fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
+    use nix::sys::wait::WaitStatus::*;
+    let mut process_status : HashMap<Pid, ProcessStatus> = HashMap::new();
+    process_status.insert(starting_pid, ProcessStatus::new());
 
     // Wait for child to be ready.
     let _s: WaitStatus = waitpid(starting_pid, None)?;
@@ -112,15 +126,17 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
 
     loop {
         // Let tracee continue until next ptrace event.
-        if *process_status.get(& current_pid).unwrap() == PtraceNextAction::Continue {
+        let action = process_status.get(& current_pid).unwrap().action;
+        if action == ptracer::NextAction::Continue {
             trace!("[{}] ptrace continue.", current_pid);
 
-            let signal = * signal_to_deliver.get(& current_pid).unwrap();
+            let signal = process_status.get(& current_pid).unwrap().signal;
             ptrace_syscall(current_pid, signal).expect("Unable to call ptrace");
+            // Change to wait.
+            process_status.get_mut(& current_pid).unwrap().to_action_wait();
 
-            // Reset values.
-            signal_to_deliver.insert(current_pid, None);
-            process_status.insert(current_pid, PtraceNextAction::Wait);
+            // Reset value.
+            process_status.get_mut(& current_pid).unwrap().reset_signal();
         }
 
         // Wait for any event from any tracee.
@@ -148,7 +164,9 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
             // We were stopped by a signal, deliver this signal to the tracee.
             Stopped(pid, signal) => {
                 info!("[{}] Received stopped event {:?}", pid, signal);
-                signal_to_deliver.insert(pid, Some(signal));
+                // This may be a new pid add it if not present!
+                process_status.entry(pid).or_insert(ProcessStatus::new());
+                process_status.get_mut(& pid).unwrap().signal = Some(signal);
                 pid
             }
 
@@ -161,6 +179,9 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
             StillAlive => {
                 debug!("[{}] Nothing to wait on, looking for new process.", current_pid);
                 for pid in &process_status{
+
+                    // Find new process to run, in case this process is blocked on some
+                    // system call.
                     if *pid.0 != current_pid {
                         current_pid = *pid.0;
                         debug!("New process picked: {}", current_pid);
@@ -193,7 +214,14 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
 
             PtraceSyscall(pid) => {
                 let regs = get_regs(pid);
-                handle_system_call(regs, pid);
+                let syscall_mode = &mut process_status.get_mut(& pid).unwrap().syscall_mode;
+                handle_system_call(regs, pid, * syscall_mode);
+
+                *syscall_mode = match syscall_mode {
+                    SystemCallMode::PreHook => SystemCallMode::PostHook,
+                    SystemCallMode::PostHook => SystemCallMode::PreHook,
+                };
+
                 pid
             }
 
@@ -202,8 +230,8 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
             }
         };
 
-        process_status.insert(current_pid, PtraceNextAction::Continue);
-        signal_to_deliver.entry(current_pid).or_insert(None);
+        // If we got here, the process should do a ptrace continue again.
+        process_status.get_mut(& current_pid).unwrap().to_action_continue();
     }
 
     info!("Process finished!");
@@ -211,90 +239,12 @@ fn run_tracer(starting_pid: Pid) -> nix::Result<()> {
     Ok(())
 }
 
-fn handle_execve(regs: user_regs_struct, pid : Pid) ->
-impl Generator<Yield=(), Return=()> {
-    use ExecveResults::*;
-
-    move || {
-        if log_enabled!(Level::Info) {
-            let arg1 = regs.rdi as *mut c_void;
-            let path = read_string(arg1, pid);
-            info!("execve: path {}", path);
-        }
-        debug!("path printed.");
-        match await_execve(pid) {
-            // System call failed with -1 => No Execve Event
-            PostHook(_) => {
-                debug!("execve returned -1");
-            }
-            // Success! Execve event, wait for post hook event.
-            ExecveEvent => {
-                await_post_hook(pid);
-            }
-        }
-
-        if false {
-            yield ();
-        }
+fn handle_system_call(regs: user_regs_struct,
+                      pid : Pid,
+                      syscall_mode: ptracer::SystemCallMode){
+    if syscall_mode == ptracer::SystemCallMode::PreHook {
+        // if debug_level()
+        let name = SYSTEM_CALL_NAMES[regs.orig_rax as usize];
+        info!("[{}] {}", pid, name);
     }
-}
-
-enum ExecveResults{
-    PostHook(user_regs_struct),
-    ExecveEvent,
-}
-
-fn await_execve(pid: Pid) -> ExecveResults {
-    use ExecveResults::*;
-
-    ptrace::syscall(pid).unwrap();
-    match waitpid(pid, None).unwrap() {
-        // PTRACE_EVENT_EXEC
-        PtraceEvent(_,_, status) if PTRACE_EVENT_EXEC as i32 == status => {
-            info!("Saw execve event!");
-            ExecveEvent
-        }
-        // Execve Post Hook
-        PtraceSyscall(_) => {
-            info!("Saw post-hook event");
-            PostHook(get_regs(pid))
-        }
-        e => panic!("Unexpected ptrace even when awaiting_post_hook: {:?}", e),
-    }
-
-}
-
-fn await_event(pid: Pid, ptrace_event: Event){
-    ptrace::syscall(pid).unwrap();
-    match waitpid(pid, None).unwrap() {
-        PtraceEvent(_,_, status) if ptrace_event as i32 == status => {
-            info!("await_event: saw an execve event!");
-        }
-        e => panic!("Unexpected ptrace {:?} when awaiting event.", e),
-    }
-}
-
-fn await_post_hook(pid: Pid) -> user_regs_struct {
-    info!("awaiting post hook for {}", pid);
-    // Let tracee continue until next event.
-
-    ptrace::syscall(pid).unwrap();
-    match waitpid(pid, None).unwrap() {
-            PtraceSyscall(_) => get_regs(pid),
-            e => panic!("Unexpected ptrace even when awaiting_post_hook: {:?}", e),
-    }
-}
-
-fn handle_system_call(regs: user_regs_struct, pid : Pid){
-    // info!("[{}] {}", pid, name);
-    // match name {
-        // "execve" => {
-            // let mut g = handle_execve(regs, pid);
-            // match unsafe { g.resume() } {
-                // GeneratorState::Complete(_) => {},
-                // _ => panic!("unexpected value from resume"),
-            // };
-        // }
-        // _ => { },
-    // }
 }
