@@ -1,7 +1,7 @@
 extern crate libc;
 extern crate nix;
 extern crate byteorder;
-extern crate structopt;
+#[macro_use] extern crate structopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
 #[macro_use] extern crate generator;
@@ -11,7 +11,6 @@ mod util;
 mod args;
 mod ptracer;
 mod execution;
-
 
 use args::*;
 use structopt::StructOpt;
