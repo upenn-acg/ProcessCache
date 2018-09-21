@@ -4,13 +4,14 @@ extern crate byteorder;
 #[macro_use] extern crate structopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
-#[macro_use] extern crate generator;
+extern crate generator;
+extern crate seccomp_sys;
 
 mod system_call_names;
-mod util;
 mod args;
-mod ptracer;
+#[macro_use] mod ptracer;
 mod execution;
+mod seccomp;
 
 use args::*;
 use structopt::StructOpt;
@@ -42,7 +43,7 @@ fn main() -> nix::Result<()> {
     let command = Command::new(opt.exe, opt.exe_args);
 
     match fork()? {
-        ForkResult::Parent { child } => execution::run_tracer(child),
+        ForkResult::Parent { child } => execution::run_program(child),
         ForkResult::Child => run_tracee(command),
     }
 }
@@ -55,6 +56,26 @@ fn run_tracee(command: Command) -> nix::Result<()> {
     // Stop ourselves until the tracer is ready. This ensures the tracer has time
     // to get set up.
     raise(Signal::SIGSTOP)?;
+
+    // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
+    // raise.
+    let loader = seccomp::RuleLoader::new();
+
+    // Barely called.
+    // loader.intercept(SYS_unlink as i32);
+    // loader.intercept(SYS_pipe as i32);
+    // loader.intercept(SYS_getrusage as i32);
+    // loader.intercept(SYS_chmod as i32);
+    // loader.intercept(SYS_chdir as i32);
+
+    // Called a lot
+    // loader.intercept(SYS_openat as i32);
+    // loader.intercept(SYS_rt_sigprocmask as i32);
+    // loader.intercept(SYS_futex as i32);
+    // loader.intercept(SYS_fstat as i32);
+    // loader.intercept(SYS_close as i32);
+
+    loader.load_to_kernel();
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();

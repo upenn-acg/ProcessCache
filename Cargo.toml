@@ -1,5 +1,5 @@
 [package]
-name = "dettracer"
+name = "stracer"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 
@@ -11,3 +11,7 @@ byteorder = "1"
 generator = "0.6"
 log = "0.4"
 env_logger = "0.5"
+seccomp-sys = "0.1.2"
+
+[profile.release]
+debug = true
