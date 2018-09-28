@@ -7,11 +7,15 @@ extern crate env_logger;
 extern crate generator;
 extern crate seccomp_sys;
 
+#[macro_use] mod coroutines;
+mod handlers;
 mod system_call_names;
 mod args;
-#[macro_use] mod ptracer;
+mod ptracer;
 mod execution;
 mod seccomp;
+mod actions;
+
 
 use args::*;
 use structopt::StructOpt;

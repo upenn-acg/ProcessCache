@@ -1,5 +1,5 @@
 use libc::c_char;
-use libc::{c_void, user_regs_struct, PT_NULL};
+use libc::{c_void, user_regs_struct, PT_NULL, c_long};
 use std::mem;
 use nix::sys::ptrace;
 use nix::sys::ptrace::*;
@@ -15,7 +15,7 @@ use byteorder::LittleEndian;
 use byteorder::WriteBytesExt;
 use std::marker::PhantomData;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ContinueEvent {Continue, SystemCall}
 
 /// Represents a register which has never been written to.
@@ -154,6 +154,11 @@ pub fn ptrace_syscall(pid: Pid,
         // Omit integer, not interesting.
             .map(|_| ())
     }
+}
+
+pub fn ptrace_getevent(pid: Pid) -> c_long {
+    ptrace::getevent(pid).
+        expect("Unable to call getevent on ForkEvent.")
 }
 
 // Read string from user.
