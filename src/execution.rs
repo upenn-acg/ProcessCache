@@ -48,11 +48,10 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
     loop {
         let (current_pid, new_action) = get_next_action();
-        // Get this procs continue event, as a mutable borrow for us to change.
-        let mut continue_type = *proc_continue_event.get(& current_pid).unwrap();
 
         // Handle signals here, just insert them back to the process.
         if let Action::Signal(signal) = new_action {
+            let continue_type = *proc_continue_event.get(& current_pid).unwrap();
             debug!("Calling ptrace_sycall with {:?}", continue_type);
             ptrace_syscall(current_pid, continue_type, None)?;
             continue;
@@ -146,6 +145,9 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
         }; // end of match
 
         // TODO support signals!
+
+        // Must refetch, may change after handling seccomp event.
+        let continue_type = *proc_continue_event.get(& current_pid).unwrap();
         debug!("Calling ptrace_sycall with {:?}", continue_type);
         ptrace_syscall(current_pid, continue_type, None).
             expect( &format!("Failed to call ptrace on pid {}.", current_pid));
