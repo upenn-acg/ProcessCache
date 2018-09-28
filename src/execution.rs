@@ -34,15 +34,22 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     // is being waited for by a coroutine. The HashMap enforces this
     // naturally, TODO
     let mut waiting_coroutines: HashMap<Pid, (Actions, Coroutine)> = HashMap::new();
-    let mut continue_type = ContinueEvent::Continue;
+
     // Keep track of all live processes, when none are left, we know that the program
     // is done running.
     let mut live_processes: HashSet<Pid> = HashSet::new();
 
+    // A single continue variable isn't enough, we could receive events from any live
+    // process, so we must know which one to use, per proc.
+    let mut proc_continue_event: HashMap<Pid, ContinueEvent> = HashMap::new();
+    proc_continue_event.insert(first_proc, ContinueEvent::Continue);
+
     live_processes.insert(first_proc);
 
     loop {
-        let (mut current_pid, new_action) = get_next_action(continue_type);
+        let (current_pid, new_action) = get_next_action();
+        // Get this procs continue event, as a mutable borrow for us to change.
+        let mut continue_type = *proc_continue_event.get(& current_pid).unwrap();
 
         // Handle signals here, just insert them back to the process.
         if let Action::Signal(signal) = new_action {
@@ -58,8 +65,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
         // which we then run, there really shouldn't be a difference whether the corotutine
         // is new or old. This will let us combine some duplicated cases/assumptions
         // we have right now.
-        continue_type = match waiting_coroutines.entry(current_pid) {
-
+        match waiting_coroutines.entry(current_pid) {
             Entry::Vacant(v) => {
                 // No coroutine waiting for this (current_pid, event) spawn one!
                 let mut cor = new_event_handler(current_pid, new_action);
@@ -70,14 +76,16 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
                 // Check if we should add this process to the live processes!
                 for action in &waiting_on {
-                    if let Action::AddNewProcess(new_proces) = action {
+                    if let Action::AddNewProcess(new_proc) = action {
 
-                        if cfg!(debug_assertions) &&
-                            live_processes.contains(& new_proces){
-                            panic!("new process pid was already in map.");
+                        if cfg!(debug_assertions){
+                            if live_processes.contains(& new_proc) {
+                                panic!("new process pid was already in live_processes.");
+                            }
                         }
 
-                        live_processes.insert(*new_proces);
+                        live_processes.insert(*new_proc);
+                        proc_continue_event.insert(*new_proc, ContinueEvent::Continue);
                         break;
                     }
                 }
@@ -89,8 +97,10 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                     v.insert((waiting_on, cor));
                 }
 
-                if goto_posthook { ContinueEvent::SystemCall }
-                else {             ContinueEvent::Continue   }
+                if goto_posthook {
+                    *proc_continue_event.get_mut(& current_pid).unwrap() =
+                        ContinueEvent::SystemCall;
+                }
             }
             Entry::Occupied(mut entry) => {
                 // There was a coroutine waiting for this event. Let it run and inform it
@@ -132,7 +142,6 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                 }
 
                 debug!("Waiting for actions: {:?}", new_waiting_on);
-                ContinueEvent::Continue
             }
         }; // end of match
 
@@ -140,6 +149,8 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
         debug!("Calling ptrace_sycall with {:?}", continue_type);
         ptrace_syscall(current_pid, continue_type, None).
             expect( &format!("Failed to call ptrace on pid {}.", current_pid));
+        // Reset to default.
+        *proc_continue_event.get_mut(& current_pid).unwrap() = ContinueEvent::Continue;
     } // end of loop
 
     Ok(())
@@ -148,7 +159,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
 
 /// TODO
-pub fn get_next_action(continue_event: ContinueEvent) -> (Pid, Action) {
+pub fn get_next_action() -> (Pid, Action) {
     use nix::sys::wait::WaitStatus::*;
 
     match waitpid(None, None).expect("Failed to waitpid.") {
