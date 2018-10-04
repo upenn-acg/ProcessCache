@@ -52,7 +52,7 @@ impl RuleLoader {
 
     /// Create a new RuleLoader to pass rules to.
     pub fn new() -> RuleLoader {
-        let ctx = unsafe { seccomp_init(/*SCMP_ACT_ALLOW*/ SCMP_ACT_TRACE(u32::MAX)) };
+        let ctx = unsafe { seccomp_init(/*SCMP_ACT_ALLOW)*/ SCMP_ACT_TRACE(u32::MAX)) };
         if ctx == null_mut() {
             panic!("Unable to init seccomp filter.");
         }

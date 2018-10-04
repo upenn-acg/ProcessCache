@@ -53,7 +53,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
         if let Action::Signal(signal) = new_action {
             let continue_type = *proc_continue_event.get(& current_pid).unwrap();
             debug!("Calling ptrace_sycall with {:?}", continue_type);
-            ptrace_syscall(current_pid, continue_type, None)?;
+            ptrace_syscall(current_pid, continue_type, Some(signal))?;
             continue;
         }
         // Let a waiting coroutine run for this event, otherwise, create a new coroutine
@@ -100,6 +100,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                     *proc_continue_event.get_mut(& current_pid).unwrap() =
                         ContinueEvent::SystemCall;
                 }
+                
             }
             Entry::Occupied(mut entry) => {
                 // There was a coroutine waiting for this event. Let it run and inform it
@@ -127,6 +128,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                         info!("Whole program done!");
                         break;
                     }else {
+                        debug!("Live processes: {:?}", live_processes);
                         // Skip calling ptrace_sycall at the bottom of this loop,
                         // this program has already exited.
                         debug!("Skipping ptrace_continue.");
@@ -215,9 +217,15 @@ pub fn get_next_action() -> (Pid, Action) {
 //             }
 
 fn empty_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
+}
+
+
+fn print_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
     let regs = Regs::get_regs(pid);
     let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
-    info!("empty_handler: [{}] {}", pid, name);
+    info!("[{}] {}", pid, name);
+    await_posthook(regs.same(), pid, y);
+    info!("in post hook :)");
 }
 
 fn handle_getcwd(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder){
@@ -254,8 +262,10 @@ pub fn new_event_handler<'a>(pid: Pid, action: Action) -> Coroutine<'a> {
 
             match name {
                 "execve" => return make_handler!(handle_execve, regs, pid),
+                "exit" | "exit_group" =>
+                    return make_handler!(empty_coroutine, regs, pid),
                 "fork" | "vfork" | "clone" => return make_handler!(handle_fork, pid),
-                _ => return make_handler!(empty_coroutine, regs, pid),
+                _ => return make_handler!(print_coroutine, regs, pid),
             }
 
         }
