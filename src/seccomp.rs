@@ -3,6 +3,7 @@ use std::ptr::null_mut;
 use std::u32;
 use libc::c_int;
 use std::env;
+use args::RunType;
 
 pub enum OnDebug { Intercept, LetPass }
 
@@ -11,11 +12,11 @@ pub struct RuleLoader{
     ctx: *mut scmp_filter_ctx,
 }
 
-// impl Drop for RuleLoader {
-    // fn drop(&mut self){
-        // unsafe{ seccomp_release(self.ctx) };
-    // }
-// }
+impl Drop for RuleLoader {
+    fn drop(&mut self){
+        unsafe{ seccomp_release(self.ctx) };
+    }
+}
 
 impl RuleLoader {
     pub fn load_to_kernel(self){
@@ -51,8 +52,14 @@ impl RuleLoader {
     }
 
     /// Create a new RuleLoader to pass rules to.
-    pub fn new() -> RuleLoader {
-        let ctx = unsafe { seccomp_init(/*SCMP_ACT_ALLOW)*/ SCMP_ACT_TRACE(u32::MAX)) };
+    pub fn new(rt: &RunType) -> RuleLoader {
+
+        let scmp = match rt {
+            RunType::All => SCMP_ACT_TRACE(u32::MAX),
+            _ => SCMP_ACT_ALLOW,
+        };
+
+        let ctx = unsafe { seccomp_init(scmp) };
         if ctx == null_mut() {
             panic!("Unable to init seccomp filter.");
         }
