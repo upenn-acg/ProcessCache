@@ -131,7 +131,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                         debug!("Live processes: {:?}", live_processes);
                         // Skip calling ptrace_sycall at the bottom of this loop,
                         // this program has already exited.
-                        debug!("Skipping ptrace_continue.");
+                        debug!("Skipping exited process' ptrace_continue.");
                         continue;
                     }
                 }

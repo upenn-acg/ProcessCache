@@ -68,8 +68,27 @@ impl Command {
     }
 }
 
+fn sig_init(){
+    unsafe {
+        let mut new_action: libc::sigaction = std::mem::zeroed();
+        let mut old_action: libc::sigaction = std::mem::zeroed();
+
+        libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
+        new_action.sa_flags = libc::SA_NOCLDSTOP | libc::SA_NOCLDWAIT | libc::SA_RESTART;
+        new_action.sa_sigaction = libc::SIG_IGN;
+
+        libc::sigaction(
+            libc::SIGCHLD,
+            &mut new_action as *mut libc::sigaction,
+            &mut old_action as *mut libc::sigaction
+            )
+    };
+}
+
 /// Strace program written in Rust.
 fn main() -> nix::Result<()> {
+//    sig_init();
+
     // Init logger with no timestamp data.
     env_logger::Builder::from_default_env().default_format_timestamp(false).init();
 

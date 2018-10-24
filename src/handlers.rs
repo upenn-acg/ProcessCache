@@ -5,6 +5,7 @@ use coroutines::Yielder;
 use nix::unistd::Pid;
 use libc::c_char;
 use std::ptr::null;
+use nix::sys::signal::Signal;
 
 pub fn handle_exit(mut y: Yielder) {
     debug!("handle_exit: waiting for actual exit event...");
@@ -62,23 +63,33 @@ pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
 /// on the child signal event.
 pub fn handle_fork(parent: Pid, mut y: Yielder) {
     use nix::sys::ptrace::Event::*;
-
-    info!("handle_fork: Waiting for for event or signal...");
+    info!("handle_fork: Waiting for event or signal...");
 
     // Wait for ForkEvent to arrive.
-    // TODO: Signal could be lost forever here?
     ptrace_syscall(parent, ContinueEvent::Continue, None).
         expect(&format!("Failed to call ptrace on pid {}.", parent));
 
-    match waitpid(parent, None).expect("handle_fork: Failed waitpid.") {
-        WaitStatus::PtraceEvent(pid, _, status)
-            if PTRACE_EVENT_FORK  as i32 == status ||
-            PTRACE_EVENT_CLONE as i32 == status ||
-            PTRACE_EVENT_VFORK as i32 == status => {
-                debug!("Got forking event!");
-            }
-        s => panic!("Unexpected event from handle_fork: {:?}", s),
+    loop {
+        match waitpid(parent, None).expect("handle_fork: Failed waitpid.") {
+            WaitStatus::PtraceEvent(pid, signal, status)
+                if PTRACE_EVENT_FORK  as i32 == status ||
+                PTRACE_EVENT_CLONE as i32 == status ||
+                PTRACE_EVENT_VFORK as i32 == status => {
+                    debug!("Got forking event!");
+                    // println!("Signal from fork: {:?}", signal);
+                    break;
+                }
+            // WaitStatus::Stopped(pid, Signal::SIGCHLD) => {
+            //     println!("Got random sigchild, one of our children must have exited.");
+            //     debug_assert!(pid == parent, "parent pid does not match pid from signal!");
+
+            //     ptrace_syscall(parent, ContinueEvent::SystemCall, Some(Signal::SIGCHLD)).
+            //         expect(&format!("Failed to call ptrace on pid {}.", pid));
+            // }
+            s => panic!("{:?} Unexpected event from handle_fork: {:?}", parent, s),
+        }
     }
+
 
     let child: Pid = Pid::from_raw(ptrace_getevent(parent) as i32);
     debug!("waiting for signal to arrive from: {}", child);

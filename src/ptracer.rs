@@ -158,7 +158,7 @@ pub fn ptrace_syscall(pid: Pid,
 
 pub fn ptrace_getevent(pid: Pid) -> c_long {
     ptrace::getevent(pid).
-        expect("Unable to call getevent on ForkEvent.")
+        expect("Unable to call getevent.")
 }
 
 // Read string from user.
