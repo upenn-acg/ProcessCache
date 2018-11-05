@@ -52,6 +52,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     loop {
         let (current_pid, new_action) = get_next_action();
 
+        // Handle fork!
         if new_action == Action::Fork {
             info!("Got fork event!");
 
@@ -62,11 +63,9 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
             live_processes.insert(child);
             proc_continue_event.insert(child, ContinueEvent::Continue);
 
-            // Let child contiue!
-            ptrace_syscall(child, ContinueEvent::Continue, None)?;
-
             // TODO this is hardcoded! This is bad! FIX
-            ptrace_syscall(current_pid, ContinueEvent::SystemCall, None)?;
+            ptrace_syscall(current_pid, ContinueEvent::SystemCall, None).
+                expect("parent failed to continue...");
             // Let parent continue!
             continue;
         }
