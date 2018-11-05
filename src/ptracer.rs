@@ -117,6 +117,16 @@ impl Regs<Modified> {
     write_regs_function!(write_rax, rax);
     write_regs_function!(write_retval, rax);
     write_regs_function!(write_syscall_number, orig_rax);
+
+    pub fn set_regs(&mut self, pid: Pid) {
+        unsafe {
+            #[allow(deprecated)]
+            ptrace::ptrace(Request::PTRACE_SETREGS, pid,
+                           PT_NULL as *mut c_void,
+                           &mut self.regs as *mut _ as *mut c_void).
+                expect(& format!("Unable to set regs for pid: {}", pid));
+        }
+    }
 }
 
 
@@ -158,7 +168,7 @@ pub fn ptrace_syscall(pid: Pid,
 
 pub fn ptrace_getevent(pid: Pid) -> c_long {
     ptrace::getevent(pid).
-        expect("Unable to call getevent on ForkEvent.")
+        expect("Unable to call getevent.")
 }
 
 // Read string from user.
