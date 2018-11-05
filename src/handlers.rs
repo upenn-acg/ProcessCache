@@ -6,6 +6,7 @@ use nix::unistd::Pid;
 use libc::c_char;
 use std::ptr::null;
 use nix::sys::signal::Signal;
+use system_call_names::*;
 
 pub fn handle_exit(mut y: Yielder) {
     debug!("handle_exit: waiting for actual exit event...");
@@ -62,40 +63,49 @@ pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
 /// here, on the parent, followed by a waitpid on the parent event, followed, by a waitpid
 /// on the child signal event.
 pub fn handle_fork(parent: Pid, mut y: Yielder) {
-    use nix::sys::ptrace::Event::*;
     info!("handle_fork: Waiting for event or signal...");
+    use nix::sys::ptrace::Event::*;
 
-    // Wait for ForkEvent to arrive.
-    ptrace_syscall(parent, ContinueEvent::Continue, None).
-        expect(&format!("Failed to call ptrace on pid {}.", parent));
+    const ERESTARTNOINTR: i32 = -513;
+    let mut signal = None;
 
     loop {
+        ptrace_syscall(parent, ContinueEvent::Continue, signal);
+        signal = None;
+
         match waitpid(parent, None).expect("handle_fork: Failed waitpid.") {
             WaitStatus::PtraceEvent(pid, signal, status)
                 if PTRACE_EVENT_FORK  as i32 == status ||
                 PTRACE_EVENT_CLONE as i32 == status ||
                 PTRACE_EVENT_VFORK as i32 == status => {
-                    debug!("Got forking event!");
-                    // println!("Signal from fork: {:?}", signal);
+                    info!("Got forking event!");
                     break;
                 }
-            // WaitStatus::Stopped(pid, Signal::SIGCHLD) => {
-            //     println!("Got random sigchild, one of our children must have exited.");
-            //     debug_assert!(pid == parent, "parent pid does not match pid from signal!");
 
-            //     ptrace_syscall(parent, ContinueEvent::SystemCall, Some(Signal::SIGCHLD)).
-            //         expect(&format!("Failed to call ptrace on pid {}.", pid));
-            // }
-            s => panic!("{:?} Unexpected event from handle_fork: {:?}", parent, s),
+            WaitStatus::PtraceEvent(pid, signal, status)
+                if PTRACE_EVENT_SECCOMP as i32 == status => {
+                    let mut regs = Regs::get_regs(pid);
+                    let syscall = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+                    let errno = regs.retval() as i32;
+                    println!("Unexpected. Seccomp event for: {}", syscall);
+                    continue;
+                }
+
+            WaitStatus::Stopped(pid, my_signal) => {
+                println!("Signal probably interrupted fork! {:?}", signal);
+                signal = Some(my_signal);
+            }
+            s => {
+                println!("ERROR: {:?} Unexpected event from handle_fork: {:?}", parent, s);
+            }
         }
     }
-
 
     let child: Pid = Pid::from_raw(ptrace_getevent(parent) as i32);
     debug!("waiting for signal to arrive from: {}", child);
 
     // wait for child signal to arrive.
-    let wait_status = waitpid(child, None).
+    let wait_status = ::nix::sys::wait::waitpid(child, None).
         expect("Unable to call waitpid on child for ForkEvent");
 
     // This should be a signal!
@@ -115,4 +125,20 @@ pub fn handle_fork(parent: Pid, mut y: Yielder) {
     // Return name of new process for main thread to add:
     let actions = new_actions(& [Action::Done, Action::AddNewProcess(child)]);
     y.yield_with(actions);
+}
+
+fn check(name: &str, retval: i64) -> i64 {
+  use std::process::exit;
+
+  if retval == -1 {
+    println!("{} check error\n", name);
+    exit(1);
+  }
+
+  return retval;
+}
+
+fn isPtraceEvent(status: i32,  event: i32) -> bool {
+    use libc::SIGTRAP;
+    return (status >> 8) == (SIGTRAP | (event << 8));
 }

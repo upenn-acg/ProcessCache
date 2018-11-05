@@ -56,6 +56,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
             ptrace_syscall(current_pid, continue_type, Some(signal))?;
             continue;
         }
+
         // Let a waiting coroutine run for this event, otherwise, create a new coroutine
         // to handle this event!
         // Returns which kind of ContinueEvent to use, i.e. should we go to the post-hook?
@@ -146,13 +147,13 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
             }
         }; // end of match
 
-        // TODO support signals!
-
         // Must refetch, may change after handling seccomp event.
         let continue_type = *proc_continue_event.get(& current_pid).unwrap();
         debug!("Calling ptrace_sycall with {:?}", continue_type);
+
         ptrace_syscall(current_pid, continue_type, None).
             expect( &format!("Failed to call ptrace on pid {}.", current_pid));
+
         // Reset to default.
         *proc_continue_event.get_mut(& current_pid).unwrap() = ContinueEvent::Continue;
     } // end of loop
@@ -202,6 +203,7 @@ pub fn get_next_action() -> (Pid, Action) {
             info!("[{}] Received signal event {:?}", pid, signal);
             return (pid, Action::Signal(signal))
         }
+
         s => {
             // Notice we should never see a fork event. Since we handle that directly
             // from the fork handler function.
