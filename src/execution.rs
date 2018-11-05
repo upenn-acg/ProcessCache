@@ -37,6 +37,9 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
     // Keep track of all live processes, when none are left, we know that the program
     // is done running.
+    // While a hashset is nice for being able to print the processes, and see their pids,
+    // it is a bit heavyweight. It would make just as much sense to have a single i32,
+    // to keep track of the number of live processes. TODO?
     let mut live_processes: HashSet<Pid> = HashSet::new();
 
     // A single continue variable isn't enough, we could receive events from any live
@@ -49,11 +52,37 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     loop {
         let (current_pid, new_action) = get_next_action();
 
+        if new_action == Action::Fork {
+            info!("Got fork event!");
+
+            let child = Pid::from_raw(ptrace_getevent(current_pid) as i32);
+            info!("New child with pid: {}", child);
+
+            // Notice this pid may already be in map if signal arrived first, unlikely though.
+            live_processes.insert(child);
+            proc_continue_event.insert(child, ContinueEvent::Continue);
+
+            // Let child contiue!
+            ptrace_syscall(child, ContinueEvent::Continue, None)?;
+
+            // TODO this is hardcoded! This is bad! FIX
+            ptrace_syscall(current_pid, ContinueEvent::SystemCall, None)?;
+            // Let parent continue!
+            continue;
+        }
+
         // Handle signals here, just insert them back to the process.
         if let Action::Signal(signal) = new_action {
+            // TODO Refactor.
+            if ! proc_continue_event.contains_key(& current_pid){
+                proc_continue_event.insert(current_pid, ContinueEvent::Continue);
+            }
             let continue_type = *proc_continue_event.get(& current_pid).unwrap();
+
             debug!("Calling ptrace_sycall with {:?}", continue_type);
             ptrace_syscall(current_pid, continue_type, Some(signal))?;
+
+            // Explicitly go back to the top!
             continue;
         }
 
@@ -74,22 +103,6 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                 let waiting_on: Actions = cor.resume().unwrap();
                 let goto_posthook = waiting_on.contains(& Action::PostHook);
 
-                // Check if we should add this process to the live processes!
-                for action in &waiting_on {
-                    if let Action::AddNewProcess(new_proc) = action {
-
-                        if cfg!(debug_assertions){
-                            if live_processes.contains(& new_proc) {
-                                panic!("new process pid was already in live_processes.");
-                            }
-                        }
-
-                        live_processes.insert(*new_proc);
-                        proc_continue_event.insert(*new_proc, ContinueEvent::Continue);
-                        break;
-                    }
-                }
-
                 // This coroutine doesn't live long enough, to even need another loop.
                 // It has done it's part.
                 if ! waiting_on.contains(& Action::Done) {
@@ -101,7 +114,6 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                     *proc_continue_event.get_mut(& current_pid).unwrap() =
                         ContinueEvent::SystemCall;
                 }
-                
             }
             Entry::Occupied(mut entry) => {
                 // There was a coroutine waiting for this event. Let it run and inform it
@@ -111,7 +123,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                 // This pid/tid was not expecting to receive this action!
                 if ! entry.get().0.contains(& new_action){
                     println!("{:?}", entry);
-                    panic!("[{}]Existing coroutine was not expecting action: {:?}",
+                    panic!("[{}] Existing coroutine was not expecting action: {:?}",
                            current_pid, new_action);
                 }
 
@@ -188,6 +200,14 @@ pub fn get_next_action() -> (Pid, Action) {
                 return (pid, Action::Seccomp);
             }
 
+        PtraceEvent(pid, signal, status)
+            if PTRACE_EVENT_FORK as i32 == status ||
+            PTRACE_EVENT_CLONE as i32 == status ||
+            PTRACE_EVENT_VFORK as i32 == status => {
+                debug!("[{}] Saw forking event!", pid);
+                return (pid, Action::Fork)
+            }
+
         PtraceSyscall(pid) => {
             debug!("[{}] Saw post hook event.", pid);
             return (pid, Action::PostHook);
@@ -205,8 +225,6 @@ pub fn get_next_action() -> (Pid, Action) {
         }
 
         s => {
-            // Notice we should never see a fork event. Since we handle that directly
-            // from the fork handler function.
             panic!("Unhandled case for get_action_pid(): {:?}", s);
         }
     }
@@ -264,12 +282,13 @@ pub fn new_event_handler<'a>(pid: Pid, action: Action) -> Coroutine<'a> {
 
             match name {
                 "execve" => return make_handler!(handle_execve, regs, pid),
-                "exit" | "exit_group" =>
-                    return make_handler!(empty_coroutine, regs, pid),
-                "fork" | "vfork" | "clone" => return make_handler!(handle_fork, pid),
-                _ => return make_handler!(print_coroutine, regs, pid),
+                "exit" | "exit_group" => {
+                    return make_handler!(empty_coroutine, regs, pid);
+                }
+                _ => {
+                    return make_handler!(print_coroutine, regs, pid);
+                }
             }
-
         }
         Action::EventExit => {
             debug!("New handler for exit event");
