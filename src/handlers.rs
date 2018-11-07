@@ -9,13 +9,13 @@ use nix::sys::signal::Signal;
 use system_call_names::*;
 
 pub fn handle_exit(mut y: Yielder) {
-    debug!("handle_exit: waiting for actual exit event...");
+    trace!("handle_exit: waiting for actual exit event...");
     // Wait for actual exit to come.
     let actions = new_actions(& [Action::ActualExit]);
     y.yield_with(actions);
 
     // In ActualExit
-    debug!("handle_exit: saw actual exit event.");
+    trace!("handle_exit: saw actual exit event.");
     let actions = new_actions(& [Action::ProcessExited, Action::Done]);
     y.yield_with(actions);
 }
@@ -23,7 +23,7 @@ pub fn handle_exit(mut y: Yielder) {
 pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
     let arg1 = regs.arg1() as *const c_char;
     let exe = read_string(arg1, pid);
-    info!("[{}] executable: {}", pid, exe);
+    debug!("[{}] executable: {}", pid, exe);
 
     let argv = regs.arg2() as *const *const c_char;
 
@@ -33,11 +33,11 @@ pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
         if p == null() { break; }
 
         let arg = read_string(p, pid);
-        info!("[{}] arg{}: {}", pid, i, arg);
+        debug!("[{}] arg{}: {}", pid, i, arg);
     }
 
     let res = await_execve(y);
-    info!("await_execve results: {:?}", res);
+    debug!("await_execve results: {:?}", res);
 
     fn await_execve(mut y: Yielder) -> Action {
         // Wait for either postHook of execve (in case of failure),

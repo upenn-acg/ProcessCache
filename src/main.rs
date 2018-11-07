@@ -71,7 +71,10 @@ impl Command {
 /// Strace program written in Rust.
 fn main() -> nix::Result<()> {
     // Init logger with no timestamp data.
-    env_logger::Builder::from_default_env().default_format_timestamp(false).init();
+    env_logger::Builder::from_default_env().
+        default_format_timestamp(false).
+        default_format_module_path(false).
+        init();
 
     let opt = Opt::from_args();
     let command = Command::new(opt.prog, opt.prog_args);

@@ -27,6 +27,7 @@ pub enum Action {
     ProcessExited,
     /// Add New Process, with pid to our live_process set.
     AddNewProcess(Pid),
+    KilledBySignal(Signal),
     /// For event caught! Call handler.
     Fork,
     /// Received a signal.
