@@ -30,13 +30,13 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
         expect(&format!("Failed to intial ptrace on first_proc {}.", first_proc));
 
     // Map which keeps track of what action each pid is waiting for.
-    // Assumption: at any given time only one entry for any tid/pid
-    // is being waited for by a coroutine. The HashMap enforces this
-    // naturally, TODO
     let mut waiting_coroutines: HashMap<Pid, (Actions, Coroutine)> = HashMap::new();
 
     // Keep track of all live processes, when none are left, we know that the program
     // is done running.
+    // While a hashset is nice for being able to print the processes, and see their pids,
+    // it is a bit heavyweight. It would make just as much sense to have a single i32,
+    // to keep track of the number of live processes. TODO?
     let mut live_processes: HashSet<Pid> = HashSet::new();
 
     // A single continue variable isn't enough, we could receive events from any live
@@ -49,13 +49,81 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     loop {
         let (current_pid, new_action) = get_next_action();
 
-        // Handle signals here, just insert them back to the process.
-        if let Action::Signal(signal) = new_action {
-            let continue_type = *proc_continue_event.get(& current_pid).unwrap();
-            debug!("Calling ptrace_sycall with {:?}", continue_type);
-            ptrace_syscall(current_pid, continue_type, Some(signal))?;
+        // Handle death by signal
+        if let Action::KilledBySignal(signal) = new_action {
+            handle_process_exit(current_pid, &mut live_processes, &mut proc_continue_event);
+            waiting_coroutines.remove(& current_pid);
+
             continue;
         }
+
+        // Handle fork!
+        if let Action::Fork = new_action {
+            debug!("[{}] fork event!", current_pid);
+
+            // We don't handle the child at all here. We wait for it's signal event
+            // to come, we will know it's "it" since it will be the first time we ever
+            // see it's pid with a STOPPED signal.
+            if log_enabled!(Level::Debug) {
+                let child = Pid::from_raw(ptrace_getevent(current_pid) as i32);
+                debug!("New child with pid: {}", child);
+            }
+
+             // TODO this is hardcoded! This is bad! FIX
+            ptrace_syscall(current_pid, ContinueEvent::SystemCall, None).
+                expect("parent failed to continue...");
+             continue;
+        }
+
+        // Handle signals!
+        // Just insert them back to the process.
+        if let Action::Signal(signal) = new_action {
+            // TODO Refactor.
+
+            // This is a new child spawned by a fork event! This is the first time we're
+            // seeing it as a STOPPED event. Add it to our records.
+            // NOTE: We want to ignore this signal! This is not something that should
+            // be propegated down to the process, it is only for US (the tracer).
+            if ! live_processes.contains(& current_pid){
+                info!("New child is registered and it's STOPPED signal captured.");
+                live_processes.insert(current_pid);
+                proc_continue_event.insert(current_pid, ContinueEvent::Continue);
+                ptrace_syscall(current_pid, ContinueEvent::Continue, None)
+                    .expect("Failed to continue new child process.");
+                continue;
+            }
+            let continue_type = *proc_continue_event.get(& current_pid).unwrap();
+
+            ptrace_syscall(current_pid, continue_type, Some(signal))
+                .expect("Failed to continue process with signal event.");
+
+            // Explicitly go back to the top!
+            continue;
+        }
+
+        if let Action::EventExit = new_action {
+            if let Entry::Occupied(e) = waiting_coroutines.entry(current_pid){
+                // This is probably happening inside a thread where the thread is
+                // is saying is being exited due to an exit_group.
+                trace!("An coroutine was already waiting for event!  \
+                        Probably a post-hook, instead we saw an exit event.");
+
+                // Remove the exiting entry. This way, the vacant branch below will
+                // generate a new coroutine
+                trace!("Removing coroutine for {}, sorry, it's time to exit!",
+                       current_pid);
+                e.remove_entry();
+            }
+
+            // Let this statement fall through!
+        }
+
+
+        // Only exit and system call events should come down here, we explicitly handle
+        // all other kinds of events:
+
+        // Reset to default, signals need this information otherwise.
+        *proc_continue_event.get_mut(& current_pid).unwrap() = ContinueEvent::Continue;
 
         // Let a waiting coroutine run for this event, otherwise, create a new coroutine
         // to handle this event!
@@ -74,26 +142,10 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                 let waiting_on: Actions = cor.resume().unwrap();
                 let goto_posthook = waiting_on.contains(& Action::PostHook);
 
-                // Check if we should add this process to the live processes!
-                for action in &waiting_on {
-                    if let Action::AddNewProcess(new_proc) = action {
-
-                        if cfg!(debug_assertions){
-                            if live_processes.contains(& new_proc) {
-                                panic!("new process pid was already in live_processes.");
-                            }
-                        }
-
-                        live_processes.insert(*new_proc);
-                        proc_continue_event.insert(*new_proc, ContinueEvent::Continue);
-                        break;
-                    }
-                }
-
                 // This coroutine doesn't live long enough, to even need another loop.
                 // It has done it's part.
                 if ! waiting_on.contains(& Action::Done) {
-                    debug!("Waiting for actions: {:?}", waiting_on);
+                    trace!("Waiting for actions: {:?}", waiting_on);
                     v.insert((waiting_on, cor));
                 }
 
@@ -101,7 +153,6 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                     *proc_continue_event.get_mut(& current_pid).unwrap() =
                         ContinueEvent::SystemCall;
                 }
-                
             }
             Entry::Occupied(mut entry) => {
                 // There was a coroutine waiting for this event. Let it run and inform it
@@ -110,52 +161,37 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
                 // This pid/tid was not expecting to receive this action!
                 if ! entry.get().0.contains(& new_action){
-                    println!("{:?}", entry);
-                    panic!("[{}]Existing coroutine was not expecting action: {:?}",
-                           current_pid, new_action);
+                    panic!("[{}] Existing coroutine {:?} was not expecting action: {:?}",
+                           current_pid, entry, new_action);
                 }
 
                 // Found it! Run coroutine until it yields;
                 let new_waiting_on: Actions = entry.get_mut().1.send(new_action);
 
                 if new_waiting_on.contains(& Action::ProcessExited) {
-                    info!("Process {} has exited.", current_pid);
-                    // Remove process forever.
-                    if ! live_processes.remove(& current_pid) {
-                        panic!("Cannot remove entry live_process. No such pid {}", current_pid);
-                    }
-                    // No more processes exit, program.
-                    if live_processes.is_empty() {
-                        info!("Whole program done!");
-                        break;
-                    }else {
-                        debug!("Live processes: {:?}", live_processes);
-                        // Skip calling ptrace_sycall at the bottom of this loop,
-                        // this program has already exited.
-                        debug!("Skipping exited process' ptrace_continue.");
-                        continue;
-                    }
+                    let all_done = handle_process_exit(current_pid, &mut live_processes,
+                                                       &mut proc_continue_event);
+                    entry.remove_entry();
+                    if all_done { break; } else { continue; }
                 }
 
                 // If this coroutine is done, erase it.
                 if new_waiting_on.contains(& Action::Done) {
-                    debug!("Coroutine done, dropping it.");
+                    trace!("Coroutine done, dropping it.");
                     entry.remove_entry();
                 }
 
-                debug!("Waiting for actions: {:?}", new_waiting_on);
+                trace!("Waiting for actions: {:?}", new_waiting_on);
             }
         }; // end of match
 
         // Must refetch, may change after handling seccomp event.
         let continue_type = *proc_continue_event.get(& current_pid).unwrap();
-        debug!("Calling ptrace_sycall with {:?}", continue_type);
+        trace!("Calling ptrace_sycall with {:?}", continue_type);
 
         ptrace_syscall(current_pid, continue_type, None).
             expect( &format!("Failed to call ptrace on pid {}.", current_pid));
 
-        // Reset to default.
-        *proc_continue_event.get_mut(& current_pid).unwrap() = ContinueEvent::Continue;
     } // end of loop
 
     Ok(())
@@ -170,7 +206,7 @@ pub fn get_next_action() -> (Pid, Action) {
     match waitpid(None, None).expect("Failed to waitpid.") {
         PtraceEvent(pid,_, status)
             if PTRACE_EVENT_EXEC as i32 == status => {
-                info!("[{}] Saw exec event.", pid);
+                debug!("[{}] Saw exec event.", pid);
                 return (pid, Action::Execve);
             }
 
@@ -178,45 +214,79 @@ pub fn get_next_action() -> (Pid, Action) {
         // actual exit.
         PtraceEvent(pid, _, status)
             if PTRACE_EVENT_EXIT as i32 == status => {
-                info!("[{}] Saw ptrace exit event.", pid);
+                debug!("[{}] Saw ptrace exit event.", pid);
                 return (pid, Action::EventExit)
             }
 
         PtraceEvent(pid,_, status)
             if PTRACE_EVENT_SECCOMP as i32 == status => {
-                debug!("[{}] Saw seccomp event.", pid);
+                trace!("[{}] Saw seccomp event.", pid);
                 return (pid, Action::Seccomp);
             }
 
+        PtraceEvent(pid, signal, status)
+            if PTRACE_EVENT_FORK as i32 == status ||
+            PTRACE_EVENT_CLONE as i32 == status ||
+            PTRACE_EVENT_VFORK as i32 == status => {
+                trace!("[{}] Saw forking event!", pid);
+                return (pid, Action::Fork)
+            }
+
         PtraceSyscall(pid) => {
-            debug!("[{}] Saw post hook event.", pid);
+            trace!("[{}] Saw post hook event.", pid);
             return (pid, Action::PostHook);
         }
 
         Exited(pid, _) => {
-            debug!("[{}] Saw actual exit.", pid);
+            trace!("[{}] Saw actual exit event", pid);
             return (pid, Action::ActualExit)
         }
 
         // Received a signal event.
         Stopped(pid, signal) => {
-            info!("[{}] Received signal event {:?}", pid, signal);
+            debug!("[{}] Received signal event {:?}", pid, signal);
             return (pid, Action::Signal(signal))
         }
 
+        Signaled(pid, signal, _) => {
+            debug!("[{}] Process killed by singal: {:?}", pid, signal);
+            return (pid, Action::KilledBySignal(signal));
+        }
+
         s => {
-            // Notice we should never see a fork event. Since we handle that directly
-            // from the fork handler function.
             panic!("Unhandled case for get_action_pid(): {:?}", s);
         }
     }
 }
 
-//             // Our process has been killed by signal
-//             Signaled(pid, signal, _) => {
-//                 info!("[{}] Our process has been killed by signal {:?}", pid, signal);
-//                 break;
-//             }
+/// Cleans up process from our maps. Returns whether we're all_done running our tracer.
+/// this is the case when the live_process map is empty.
+fn handle_process_exit(pid: Pid,
+                       live_processes: &mut HashSet<Pid>,
+                       proc_continue_event: &mut HashMap<Pid, ContinueEvent>) -> bool {
+    debug!("Process {} has exited.", pid);
+
+    // Remove process forever.
+    if ! live_processes.remove(& pid) {
+        panic!("Cannot remove entry live_process. No such pid {}", pid);
+    }
+    if proc_continue_event.remove(& pid) == None {
+        panic!("Cannot remove entry proc_continue_event. \
+                No such pid {}", pid);
+    }
+
+    // No more processes exit, program.
+    if live_processes.is_empty() {
+        debug!("Whole program done!");
+        return true;
+    }else {
+        trace!("Live processes: {:?}", live_processes);
+        // Skip calling ptrace_sycall at the bottom of this loop,
+        // this program has already exited.
+        trace!("Skipping exited process' ptrace_continue.");
+        return false;
+    }
+}
 
 fn empty_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
 }
@@ -226,8 +296,9 @@ fn print_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
     let regs = Regs::get_regs(pid);
     let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
     info!("[{}] {}", pid, name);
-    await_posthook(regs.same(), pid, y);
-    info!("in post hook :)");
+    let regs = await_posthook(regs.same(), pid, y);
+    trace!("in post hook :)");
+    info!("[{}] return value = {}", pid, regs.retval() as i32);
 }
 
 fn handle_getcwd(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder){
@@ -257,23 +328,24 @@ pub fn new_event_handler<'a>(pid: Pid, action: Action) -> Coroutine<'a> {
     match action {
         // Basically a pre-hook event.
         Action::Seccomp => {
-            debug!("New event handler for seccomp.");
+            trace!("New event handler for seccomp.");
 
             let regs = Regs::get_regs(pid);
             let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
             match name {
                 "execve" => return make_handler!(handle_execve, regs, pid),
-                "exit" | "exit_group" =>
-                    return make_handler!(empty_coroutine, regs, pid),
-                "fork" | "vfork" | "clone" => return make_handler!(handle_fork, pid),
-                _ => return make_handler!(print_coroutine, regs, pid),
+                "exit" | "exit_group" => {
+                    return make_handler!(empty_coroutine, regs, pid);
+                }
+                _ => {
+                    return make_handler!(print_coroutine, regs, pid);
+                }
             }
-
         }
         Action::EventExit => {
-            debug!("New handler for exit event");
-            let regs = Regs::get_regs(pid);
+            trace!("New handler for exit event");
+            let regs = Regs::get_regs(pid); 
             return make_handler!(handle_exit);
         }
         _ => panic!("get_coroutine: unexpected action: {:?}", action),

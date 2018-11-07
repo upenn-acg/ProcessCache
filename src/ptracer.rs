@@ -15,7 +15,7 @@ use byteorder::LittleEndian;
 use byteorder::WriteBytesExt;
 use std::marker::PhantomData;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {Continue, SystemCall}
 
 /// Represents a register which has never been written to.
@@ -144,10 +144,8 @@ pub fn ptrace_set_options(pid: Pid) -> nix::Result<()> {
 }
 
 /// Nix's version doesn't take a signal as an argument. This one does.
-pub fn ptrace_syscall(pid: Pid,
-                      ce: ContinueEvent,
-                      signal_to_deliver: Option<Signal>)
-                      -> nix::Result<()>{
+pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Signal>)
+                      -> nix::Result<()> {
     let signal = match signal_to_deliver {
         None => 0 as *mut c_void,
         Some(s) => s as i64 as *mut c_void,
