@@ -3,7 +3,6 @@ use std::ptr::null_mut;
 use std::u32;
 use libc::c_int;
 use std::env;
-use args::RunType;
 
 pub enum OnDebug { Intercept, LetPass }
 
@@ -26,6 +25,8 @@ impl RuleLoader {
             }
         }
     }
+
+    /// Always intecept system call.
     pub fn intercept(&self, syscall: c_int){
         unsafe{
             // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
@@ -35,9 +36,9 @@ impl RuleLoader {
         }
     }
 
-    /// Let syscall through.
     ///
-    /// When OnDebug::Intercept is passed, if the debug flag is on, the system call will
+    ///
+    /// When on_debug is OnDebug::Intercept, if the debugging is on, the system call will
     /// be intercepted.
     pub fn let_pass(&self, syscall: c_int, on_debug: OnDebug){
         match on_debug {
@@ -52,23 +53,19 @@ impl RuleLoader {
     }
 
     /// Create a new RuleLoader to pass rules to.
-    pub fn new(rt: &RunType) -> RuleLoader {
-
-        let scmp = match rt {
-            RunType::All => SCMP_ACT_TRACE(u32::MAX),
-            _ => SCMP_ACT_ALLOW,
-        };
-
+    pub fn new() -> RuleLoader {
+        // Current default. Intercept and return u32::MAX this should be an error,
+        // as it means there is no explicit rule for this syscall.
+        let scmp = SCMP_ACT_TRACE(u32::MAX);
         let ctx = unsafe { seccomp_init(scmp) };
         if ctx == null_mut() {
             panic!("Unable to init seccomp filter.");
         }
 
-        let debug =
-            match env::var_os("RUST_LOG"){
-                None => false,
-                _ => true,
-            };
+        let debug = match env::var_os("RUST_LOG"){
+            None => false,
+            _ => true,
+        };
         RuleLoader { debug, ctx }
     }
 
