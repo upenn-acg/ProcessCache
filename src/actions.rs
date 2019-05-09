@@ -45,7 +45,6 @@ impl Into<Actions> for Action {
 
 pub type Actions = HashSet<Action>;
 
-
 pub fn new_actions(array: &[Action]) -> Actions {
     // array.into_iter().fold(HashSet::new(), |set, e| h.insert(*e)).collect()
     let mut set: HashSet<Action> = HashSet::new();
