@@ -27,6 +27,9 @@ pub enum Action {
     ProcessExited,
     /// Add New Process, with pid to our live_process set.
     AddNewProcess(Pid),
+    KilledBySignal(Signal),
+    /// For event caught! Call handler.
+    Fork,
     /// Received a signal.
     Signal(Signal),
 }
@@ -41,7 +44,6 @@ impl Into<Actions> for Action {
 
 
 pub type Actions = HashSet<Action>;
-
 
 pub fn new_actions(array: &[Action]) -> Actions {
     // array.into_iter().fold(HashSet::new(), |set, e| h.insert(*e)).collect()

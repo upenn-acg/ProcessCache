@@ -15,7 +15,7 @@ use byteorder::LittleEndian;
 use byteorder::WriteBytesExt;
 use std::marker::PhantomData;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {Continue, SystemCall}
 
 /// Represents a register which has never been written to.
@@ -117,6 +117,16 @@ impl Regs<Modified> {
     write_regs_function!(write_rax, rax);
     write_regs_function!(write_retval, rax);
     write_regs_function!(write_syscall_number, orig_rax);
+
+    pub fn set_regs(&mut self, pid: Pid) {
+        unsafe {
+            #[allow(deprecated)]
+            ptrace::ptrace(Request::PTRACE_SETREGS, pid,
+                           PT_NULL as *mut c_void,
+                           &mut self.regs as *mut _ as *mut c_void).
+                expect(& format!("Unable to set regs for pid: {}", pid));
+        }
+    }
 }
 
 
@@ -134,10 +144,8 @@ pub fn ptrace_set_options(pid: Pid) -> nix::Result<()> {
 }
 
 /// Nix's version doesn't take a signal as an argument. This one does.
-pub fn ptrace_syscall(pid: Pid,
-                      ce: ContinueEvent,
-                      signal_to_deliver: Option<Signal>)
-                      -> nix::Result<()>{
+pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Signal>)
+                      -> nix::Result<()> {
     let signal = match signal_to_deliver {
         None => 0 as *mut c_void,
         Some(s) => s as i64 as *mut c_void,
@@ -158,7 +166,7 @@ pub fn ptrace_syscall(pid: Pid,
 
 pub fn ptrace_getevent(pid: Pid) -> c_long {
     ptrace::getevent(pid).
-        expect("Unable to call getevent on ForkEvent.")
+        expect("Unable to call getevent.")
 }
 
 // Read string from user.

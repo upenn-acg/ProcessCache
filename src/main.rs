@@ -1,7 +1,7 @@
 extern crate libc;
 extern crate nix;
 extern crate byteorder;
-#[macro_use] extern crate structopt;
+extern crate structopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
 extern crate generator;
@@ -15,22 +15,6 @@ mod ptracer;
 mod execution;
 mod seccomp;
 mod actions;
-
-// Most used
-use libc::{ SYS_lstat, SYS_openat, SYS_rt_sigaction, SYS_read, SYS_close, SYS_stat,
-            SYS_rt_sigprocmask, SYS_lseek, SYS_mmap, SYS_fstat, SYS_mprotect,
-            SYS_access, SYS_msgrcv, SYS_msgsnd, SYS_write, SYS_semop,
-            SYS_brk, SYS_getpid, SYS_fcntl, SYS_wait4};
-
-// Least used
-use libc::{ SYS_dup3,  SYS_nanosleep,  SYS_mremap,  SYS_setsid,  SYS_kill,  SYS_select,
-            SYS_seccomp, SYS_chown,  SYS_msgctl,  SYS_semctl,  SYS_creat,  SYS_fsync,
-            SYS_readlinkat,  SYS_prctl,  SYS_symlink,  SYS_sigaltstack,
-            SYS_fchown,  SYS_llistxattr,  SYS_madvise,  SYS_rmdir};
-
-
-// Must use
-use libc::{ SYS_fork, SYS_vfork, SYS_execve, SYS_clone};
 
 use args::*;
 use structopt::StructOpt;
@@ -53,13 +37,16 @@ impl Command {
     }
 }
 
-/// Strace program written in Rust.
+/// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {
     // Init logger with no timestamp data.
-    env_logger::Builder::from_default_env().default_format_timestamp(false).init();
+    env_logger::Builder::from_default_env().
+        default_format_timestamp(false).
+        default_format_module_path(false).
+        init();
 
     let opt = Opt::from_args();
-    let command = Command::new(opt.exe, opt.exe_args);
+    let command = Command::new(opt.exe, opt.args);
 
     match fork()? {
         ForkResult::Parent { child } => execution::run_program(child),
@@ -77,68 +64,14 @@ fn run_tracee(command: Command) -> nix::Result<()> {
     raise(Signal::SIGSTOP)?;
 
     // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
-    // raise.
+    // raise(...).
     let loader = seccomp::RuleLoader::new();
-
-    // Necessary for implementation.
-    loader.intercept(SYS_execve as i32);
-    loader.intercept(SYS_clone as i32);
-    loader.intercept(SYS_fork as i32);
-    loader.intercept(SYS_vfork as i32);
-
-    // not called often
-    // loader.intercept(SYS_dup3 as i32);
-    // loader.intercept(SYS_nanosleep as i32);
-    // loader.intercept(SYS_mremap as i32);
-    // loader.intercept(SYS_setsid as i32);
-    // loader.intercept(SYS_kill as i32);
-    // loader.intercept(SYS_select as i32);
-    // loader.intercept(SYS_seccomp as i32);
-    // loader.intercept(SYS_chown as i32);
-    // loader.intercept(SYS_msgctl as i32);
-    // loader.intercept(SYS_semctl as i32);
-    // loader.intercept(SYS_creat as i32);
-    // loader.intercept(SYS_fsync as i32);
-    // loader.intercept(SYS_readlinkat as i32);
-    // loader.intercept(SYS_prctl as i32);
-    // loader.intercept(SYS_symlink as i32);
-    // loader.intercept(SYS_sigaltstack as i32);
-    // loader.intercept(SYS_fchown as i32);
-    // loader.intercept(SYS_llistxattr as i32);
-    // loader.intercept(SYS_madvise as i32);
-    // loader.intercept(SYS_rmdir as i32);
-
-    // Called a lot
-    // loader.intercept(SYS_lstat as i32);
-    // loader.intercept(SYS_openat as i32);
-    // loader.intercept(SYS_rt_sigaction as i32);
-    // loader.intercept(SYS_read as i32);
-    // loader.intercept(SYS_close as i32);
-    // loader.intercept(SYS_stat as i32);
-    // loader.intercept(SYS_rt_sigprocmask as i32);
-    // loader.intercept(SYS_lseek as i32);
-    // loader.intercept(SYS_mmap as i32);
-    // loader.intercept(SYS_fstat as i32);
-    // loader.intercept(SYS_mprotect as i32);
-    // loader.intercept(SYS_access as i32);
-    // loader.intercept(SYS_msgrcv as i32);
-    // loader.intercept(SYS_msgsnd as i32);
-    // loader.intercept(SYS_write as i32);
-    // loader.intercept(SYS_semop as i32);
-    // loader.intercept(SYS_brk as i32);
-    // loader.intercept(SYS_getpid as i32);
-    // loader.intercept(SYS_fcntl as i32);
-    // loader.intercept(SYS_wait4 as i32);
-
     loader.load_to_kernel();
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
-    let mut args: Vec<CString> = command
-        .1
-        .into_iter()
-        .map(|s| CString::new(s).unwrap())
-        .collect();
+    let mut args: Vec<CString> =
+        command.1.into_iter().map(|s| CString::new(s).unwrap()).collect();
     args.insert(0, exe.clone());
 
     if let Err(e) = execvp(&exe, &args) {
