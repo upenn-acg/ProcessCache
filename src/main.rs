@@ -37,7 +37,7 @@ impl Command {
     }
 }
 
-/// Strace program written in Rust.
+/// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {
     // Init logger with no timestamp data.
     env_logger::Builder::from_default_env().
@@ -64,7 +64,7 @@ fn run_tracee(command: Command) -> nix::Result<()> {
     raise(Signal::SIGSTOP)?;
 
     // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
-    // raise.
+    // raise(...).
     let loader = seccomp::RuleLoader::new();
     loader.load_to_kernel();
 
