@@ -3,7 +3,7 @@ use actions::{Action, Actions};
 
 /// Wrapper around our scope generator. Yields messages of type Actions
 /// and receives an Action.
-pub type Yielder = Scope<Action, Actions>;
+pub type Yielder<'a> = Scope<'a, Action, Actions>;
 pub type Coroutine<'a> = Box<GeneratorImpl<'a, Action, Actions>>;
 
 macro_rules! make_handler {
