@@ -1,3 +1,5 @@
+#![feature(async_await)]
+
 extern crate libc;
 extern crate nix;
 extern crate byteorder;
@@ -7,14 +9,16 @@ extern crate env_logger;
 extern crate generator;
 extern crate seccomp_sys;
 
-#[macro_use] mod coroutines;
-mod handlers;
 mod system_call_names;
 mod args;
 mod ptracer;
 mod execution;
 mod seccomp;
 mod actions;
+mod ptrace_event;
+mod executor;
+
+use nix::unistd::{fork, ForkResult};
 
 use args::*;
 use structopt::StructOpt;
@@ -26,7 +30,6 @@ use std::ffi::CString;
 
 use nix::sys::signal::Signal;
 use nix::sys::signal::raise;
-
 use std::process::exit;
 
 struct Command(String, Vec<String>);
@@ -49,7 +52,9 @@ fn main() -> nix::Result<()> {
     let command = Command::new(opt.exe, opt.args);
 
     match fork()? {
-        ForkResult::Parent { child } => execution::run_program(child),
+        ForkResult::Parent { child } => {
+            execution::run_program(child)
+        },
         ForkResult::Child => run_tracee(command),
     }
 }

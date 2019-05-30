@@ -2,6 +2,7 @@
 name = "partracer"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 nix = "0.10"
@@ -12,6 +13,10 @@ generator = "0.6"
 log = "0.4"
 env_logger = "0.5"
 seccomp-sys = "0.1.2"
+futures-preview = "0.3.0-alpha.16"
 
-[profile.release]
-debug = true
+[build-dependencies]
+cc = "1.0"
+
+# [profile.release]
+# debug = true
