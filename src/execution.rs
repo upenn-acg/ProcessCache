@@ -133,6 +133,7 @@ pub async fn run_process(pid: Pid,
                         continue;
                     }
 
+                    // TODO: This should probably be broken out into functions.
                     if name == "write" {
                         let resource_clocks = Arc::clone(&resource_clocks);
                         let fd = regs.arg1() as u64;
@@ -145,6 +146,10 @@ pub async fn run_process(pid: Pid,
                                 write_clock: new_write_clock,
                             };
                             if resource_clocks.contains_key(&fd) {
+                                // Case where the resource has been accessed before and needs
+                                // to be updated.
+                                // TODO: Deleting and reinserting may not be the most efficient way
+                                // to do this?
                                 let old_clock = resource_clocks.remove(&fd).unwrap();
                                 let updated_rc: ResourceClock = ResourceClock {
                                     read_clock: old_clock.read_clock,
@@ -154,9 +159,43 @@ pub async fn run_process(pid: Pid,
                                 println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
                                 resource_clocks.insert(fd, updated_rc);
                             } else {    
+                                // Case where the resource has not been accessed before and so
+                                // we must create a clock for it and insert it.
                                 println!("Adding clock for fd: {}\n", fd);
                                 println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
                                 resource_clocks.insert(fd, rc);
+                            }
+                        }
+                    } else if name == "read" {
+                        let resource_clocks = Arc::clone(&resource_clocks);
+                        let fd = regs.arg1() as u64;
+                        if fd != 1 {
+                            let mut resource_clocks = resource_clocks.lock().unwrap();
+                            let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                            // TODO: These are dummy times for processes. Don't have process
+                            // clocks implemented yet.
+                            new_read_clock.insert(pid, 0);
+                            // If we are making a new clock, because this is the first 
+                            // time the resource is being accessed, just a dummy write clock.
+                            let new_write_clock = (Pid::from_raw(0 as i32), 0);
+                            let rc: ResourceClock = ResourceClock {
+                                read_clock: new_read_clock,
+                                write_clock: new_write_clock,
+                            };
+                            if resource_clocks.contains_key(&fd) {
+                                let old_clock = resource_clocks.remove(&fd).unwrap();
+                                let mut r_clock = old_clock.read_clock;
+                                r_clock.insert(pid, 0);
+                                let updated_rc: ResourceClock = ResourceClock {
+                                    read_clock: r_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                println!("Updating clock for fd: {}\n", fd);
+                                println!("Read clock --> Pid: {}, Time: {}\n", pid, 0);
+                            } else {
+                                resource_clocks.insert(fd, rc);
+                                println!("Adding clock for fd: {}\n", fd);
+                                println!("Read clock --> Pid: {}, Time: {}\n", pid, 0);
                             }
                         }
                     }
