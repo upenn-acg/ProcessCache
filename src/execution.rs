@@ -9,6 +9,7 @@ use nix;
 use nix::sys::ptrace::Event::*;
 
 use std::collections::{HashMap};
+use std::sync::{Arc, Mutex};
 
 use crate::ptracer::*;
 use crate::executor::WaitidExecutor;
@@ -58,6 +59,11 @@ impl Execution {
     // }
 }
 
+pub struct ResourceClock {
+    read_clock: HashMap<Pid, u64>,
+    write_clock: (Pid, u64),
+}
+
 pub async fn posthook(pid: Pid) -> Regs<Unmodified> {
     let event = AsyncPtrace { pid };
     debug!("waiting for posthook event");
@@ -88,7 +94,9 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
     event.await
 }
 
-pub async fn run_process(pid: Pid, handle: WaitidExecutor) -> () {
+pub async fn run_process(pid: Pid, 
+                         handle: WaitidExecutor, 
+                         resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>) -> () {
     debug!("Starting to run process");
     use nix::sys::wait::WaitStatus::*;
 
@@ -125,6 +133,34 @@ pub async fn run_process(pid: Pid, handle: WaitidExecutor) -> () {
                         continue;
                     }
 
+                    if name == "write" {
+                        let resource_clocks = Arc::clone(&resource_clocks);
+                        let fd = regs.arg1() as u64;
+                        if fd != 1 {
+                            let mut resource_clocks = resource_clocks.lock().unwrap();
+                            let new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                            let new_write_clock = (pid, 0);
+                            let rc: ResourceClock = ResourceClock {
+                                read_clock: new_read_clock,
+                                write_clock: new_write_clock,
+                            };
+                            if resource_clocks.contains_key(&fd) {
+                                let old_clock = resource_clocks.remove(&fd).unwrap();
+                                let updated_rc: ResourceClock = ResourceClock {
+                                    read_clock: old_clock.read_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                println!("Updating clock for fd: {}\n", fd);
+                                println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
+                                resource_clocks.insert(fd, updated_rc);
+                            } else {    
+                                println!("Adding clock for fd: {}\n", fd);
+                                println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
+                                resource_clocks.insert(fd, rc);
+                            }
+                        }
+                    }
+
                     let regs = posthook(pid).await;
 
                     // In posthook.
@@ -137,16 +173,18 @@ pub async fn run_process(pid: Pid, handle: WaitidExecutor) -> () {
                 PTRACE_EVENT_VFORK as i32 == status => {
                     debug!("[{}] Saw forking event!", pid);
                     let child = Pid::from_raw(ptrace_getevent(pid) as i32);
-
+                    let resource_clocks = Arc::clone(&resource_clocks);
                     // we end up with a weird circular dependency for our types if we
                     // tried to call this directly so we have to wrap it and call it from
                     // this wrapper.
-                    fn wrapper(pid: Pid, handle: WaitidExecutor) {
+                    fn wrapper(pid: Pid, 
+                               handle: WaitidExecutor,
+                               resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>) {
 
                         // Recursively call run process to handle the new child process!
-                        handle.add_future(run_process(pid, handle.clone()), pid);
+                        handle.add_future(run_process(pid, handle.clone(), resource_clocks), pid);
                     }
-                    wrapper(child, handle.clone());
+                    wrapper(child, handle.clone(), resource_clocks);
                 }
 
             PtraceSyscall(pid) => {
@@ -190,7 +228,10 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     // Child ready!
     ptrace_set_options(first_proc)?;
 
-    pool.add_future(run_process(first_proc, pool.clone()), first_proc);
+    let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
+    let resource_clocks = Arc::new(Mutex::new(resource_map));
+    let resource_clocks = Arc::clone(&resource_clocks);
+    pool.add_future(run_process(first_proc, pool.clone(), resource_clocks), first_proc);
     pool.run_all();
 
     //         Action::KilledBySignal(signal) => {
