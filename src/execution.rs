@@ -15,6 +15,7 @@ use crate::ptracer::*;
 use crate::executor::WaitidExecutor;
 
 use nix::sys::wait::WaitStatus::PtraceSyscall;
+use libc::c_long;
 
 enum PtraceNextStep {
     SkipCurrentPid,
@@ -87,9 +88,16 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
 
     // This cannot be a posthook event. Those are explicitly caught in the
     // seccomp handler.
-    ptrace_syscall(pid, ContinueEvent::Continue, None).
+    //ptrace_syscall(pid, ContinueEvent::Continue, None).
         // Might want to switch this to return the error instead of failing.
-        expect("ptrace continue failed.");
+        //expect("ptrace continue failed.");
+  
+    loop {
+        match ptrace_syscall(pid, ContinueEvent::Continue, None) {
+           Err(e) => continue,
+           Ok(v) => break,
+        }
+    }
     let event = AsyncPtrace { pid };
     event.await
 }
@@ -115,7 +123,6 @@ pub async fn run_process(pid: Pid,
         new_clock.insert(pid, 1);
         process_clocks.insert(pid, new_clock);
     }
-    debug!("do we get here?");
     //     let mut signal_to_inject: Option<Signal> = None;
     //     let mut ptrace_next_action = DoContinueEvent;
     loop {
@@ -171,14 +178,14 @@ pub async fn run_process(pid: Pid,
                                     read_clock: old_clock.read_clock,
                                     write_clock: new_write_clock,
                                 };
-                                println!("Updating clock for fd: {}\n", fd);
-                                println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
+                                debug!("Updating write clock for fd: {}", fd);
+                                debug!("Write clock --> Pid: {} , Time: {}", pid, 0);
                                 resource_clocks.insert(fd, updated_rc);
                             } else {    
                                 // Case where the resource has not been accessed before and so
                                 // we must create a clock for it and insert it.
-                                println!("Adding clock for fd: {}\n", fd);
-                                println!("Write clock --> Pid: {} , Time: {}\n", pid, 0);
+                                debug!("Adding write clock for fd: {}", fd);
+                                debug!("Write clock --> Pid: {} , Time: {}", pid, 0);
                                 resource_clocks.insert(fd, rc);
                             }
                         }
@@ -207,12 +214,12 @@ pub async fn run_process(pid: Pid,
                                     write_clock: new_write_clock,
                                 };
                                 resource_clocks.insert(fd, updated_rc);
-                                println!("Updating clock for fd: {}\n", fd);
-                                println!("Read clock --> Pid: {}, Time: {}\n", pid, 0);
+                                debug!("Updating read clock for fd: {}", fd);
+                                debug!("Read clock --> Pid: {}, Time: {}", pid, 0);
                             } else {
                                 resource_clocks.insert(fd, rc);
-                                println!("Adding clock for fd: {}\n", fd);
-                                println!("Read clock --> Pid: {}, Time: {}\n", pid, 0);
+                                debug!("Adding read clock for fd: {}\n", fd);
+                                debug!("Read clock --> Pid: {}, Time: {}", pid, 0);
                             }
                         }
                     }
