@@ -159,11 +159,14 @@ pub async fn run_process(pid: Pid,
                     // TODO: This should probably be broken out into functions.
                     if name == "write" {
                         let resource_clocks = Arc::clone(&resource_clocks);
+                        let process_clocks = Arc::clone(&process_clocks);
                         let fd = regs.arg1() as u64;
                         if fd != 1 {
                             let mut resource_clocks = resource_clocks.lock().unwrap();
+                            let mut process_clocks = process_clocks.lock().unwrap();
+                            let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
                             let new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                            let new_write_clock = (pid, 0);
+                            let new_write_clock = (pid, *time);
                             let rc: ResourceClock = ResourceClock {
                                 read_clock: new_read_clock,
                                 write_clock: new_write_clock,
@@ -178,26 +181,27 @@ pub async fn run_process(pid: Pid,
                                     read_clock: old_clock.read_clock,
                                     write_clock: new_write_clock,
                                 };
-                                debug!("Updating write clock for fd: {}", fd);
-                                debug!("Write clock --> Pid: {} , Time: {}", pid, 0);
+                                println!("Updating write clock for fd: {}", fd);
+                                println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 resource_clocks.insert(fd, updated_rc);
                             } else {    
                                 // Case where the resource has not been accessed before and so
                                 // we must create a clock for it and insert it.
-                                debug!("Adding write clock for fd: {}", fd);
-                                debug!("Write clock --> Pid: {} , Time: {}", pid, 0);
+                                println!("Adding write clock for fd: {}", fd);
+                                println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 resource_clocks.insert(fd, rc);
                             }
                         }
                     } else if name == "read" {
                         let resource_clocks = Arc::clone(&resource_clocks);
+                        let process_clocks = Arc::clone(&process_clocks);
                         let fd = regs.arg1() as u64;
                         if fd != 1 {
                             let mut resource_clocks = resource_clocks.lock().unwrap();
+                            let mut process_clocks = process_clocks.lock().unwrap();
+                            let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
                             let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                            // TODO: These are dummy times for processes. Don't have process
-                            // clocks implemented yet.
-                            new_read_clock.insert(pid, 0);
+                            new_read_clock.insert(pid, *time);
                             // If we are making a new clock, because this is the first 
                             // time the resource is being accessed, just a dummy write clock.
                             let new_write_clock = (Pid::from_raw(0 as i32), 0);
@@ -208,18 +212,18 @@ pub async fn run_process(pid: Pid,
                             if resource_clocks.contains_key(&fd) {
                                 let old_clock = resource_clocks.remove(&fd).unwrap();
                                 let mut r_clock = old_clock.read_clock;
-                                r_clock.insert(pid, 0);
+                                r_clock.insert(pid, *time);
                                 let updated_rc: ResourceClock = ResourceClock {
                                     read_clock: r_clock,
                                     write_clock: new_write_clock,
                                 };
                                 resource_clocks.insert(fd, updated_rc);
-                                debug!("Updating read clock for fd: {}", fd);
-                                debug!("Read clock --> Pid: {}, Time: {}", pid, 0);
+                                println!("Updating read clock for fd: {}", fd);
+                                println!("Read clock --> Pid: {}, Time: {}", pid, *time);
                             } else {
                                 resource_clocks.insert(fd, rc);
-                                debug!("Adding read clock for fd: {}\n", fd);
-                                debug!("Read clock --> Pid: {}, Time: {}", pid, 0);
+                                println!("Adding read clock for fd: {}", fd);
+                                println!("Read clock --> Pid: {}, Time: {}", pid, *time);
                             }
                         }
                     }
