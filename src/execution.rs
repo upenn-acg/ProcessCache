@@ -157,67 +157,71 @@ pub async fn run_process(pid: Pid,
                     }
 
                     // TODO: This should probably be broken out into functions.
-                    if name == "write" {
-                        let resource_clocks = Arc::clone(&resource_clocks);
-                        let process_clocks = Arc::clone(&process_clocks);
-                        let fd = regs.arg1() as u64;
-                        if fd != 1 {
-                            let mut resource_clocks = resource_clocks.lock().unwrap();
-                            let mut process_clocks = process_clocks.lock().unwrap();
-                            let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
-                            let new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                            let new_write_clock = (pid, *time);
-                            let rc: ResourceClock = ResourceClock {
-                                read_clock: new_read_clock,
-                                write_clock: new_write_clock,
-                            };
-                            if resource_clocks.contains_key(&fd) {
-                                println!("Updating write clock for fd: {}", fd);
-                                println!("Write clock --> Pid: {}, Time: {}", pid, time);
-                            } else {
-                                println!("Adding write clock for fd: {}", fd);
-                                println!("Write clock --> Pid: {} , Time: {}", pid, time);
+                    match name {
+                        "write" => { 
+                            let resource_clocks = Arc::clone(&resource_clocks);
+                            let process_clocks = Arc::clone(&process_clocks);
+                            let fd = regs.arg1() as u64;
+                            if fd != 1 {
+                                let mut resource_clocks = resource_clocks.lock().unwrap();
+                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
+                                let new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                                let new_write_clock = (pid, *time);
+                                let rc: ResourceClock = ResourceClock {
+                                    read_clock: new_read_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                if resource_clocks.contains_key(&fd) {
+                                    println!("Updating write clock for fd: {}", fd);
+                                    println!("Write clock --> Pid: {}, Time: {}", pid, time);
+                                } else {
+                                    println!("Adding write clock for fd: {}", fd);
+                                    println!("Write clock --> Pid: {} , Time: {}", pid, time);
+                                }
+                                let clock = resource_clocks.entry(fd).or_insert(rc);
+                                let ResourceClock { 
+                                    read_clock: read_c, 
+                                    write_clock: write_c } = clock;
+                                let (p, t) = write_c;
+                                *p = pid;
+                                *t = *time;
                             }
-                            let clock = resource_clocks.entry(fd).or_insert(rc);
-                            let ResourceClock { 
-                                read_clock: read_c, 
-                                write_clock: write_c } = clock;
-                            let (p, t) = write_c;
-                            *p = pid;
-                            *t = *time;
                         }
-                    } else if name == "read" {
-                        let resource_clocks = Arc::clone(&resource_clocks);
-                        let process_clocks = Arc::clone(&process_clocks);
-                        let fd = regs.arg1() as u64;
-                        if fd != 1 {
-                            let mut resource_clocks = resource_clocks.lock().unwrap();
-                            let mut process_clocks = process_clocks.lock().unwrap();
-                            let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
-                            
-                            let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                            new_read_clock.insert(pid, *time);
-                            // If we are making a new clock, because this is the first 
-                            // time the resource is being accessed, just a dummy write clock.
-                            let new_write_clock = (Pid::from_raw(0 as i32), 0);
-                            let rc: ResourceClock = ResourceClock {
-                                read_clock: new_read_clock,
-                                write_clock: new_write_clock,
-                            };
-                            let clock = resource_clocks.entry(fd).or_insert(rc);
-                            let ResourceClock {
-                                read_clock: read_c,
-                                write_clock: write_c } = clock;
-                            read_c.insert(pid, *time);
+                        "read" => {
+                            let resource_clocks = Arc::clone(&resource_clocks);
+                            let process_clocks = Arc::clone(&process_clocks);
+                            let fd = regs.arg1() as u64;
+                            if fd != 1 {
+                                let mut resource_clocks = resource_clocks.lock().unwrap();
+                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
+                                
+                                let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                                new_read_clock.insert(pid, *time);
+                                // If we are making a new clock, because this is the first 
+                                // time the resource is being accessed, just a dummy write clock.
+                                let new_write_clock = (Pid::from_raw(0 as i32), 0);
+                                let rc: ResourceClock = ResourceClock {
+                                    read_clock: new_read_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                let clock = resource_clocks.entry(fd).or_insert(rc);
+                                let ResourceClock {
+                                    read_clock: read_c,
+                                    write_clock: write_c } = clock;
+                                read_c.insert(pid, *time);
 
-                            if resource_clocks.contains_key(&fd) {
-                                println!("Updating read clock for fd: {}", fd);
-                                println!("Read clock --> Pid: {}, Time: {}", pid, *time);
-                            } else {
-                                println!("Adding read clock for fd: {}", fd);
-                                println!("Read clock --> Pid: {}, Time: {}", pid, *time);
+                                if resource_clocks.contains_key(&fd) {
+                                    println!("Updating read clock for fd: {}", fd);
+                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
+                                } else {
+                                    println!("Adding read clock for fd: {}", fd);
+                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
+                                }
                             }
                         }
+                        _ => continue,
                     }
 
                     let regs = posthook(pid).await;
