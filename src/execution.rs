@@ -174,19 +174,15 @@ pub async fn run_process(pid: Pid,
                             if resource_clocks.contains_key(&fd) {
                                 // Case where the resource has been accessed before and needs
                                 // to be updated.
-                                // TODO: Deleting and reinserting may not be the most efficient way
-                                // to do this?
                                 let old_clock = resource_clocks.remove(&fd).unwrap();
                                 let updated_rc: ResourceClock = ResourceClock {
                                     read_clock: old_clock.read_clock,
                                     write_clock: new_write_clock,
                                 };
                                 println!("Updating write clock for fd: {}", fd);
-                                println!("Write clock --> Pid: {} , Time: {}", pid, time);
+                                println!("Write clock --> Pid: {}, Time: {}", pid, time);
                                 resource_clocks.insert(fd, updated_rc);
-                            } else {    
-                                // Case where the resource has not been accessed before and so
-                                // we must create a clock for it and insert it.
+                            } else {
                                 println!("Adding write clock for fd: {}", fd);
                                 println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 resource_clocks.insert(fd, rc);
@@ -257,25 +253,15 @@ pub async fn run_process(pid: Pid,
                     wrapper(child, handle.clone(), resource_clocks, p_clocks, pid);
 
                     // Increment the parent's clock upon fork.
-                    // HashMap<Pid,HashMap<Pid, u64>>
                     let process_arc = Arc::clone(&process_clocks);
                     {
                         let mut process_mutex = process_arc.lock().unwrap();
-                        let old_parent = process_mutex.remove(&pid).unwrap();
                         let mut new_parent: HashMap<Pid, u64> = HashMap::new();
-
-                        for (p, time) in old_parent.iter() {
-                            if *p == pid {
-                                let new_time = *time + 1;
-                                new_parent.insert(*p, new_time);
-                            } else if *p == child {
-                                new_parent.insert(*p, 0);
-                            } else {
-                                new_parent.insert(*p, *time); 
-                            }
-                        }
-
-                        process_mutex.insert(pid, new_parent);
+                        let parent_time = process_mutex.entry(pid)
+                                                       .or_insert(new_parent)
+                                                       .entry(pid)
+                                                       .or_insert(0);
+                        *parent_time += 1;
                     }
 
                     //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
@@ -340,9 +326,9 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     let proc_clocks = Arc::clone(&process_clocks);
     let process_clocks_mutex = proc_clocks.lock().unwrap();
     for (pid, clock) in process_clocks_mutex.iter() {
-        debug!("Process clock for: {}", pid);
+        println!("Process clock for: {}", pid);
         for (p, t) in clock.iter() {
-            debug!("Pid: {}, Time: {}", p, t);
+            println!("Pid: {}, Time: {}", p, t);
         }
     }
     //         Action::KilledBySignal(signal) => {
