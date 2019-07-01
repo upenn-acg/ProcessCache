@@ -172,21 +172,19 @@ pub async fn run_process(pid: Pid,
                                 write_clock: new_write_clock,
                             };
                             if resource_clocks.contains_key(&fd) {
-                                // Case where the resource has been accessed before and needs
-                                // to be updated.
-                                let old_clock = resource_clocks.remove(&fd).unwrap();
-                                let updated_rc: ResourceClock = ResourceClock {
-                                    read_clock: old_clock.read_clock,
-                                    write_clock: new_write_clock,
-                                };
                                 println!("Updating write clock for fd: {}", fd);
                                 println!("Write clock --> Pid: {}, Time: {}", pid, time);
-                                resource_clocks.insert(fd, updated_rc);
                             } else {
                                 println!("Adding write clock for fd: {}", fd);
                                 println!("Write clock --> Pid: {} , Time: {}", pid, time);
-                                resource_clocks.insert(fd, rc);
                             }
+                            let clock = resource_clocks.entry(fd).or_insert(rc);
+                            let ResourceClock { 
+                                read_clock: read_c, 
+                                write_clock: write_c } = clock;
+                            let (p, t) = write_c;
+                            *p = pid;
+                            *t = *time;
                         }
                     } else if name == "read" {
                         let resource_clocks = Arc::clone(&resource_clocks);
@@ -196,6 +194,7 @@ pub async fn run_process(pid: Pid,
                             let mut resource_clocks = resource_clocks.lock().unwrap();
                             let mut process_clocks = process_clocks.lock().unwrap();
                             let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
+                            
                             let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
                             new_read_clock.insert(pid, *time);
                             // If we are making a new clock, because this is the first 
@@ -205,19 +204,16 @@ pub async fn run_process(pid: Pid,
                                 read_clock: new_read_clock,
                                 write_clock: new_write_clock,
                             };
+                            let clock = resource_clocks.entry(fd).or_insert(rc);
+                            let ResourceClock {
+                                read_clock: read_c,
+                                write_clock: write_c } = clock;
+                            read_c.insert(pid, *time);
+
                             if resource_clocks.contains_key(&fd) {
-                                let old_clock = resource_clocks.remove(&fd).unwrap();
-                                let mut r_clock = old_clock.read_clock;
-                                r_clock.insert(pid, *time);
-                                let updated_rc: ResourceClock = ResourceClock {
-                                    read_clock: r_clock,
-                                    write_clock: new_write_clock,
-                                };
-                                resource_clocks.insert(fd, updated_rc);
                                 println!("Updating read clock for fd: {}", fd);
                                 println!("Read clock --> Pid: {}, Time: {}", pid, *time);
                             } else {
-                                resource_clocks.insert(fd, rc);
                                 println!("Adding read clock for fd: {}", fd);
                                 println!("Read clock --> Pid: {}, Time: {}", pid, *time);
                             }
