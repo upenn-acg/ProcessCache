@@ -235,10 +235,14 @@ pub async fn run_process(pid: Pid,
                                     let mut process_clocks = process_clocks.lock().unwrap();
                                     let exited_child = Pid::from_raw(p);
                                     let child_map = process_clocks.get(&exited_child).unwrap();
-                                    let old_map = process_clocks.remove(&pid).unwrap();
+                                    let old_map = process_clocks.get(&pid).unwrap();
                                     let mut new_map: HashMap<Pid, u64> = HashMap::new();
                                     for (process, time) in child_map.iter() {
-                                        let my_time = old_map.get(&process).unwrap();
+                                        println!("process: {}, time: {}", process, time);
+                                        let my_time = match old_map.get(&process) {
+                                                        Some(t) => t,
+                                                        None => &0,
+                                                    };
                                         match my_time < time {
                                             true => {
                                                 new_map.insert(*process, *time);
