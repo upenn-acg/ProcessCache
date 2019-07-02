@@ -15,7 +15,6 @@ use crate::ptracer::*;
 use crate::executor::WaitidExecutor;
 
 use nix::sys::wait::WaitStatus::PtraceSyscall;
-use libc::c_long;
 
 enum PtraceNextStep {
     SkipCurrentPid,
@@ -94,8 +93,8 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
   
     loop {
         match ptrace_syscall(pid, ContinueEvent::Continue, None) {
-           Err(e) => continue,
-           Ok(v) => break,
+           Err(_e) => continue,
+           Ok(_v) => break,
         }
     }
     let event = AsyncPtrace { pid };
@@ -164,7 +163,7 @@ pub async fn run_process(pid: Pid,
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
                                 let mut resource_clocks = resource_clocks.lock().unwrap();
-                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let process_clocks = process_clocks.lock().unwrap();
                                 let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
                                 let new_read_clock: HashMap<Pid, u64> = HashMap::new();
                                 let new_write_clock = (pid, *time);
@@ -181,7 +180,7 @@ pub async fn run_process(pid: Pid,
                                 }
                                 let clock = resource_clocks.entry(fd).or_insert(rc);
                                 let ResourceClock { 
-                                    read_clock: read_c, 
+                                    read_clock: _read_c, 
                                     write_clock: write_c } = clock;
                                 let (p, t) = write_c;
                                 *p = pid;
@@ -194,7 +193,7 @@ pub async fn run_process(pid: Pid,
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
                                 let mut resource_clocks = resource_clocks.lock().unwrap();
-                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let process_clocks = process_clocks.lock().unwrap();
                                 let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
                                 
                                 let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
@@ -209,7 +208,7 @@ pub async fn run_process(pid: Pid,
                                 let clock = resource_clocks.entry(fd).or_insert(rc);
                                 let ResourceClock {
                                     read_clock: read_c,
-                                    write_clock: write_c } = clock;
+                                    write_clock: _write_c } = clock;
                                 read_c.insert(pid, *time);
 
                                 if resource_clocks.contains_key(&fd) {
@@ -221,11 +220,38 @@ pub async fn run_process(pid: Pid,
                                 }
                             }
                         }
-                        _ => continue,
+                        _ => (),
                     }
 
                     let regs = posthook(pid).await;
 
+                    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+                    match name {
+                        "wait4" => {
+                            let process_clocks = Arc::clone(&process_clocks);
+                            match regs.retval() as i32 {
+                                -1 => (),
+                                p => {
+                                    let mut process_clocks = process_clocks.lock().unwrap();
+                                    let exited_child = Pid::from_raw(p);
+                                    let child_map = process_clocks.get(&exited_child).unwrap();
+                                    let old_map = process_clocks.remove(&pid).unwrap();
+                                    let mut new_map: HashMap<Pid, u64> = HashMap::new();
+                                    for (process, time) in child_map.iter() {
+                                        let my_time = old_map.get(&process).unwrap();
+                                        match my_time < time {
+                                            true => {
+                                                new_map.insert(*process, *time);
+                                            }
+                                            false => (),
+                                        }
+                                    }
+                                    process_clocks.insert(pid, new_map);
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
                     // In posthook.
                     info!("[{}] return value = {}", pid, regs.retval() as i32);
                 }
@@ -256,7 +282,7 @@ pub async fn run_process(pid: Pid,
                     let process_arc = Arc::clone(&process_clocks);
                     {
                         let mut process_mutex = process_arc.lock().unwrap();
-                        let mut new_parent: HashMap<Pid, u64> = HashMap::new();
+                        let new_parent: HashMap<Pid, u64> = HashMap::new();
                         let parent_time = process_mutex.entry(pid)
                                                        .or_insert(new_parent)
                                                        .entry(pid)

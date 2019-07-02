@@ -6,7 +6,6 @@ use nix::sys::ptrace::*;
 
 use nix::unistd::*;
 use libc::exit;
-use nix::errno::errno;
 
 use nix;
 use nix::sys::signal::Signal;
