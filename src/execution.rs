@@ -242,11 +242,13 @@ pub async fn run_process(pid: Pid,
                                                         Some(t) => t,
                                                         None => &0,
                                                     };
-                                        match my_time < time {
+                                        match time > my_time {
                                             true => {
                                                 new_map.insert(*process, *time);
                                             }
-                                            false => (),
+                                            false => {
+                                                new_map.insert(*process, *my_time);
+                                            }
                                         }
                                     }
                                     process_clocks.insert(pid, new_map);
