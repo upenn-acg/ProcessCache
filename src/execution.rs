@@ -238,7 +238,6 @@ pub async fn run_process(pid: Pid,
                                     let old_map = process_clocks.get(&pid).unwrap();
                                     let mut new_map: HashMap<Pid, u64> = HashMap::new();
                                     for (process, time) in child_map.iter() {
-                                        println!("process: {}, time: {}", process, time);
                                         let my_time = match old_map.get(&process) {
                                                         Some(t) => t,
                                                         None => &0,
@@ -292,6 +291,7 @@ pub async fn run_process(pid: Pid,
                                                        .entry(pid)
                                                        .or_insert(0);
                         *parent_time += 1;
+                        process_mutex.get_mut(&pid).unwrap().insert(child, 0);
                     }
 
                     //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
