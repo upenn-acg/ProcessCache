@@ -237,6 +237,7 @@ pub async fn run_process(pid: Pid,
                                     let child_map = process_clocks.get(&exited_child).unwrap();
                                     let old_map = process_clocks.get(&pid).unwrap();
                                     let mut new_map: HashMap<Pid, u64> = HashMap::new();
+                                    new_map = old_map.clone();
                                     for (process, time) in child_map.iter() {
                                         let my_time = match old_map.get(&process) {
                                                         Some(t) => t,
@@ -254,6 +255,39 @@ pub async fn run_process(pid: Pid,
                                     process_clocks.insert(pid, new_map);
                                 }
                             }
+                        }
+                        "openat" => {
+                            /*use nix::sys::stat::fstat;
+                            let val = regs.retval() as i32;
+                            println!("fd is: {}", val);
+                            match fstat(val) {
+                                Ok(stat) => println!("inode is: {}", stat.st_ino),
+                                Err(e) => println!("there was an error: {}", e),
+                            }*/
+
+                            // 1) Move IP back 2 bytes.
+                            let ip = regs.rip() as *const usize;
+                            let val: usize = read_value(ip, pid);    
+                            let minus_two = val - 2;
+                            regs.write_rip(minus_two);
+                            // 2) Save prev regs. For open this includes
+                            //    arg1  (const char * path) and arg2 (int flags)
+                            //    also rax (old system call number)
+                            //    also maybe retval?
+                            let path = regs.arg1();
+                            let flags = regs.arg2();
+                            let old_rax = regs.rax();
+                            let old_ret = regs.retval();
+                            // 3) Write new values to regs.
+                            // For fstat this means: 
+                            // - arg1 should be (int fd)
+                            // - arg2 should be (struct stat *buf)
+                            // - system call number? write to rax
+                            //let mut buf : libc::stat = mem::unitialized();
+                            let regs: Regs<Modified> = regs.to_modified();
+                            regs.write_arg1(old_ret);
+                            //regs.write_arg2(buf);
+                            regs.write_syscall_number(5);
                         }
                         _ => (),
                     }
