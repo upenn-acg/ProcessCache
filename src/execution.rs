@@ -237,6 +237,7 @@ pub async fn run_process(pid: Pid,
                                     let child_map = process_clocks.get(&exited_child).unwrap();
                                     let old_map = process_clocks.get(&pid).unwrap();
                                     let mut new_map: HashMap<Pid, u64> = HashMap::new();
+                                    new_map = old_map.clone();
                                     for (process, time) in child_map.iter() {
                                         let my_time = match old_map.get(&process) {
                                                         Some(t) => t,
