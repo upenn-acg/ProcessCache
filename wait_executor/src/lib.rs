@@ -3,6 +3,7 @@ use futures::future::BoxFuture;
 use futures::task::{Context, Poll, ArcWake};
 use futures::task::waker;
 
+use log::{trace, debug};
 use nix::errno::Errno;
 use nix::unistd::{Pid};
 use nix::Error::Sys;
@@ -11,6 +12,8 @@ use std::sync::Arc;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+pub mod ptrace_event;
 
 // Currently libc::siginfo_t does not have the si_pid field.
 // So we go to C to fetch the pid_t that was set by waitid().

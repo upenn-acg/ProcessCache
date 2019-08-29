@@ -6,7 +6,6 @@ extern crate byteorder;
 extern crate structopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
-extern crate generator;
 extern crate seccomp_sys;
 
 mod system_call_names;
@@ -15,8 +14,6 @@ mod ptracer;
 mod execution;
 mod seccomp;
 mod actions;
-mod ptrace_event;
-mod executor;
 
 use nix::unistd::{fork, ForkResult};
 

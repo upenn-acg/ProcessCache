@@ -3,7 +3,7 @@ use crate::system_call_names::SYSTEM_CALL_NAMES;
 use nix::sys::wait::*;
 use nix::unistd::*;
 
-use crate::ptrace_event::AsyncPtrace;
+use wait_executor::ptrace_event::AsyncPtrace;
 use libc::{c_char};
 use nix;
 use nix::sys::ptrace::Event::*;
@@ -12,7 +12,7 @@ use std::collections::{HashMap};
 use std::sync::{Arc, Mutex};
 
 use crate::ptracer::*;
-use crate::executor::WaitidExecutor;
+use wait_executor::WaitidExecutor;
 
 use nix::sys::wait::WaitStatus::PtraceSyscall;
 
@@ -90,7 +90,7 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
     //ptrace_syscall(pid, ContinueEvent::Continue, None).
         // Might want to switch this to return the error instead of failing.
         //expect("ptrace continue failed.");
-  
+
     loop {
         match ptrace_syscall(pid, ContinueEvent::Continue, None) {
            Err(_e) => continue,
@@ -101,8 +101,8 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
     event.await
 }
 
-pub async fn run_process(pid: Pid, 
-                         handle: WaitidExecutor, 
+pub async fn run_process(pid: Pid,
+                         handle: WaitidExecutor,
                          resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>,
                          process_clocks: Arc<Mutex<HashMap<Pid, HashMap<Pid, u64>>>>,
                          parent_pid: Pid) -> () {
@@ -157,7 +157,7 @@ pub async fn run_process(pid: Pid,
 
                     // TODO: This should probably be broken out into functions.
                     match name {
-                        "write" => { 
+                        "write" => {
                             let resource_clocks = Arc::clone(&resource_clocks);
                             let process_clocks = Arc::clone(&process_clocks);
                             let fd = regs.arg1() as u64;
@@ -179,8 +179,8 @@ pub async fn run_process(pid: Pid,
                                     println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 }
                                 let clock = resource_clocks.entry(fd).or_insert(rc);
-                                let ResourceClock { 
-                                    read_clock: _read_c, 
+                                let ResourceClock {
+                                    read_clock: _read_c,
                                     write_clock: write_c } = clock;
                                 let (p, t) = write_c;
                                 *p = pid;
@@ -195,10 +195,10 @@ pub async fn run_process(pid: Pid,
                                 let mut resource_clocks = resource_clocks.lock().unwrap();
                                 let process_clocks = process_clocks.lock().unwrap();
                                 let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
-                                
+
                                 let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
                                 new_read_clock.insert(pid, *time);
-                                // If we are making a new clock, because this is the first 
+                                // If we are making a new clock, because this is the first
                                 // time the resource is being accessed, just a dummy write clock.
                                 let new_write_clock = (Pid::from_raw(0 as i32), 0);
                                 let rc: ResourceClock = ResourceClock {
@@ -273,7 +273,7 @@ pub async fn run_process(pid: Pid,
                     // we end up with a weird circular dependency for our types if we
                     // tried to call this directly so we have to wrap it and call it from
                     // this wrapper.
-                    fn wrapper(pid: Pid, 
+                    fn wrapper(pid: Pid,
                                handle: WaitidExecutor,
                                resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>,
                                p_clocks: Arc<Mutex<HashMap<Pid, HashMap<Pid, u64>>>>,
@@ -349,7 +349,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
     // Child ready!
     ptrace_set_options(first_proc)?;
-    
+
     let p_clocks = Arc::clone(&process_clocks);
     let resource_clocks = Arc::clone(&resource_clocks);
     let no_parent = Pid::from_raw(0 as i32);
