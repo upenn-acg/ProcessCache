@@ -13,7 +13,7 @@ generator = "0.6"
 log = "0.4"
 env_logger = "0.5"
 seccomp-sys = "0.1.2"
-futures-preview = "0.3.0-alpha.16"
+futures-preview = "0.3.0-alpha"
 
 [build-dependencies]
 cc = "1.0"

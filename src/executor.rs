@@ -1,6 +1,7 @@
 use futures::future::Future;
 use futures::future::BoxFuture;
 use futures::task::{Context, Poll, ArcWake};
+use futures::task::waker;
 
 use nix::errno::Errno;
 use nix::unistd::{Pid};
@@ -64,7 +65,7 @@ impl<'a> WaitidExecutor {
         // Pin it, and box it up for storing.
         let mut future: BoxFuture<'static, ()> = Box::pin(future);
 
-        let waker = Arc::new(WaitidWaker { }).into_waker();
+        let waker = waker(Arc::new(WaitidWaker { }));
         match future.as_mut().poll(&mut Context::from_waker(& waker)) {
             Poll::Pending => {
                 trace!("Polled once, still pending.");
@@ -127,7 +128,7 @@ impl<'a> WaitidExecutor {
                     trace!("waitid() = {}", pid);
 
                     let poll = TASKS.with(|hashtable| {
-                        let waker = Arc::new(WaitidWaker { }).into_waker();
+                        let waker = waker(Arc::new(WaitidWaker { }));
                         hashtable
                             .borrow_mut()
                             .get_mut(&Pid::from_raw(pid))
