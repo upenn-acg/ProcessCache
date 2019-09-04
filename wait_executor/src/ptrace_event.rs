@@ -14,9 +14,10 @@ pub struct AsyncPtrace {
 impl Future for AsyncPtrace {
     type Output = WaitStatus;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<WaitStatus> {
         trace!("AsyncPtrace polling once for: {}", self.pid);
-        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).expect("Unable to waitpid from poll") {
+        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).
+            expect("Unable to waitpid from poll") {
             WaitStatus::StillAlive => {
                 Poll::Pending
             }

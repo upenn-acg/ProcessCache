@@ -1,5 +1,5 @@
 use futures::future::Future;
-use futures::future::BoxFuture;
+use futures::future::LocalBoxFuture;
 use futures::task::{Context, Poll, ArcWake};
 use futures::task::waker;
 
@@ -30,9 +30,9 @@ extern "C" {
 // "already borrowed error". Instead we write this new future to NEW_TASKS and it's up
 // to the executor to move new tasks on to the task (done in run_all);
 thread_local! {
-    pub static NEW_TASKS: RefCell<HashMap<Pid, BoxFuture<'static, ()>>> =
+    pub static NEW_TASKS: RefCell<HashMap<Pid, LocalBoxFuture<'static, ()>>> =
         RefCell::new(HashMap::new());
-    pub static TASKS: RefCell<HashMap<Pid, BoxFuture<'static, ()>>> =
+    pub static TASKS: RefCell<HashMap<Pid, LocalBoxFuture<'static, ()>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -55,25 +55,28 @@ impl ArcWake for WaitidWaker {
     }
 }
 
-impl<'a> WaitidExecutor {
+impl WaitidExecutor {
     pub fn new() -> Self {
         WaitidExecutor { }
     }
 
     pub fn add_future<F>(&self, future: F, pid: Pid) -> ()
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         trace!("Adding new future through handle.");
         // Pin it, and box it up for storing.
-        let mut future: BoxFuture<'static, ()> = Box::pin(future);
+        let mut future: LocalBoxFuture<'static, ()> = Box::pin(future);
 
         let waker = waker(Arc::new(WaitidWaker { }));
         match future.as_mut().poll(&mut Context::from_waker(& waker)) {
             Poll::Pending => {
                 trace!("Polled once, still pending.");
                 // Made progress but still pending. Add to our queue.
-                NEW_TASKS.with(|ht| ht.borrow_mut().insert(pid, future));
+                NEW_TASKS.with(|ht| {
+                    // TODO What should happen if the  value is already present?
+                    ht.borrow_mut().insert(pid, future);
+                });
             }
             Poll::Ready(_) => {
                 trace!("Future finished successfull!");
@@ -94,6 +97,7 @@ impl<'a> WaitidExecutor {
             return;
         }
 
+
         loop {
             // Move all newly created tasks into our TASK queue.
             if NEW_TASKS.with(|tb| { ! tb.borrow().is_empty() }) {
@@ -105,6 +109,8 @@ impl<'a> WaitidExecutor {
                     });});
             }
 
+            // Is there a way to wait on multiple FDs? I really wanna know
+            // _all_ that are ready.
             let mut siginfo: libc::siginfo_t = unsafe { std::mem::zeroed() };
             let ret = unsafe {
                 libc::waitid(
@@ -119,6 +125,8 @@ impl<'a> WaitidExecutor {
             match ret {
                 -1 => {
                     let error = nix::Error::last();
+
+                    // Child finished it is done running.
                     if let Sys(Errno::ECHILD) = error {
                         trace!("done!");
                         return;
@@ -127,12 +135,13 @@ impl<'a> WaitidExecutor {
                     }
                 }
                 _ => {
+                    // Some pid finished, query siginfo to see who it was.
                     let pid = unsafe { getPid(&mut siginfo as *mut libc::siginfo_t) };
                     trace!("waitid() = {}", pid);
 
-                    let poll = TASKS.with(|hashtable| {
+                    let poll = TASKS.with(|tasks| {
                         let waker = waker(Arc::new(WaitidWaker { }));
-                        hashtable
+                        tasks
                             .borrow_mut()
                             .get_mut(&Pid::from_raw(pid))
                             .expect("No such entry, should have been there.")
@@ -143,13 +152,14 @@ impl<'a> WaitidExecutor {
                     match poll {
                         Poll::Pending => {} // Made progress but still pending.
                         Poll::Ready(_) => {
-                            TASKS.with(|tb| {
-                                tb.borrow_mut().
+                            TASKS.with(|tasks| {
+                                tasks.borrow_mut().
                                     remove(& Pid::from_raw(pid)).
                                     expect("entry should have been there...");
                             });
-                            if TASKS.with(|tb| { tb.borrow().is_empty() }) {
-                                debug!("All done!");
+
+                            if TASKS.with(|tasks| { tasks.borrow().is_empty() }) {
+                                debug!("All tasks finished!");
                                 return;
                             }
                         }

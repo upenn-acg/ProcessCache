@@ -97,8 +97,7 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
            Ok(_v) => break,
         }
     }
-    let event = AsyncPtrace { pid };
-    event.await
+    AsyncPtrace { pid }.await
 }
 
 pub async fn run_process(pid: Pid,
@@ -110,20 +109,19 @@ pub async fn run_process(pid: Pid,
     use nix::sys::wait::WaitStatus::*;
 
     let process_clocks = Arc::clone(&process_clocks);
-    {
-        let mut process_clocks = process_clocks.lock().unwrap();
-        let mut new_clock: HashMap<Pid, u64> = HashMap::new();
-        if parent_pid != Pid::from_raw(0 as i32) {
-            let parent_map = process_clocks.get(&parent_pid).unwrap();
-            for (process, time) in parent_map.iter() {
-                new_clock.insert(*process, *time);
-            }
+    let mut clock_mutex = process_clocks.lock().unwrap();
+    let mut new_clock: HashMap<Pid, u64> = HashMap::new();
+
+    if parent_pid != Pid::from_raw(0 as i32) {
+        let parent_map = clock_mutex.get(&parent_pid).unwrap();
+        for (process, time) in parent_map.iter() {
+            new_clock.insert(*process, *time);
         }
-        new_clock.insert(pid, 1);
-        process_clocks.insert(pid, new_clock);
     }
-    //     let mut signal_to_inject: Option<Signal> = None;
-    //     let mut ptrace_next_action = DoContinueEvent;
+
+    new_clock.insert(pid, 1);
+    clock_mutex.insert(pid, new_clock);
+
     loop {
         match next_ptrace_event(pid).await {
             PtraceEvent(pid,_, status)
@@ -158,8 +156,6 @@ pub async fn run_process(pid: Pid,
                     // TODO: This should probably be broken out into functions.
                     match name {
                         "write" => {
-                            let resource_clocks = Arc::clone(&resource_clocks);
-                            let process_clocks = Arc::clone(&process_clocks);
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
                                 let mut resource_clocks = resource_clocks.lock().unwrap();
@@ -167,6 +163,7 @@ pub async fn run_process(pid: Pid,
                                 let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
                                 let new_read_clock: HashMap<Pid, u64> = HashMap::new();
                                 let new_write_clock = (pid, *time);
+
                                 let rc: ResourceClock = ResourceClock {
                                     read_clock: new_read_clock,
                                     write_clock: new_write_clock,
@@ -178,6 +175,7 @@ pub async fn run_process(pid: Pid,
                                     println!("Adding write clock for fd: {}", fd);
                                     println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 }
+
                                 let clock = resource_clocks.entry(fd).or_insert(rc);
                                 let ResourceClock {
                                     read_clock: _read_c,
@@ -188,8 +186,6 @@ pub async fn run_process(pid: Pid,
                             }
                         }
                         "read" => {
-                            let resource_clocks = Arc::clone(&resource_clocks);
-                            let process_clocks = Arc::clone(&process_clocks);
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
                                 let mut resource_clocks = resource_clocks.lock().unwrap();
@@ -228,32 +224,27 @@ pub async fn run_process(pid: Pid,
                     let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
                     match name {
                         "wait4" => {
-                            let process_clocks = Arc::clone(&process_clocks);
-                            match regs.retval() as i32 {
-                                -1 => (),
-                                p => {
-                                    let mut process_clocks = process_clocks.lock().unwrap();
-                                    let exited_child = Pid::from_raw(p);
-                                    let child_map = process_clocks.get(&exited_child).unwrap();
-                                    let old_map = process_clocks.get(&pid).unwrap();
-                                    let mut new_map: HashMap<Pid, u64> = HashMap::new();
-                                    new_map = old_map.clone();
-                                    for (process, time) in child_map.iter() {
-                                        let my_time = match old_map.get(&process) {
-                                                        Some(t) => t,
-                                                        None => &0,
-                                                    };
-                                        match time > my_time {
-                                            true => {
-                                                new_map.insert(*process, *time);
-                                            }
-                                            false => {
-                                                new_map.insert(*process, *my_time);
-                                            }
-                                        }
+                            let p = regs.retval() as i32;
+                            if p != -1 {
+                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let exited_child = Pid::from_raw(p);
+                                let child_map = process_clocks.get(&exited_child).unwrap();
+                                let old_map = process_clocks.get(&pid).unwrap();
+                                let mut new_map: HashMap<Pid, u64> = HashMap::new();
+                                new_map = old_map.clone();
+                                for (process, time) in child_map.iter() {
+                                    let my_time = match old_map.get(&process) {
+                                        Some(t) => t,
+                                        None => &0,
+                                    };
+                                    if time > my_time {
+                                        new_map.insert(*process, *time);
                                     }
-                                    process_clocks.insert(pid, new_map);
+                                    else {
+                                        new_map.insert(*process, *my_time);
+                                    }
                                 }
+                                process_clocks.insert(pid, new_map);
                             }
                         }
                         _ => (),
@@ -262,40 +253,28 @@ pub async fn run_process(pid: Pid,
                     info!("[{}] return value = {}", pid, regs.retval() as i32);
                 }
 
-            PtraceEvent(pid, _, status)
+            PtraceEvent(_, _, status)
                 if PTRACE_EVENT_FORK as i32 == status ||
                 PTRACE_EVENT_CLONE as i32 == status ||
                 PTRACE_EVENT_VFORK as i32 == status => {
                     debug!("[{}] Saw forking event!", pid);
                     let child = Pid::from_raw(ptrace_getevent(pid) as i32);
-                    let resource_clocks = Arc::clone(&resource_clocks);
-                    let p_clocks = Arc::clone(&process_clocks);
-                    // we end up with a weird circular dependency for our types if we
-                    // tried to call this directly so we have to wrap it and call it from
-                    // this wrapper.
-                    fn wrapper(pid: Pid,
-                               handle: WaitidExecutor,
-                               resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>,
-                               p_clocks: Arc<Mutex<HashMap<Pid, HashMap<Pid, u64>>>>,
-                               parent_pid: Pid) {
 
-                        // Recursively call run process to handle the new child process!
-                        handle.add_future(run_process(pid, handle.clone(), resource_clocks, p_clocks, parent_pid), pid);
-                    }
-                    wrapper(child, handle.clone(), resource_clocks, p_clocks, pid);
+                    // Recursively call run process to handle the new child process!
+                    let f = run_process(child, handle.clone(),
+                                        resource_clocks.clone(),
+                                        process_clocks.clone(), pid);
+                    handle.add_future(f, child);
 
                     // Increment the parent's clock upon fork.
-                    let process_arc = Arc::clone(&process_clocks);
-                    {
-                        let mut process_mutex = process_arc.lock().unwrap();
-                        let new_parent: HashMap<Pid, u64> = HashMap::new();
-                        let parent_time = process_mutex.entry(pid)
-                                                       .or_insert(new_parent)
-                                                       .entry(pid)
-                                                       .or_insert(0);
-                        *parent_time += 1;
-                        process_mutex.get_mut(&pid).unwrap().insert(child, 0);
-                    }
+                    let mut process_mutex = process_clocks.lock().unwrap();
+                    let new_parent: HashMap<Pid, u64> = HashMap::new();
+                    let parent_time = process_mutex.entry(pid)
+                        .or_insert(new_parent)
+                        .entry(pid)
+                        .or_insert(0);
+                    *parent_time += 1;
+                    process_mutex.get_mut(&pid).unwrap().insert(child, 0);
 
                     //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
                     //let mut parent_clock = process_mutex.get_mut(&pid).unwrap();
@@ -333,6 +312,7 @@ pub async fn run_process(pid: Pid,
 
 pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     debug!("Running whole program");
+
     let event = AsyncPtrace { pid: first_proc };
     let mut pool = WaitidExecutor::new();
 
@@ -349,16 +329,16 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
     // Child ready!
     ptrace_set_options(first_proc)?;
-
-    let p_clocks = Arc::clone(&process_clocks);
-    let resource_clocks = Arc::clone(&resource_clocks);
     let no_parent = Pid::from_raw(0 as i32);
-    pool.add_future(run_process(first_proc, pool.clone(), resource_clocks, p_clocks, no_parent), first_proc);
+
+    let f = run_process(first_proc, pool.clone(),
+                        resource_clocks.clone(),
+                        process_clocks.clone(),
+                        no_parent);
+    pool.add_future(f, first_proc);
     pool.run_all();
 
-    let proc_clocks = Arc::clone(&process_clocks);
-    let process_clocks_mutex = proc_clocks.lock().unwrap();
-    for (pid, clock) in process_clocks_mutex.iter() {
+    for (pid, clock) in process_clocks.lock().unwrap().iter() {
         println!("Process clock for: {}", pid);
         for (p, t) in clock.iter() {
             println!("Pid: {}, Time: {}", p, t);
