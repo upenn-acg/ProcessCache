@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 extern crate libc;
 extern crate nix;
 extern crate byteorder;

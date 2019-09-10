@@ -1,15 +1,14 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
-
+use std::cell::RefCell;
 use nix::sys::wait::*;
 use nix::unistd::*;
-
+use std::rc::Rc;
 use wait_executor::ptrace_event::AsyncPtrace;
 use libc::{c_char};
 use nix;
 use nix::sys::ptrace::Event::*;
 
 use std::collections::{HashMap};
-use std::sync::{Arc, Mutex};
 
 use crate::ptracer::*;
 use wait_executor::WaitidExecutor;
@@ -102,25 +101,24 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
 
 pub async fn run_process(pid: Pid,
                          handle: WaitidExecutor,
-                         resource_clocks: Arc<Mutex<HashMap<u64, ResourceClock>>>,
-                         process_clocks: Arc<Mutex<HashMap<Pid, HashMap<Pid, u64>>>>,
-                         parent_pid: Pid) -> () {
+                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
+                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
+                         parent_pid: Pid) {
     debug!("Starting to run process");
     use nix::sys::wait::WaitStatus::*;
 
-    let process_clocks = Arc::clone(&process_clocks);
-    let mut clock_mutex = process_clocks.lock().unwrap();
     let mut new_clock: HashMap<Pid, u64> = HashMap::new();
 
     if parent_pid != Pid::from_raw(0 as i32) {
-        let parent_map = clock_mutex.get(&parent_pid).unwrap();
+        let pcs_borrows = process_clocks.borrow();
+        let parent_map = pcs_borrows.get(&parent_pid).unwrap();
         for (process, time) in parent_map.iter() {
             new_clock.insert(*process, *time);
         }
     }
 
     new_clock.insert(pid, 1);
-    clock_mutex.insert(pid, new_clock);
+    process_clocks.borrow_mut().insert(pid, new_clock);
 
     loop {
         match next_ptrace_event(pid).await {
@@ -158,9 +156,8 @@ pub async fn run_process(pid: Pid,
                         "write" => {
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
-                                let mut resource_clocks = resource_clocks.lock().unwrap();
-                                let process_clocks = process_clocks.lock().unwrap();
-                                let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
+                                let pcs_borrow = process_clocks.borrow();
+                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
                                 let new_read_clock: HashMap<Pid, u64> = HashMap::new();
                                 let new_write_clock = (pid, *time);
 
@@ -168,7 +165,9 @@ pub async fn run_process(pid: Pid,
                                     read_clock: new_read_clock,
                                     write_clock: new_write_clock,
                                 };
-                                if resource_clocks.contains_key(&fd) {
+                                let mut rcs_borrow = resource_clocks.borrow_mut();
+
+                                if rcs_borrow.contains_key(&fd) {
                                     println!("Updating write clock for fd: {}", fd);
                                     println!("Write clock --> Pid: {}, Time: {}", pid, time);
                                 } else {
@@ -176,7 +175,8 @@ pub async fn run_process(pid: Pid,
                                     println!("Write clock --> Pid: {} , Time: {}", pid, time);
                                 }
 
-                                let clock = resource_clocks.entry(fd).or_insert(rc);
+
+                                let clock = rcs_borrow.entry(fd).or_insert(rc);
                                 let ResourceClock {
                                     read_clock: _read_c,
                                     write_clock: write_c } = clock;
@@ -188,9 +188,8 @@ pub async fn run_process(pid: Pid,
                         "read" => {
                             let fd = regs.arg1() as u64;
                             if fd != 1 {
-                                let mut resource_clocks = resource_clocks.lock().unwrap();
-                                let process_clocks = process_clocks.lock().unwrap();
-                                let time = process_clocks.get(&pid).unwrap().get(&pid).unwrap();
+                                let pcs_borrow = process_clocks.borrow();
+                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
 
                                 let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
                                 new_read_clock.insert(pid, *time);
@@ -201,13 +200,14 @@ pub async fn run_process(pid: Pid,
                                     read_clock: new_read_clock,
                                     write_clock: new_write_clock,
                                 };
-                                let clock = resource_clocks.entry(fd).or_insert(rc);
+                                let mut rc_borrow = resource_clocks.borrow_mut();
+                                let clock = rc_borrow.entry(fd).or_insert(rc);
                                 let ResourceClock {
                                     read_clock: read_c,
                                     write_clock: _write_c } = clock;
                                 read_c.insert(pid, *time);
 
-                                if resource_clocks.contains_key(&fd) {
+                                if rc_borrow.contains_key(&fd) {
                                     println!("Updating read clock for fd: {}", fd);
                                     println!("Read clock --> Pid: {}, Time: {}", pid, *time);
                                 } else {
@@ -226,10 +226,10 @@ pub async fn run_process(pid: Pid,
                         "wait4" => {
                             let p = regs.retval() as i32;
                             if p != -1 {
-                                let mut process_clocks = process_clocks.lock().unwrap();
+                                let mut pc_borrow = process_clocks.borrow_mut();
                                 let exited_child = Pid::from_raw(p);
-                                let child_map = process_clocks.get(&exited_child).unwrap();
-                                let old_map = process_clocks.get(&pid).unwrap();
+                                let child_map = pc_borrow.get(&exited_child).unwrap();
+                                let old_map = pc_borrow.get(&pid).unwrap();
                                 let mut new_map: HashMap<Pid, u64> = HashMap::new();
                                 new_map = old_map.clone();
                                 for (process, time) in child_map.iter() {
@@ -244,7 +244,7 @@ pub async fn run_process(pid: Pid,
                                         new_map.insert(*process, *my_time);
                                     }
                                 }
-                                process_clocks.insert(pid, new_map);
+                                pc_borrow.insert(pid, new_map);
                             }
                         }
                         _ => (),
@@ -260,21 +260,29 @@ pub async fn run_process(pid: Pid,
                     debug!("[{}] Saw forking event!", pid);
                     let child = Pid::from_raw(ptrace_getevent(pid) as i32);
 
+                    fn wrapper(pid: Pid,
+                         handle: &WaitidExecutor,
+                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
+                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
+                         parent_pid: Pid) {
+                        let f = run_process(pid, handle.clone(),
+                                            resource_clocks,
+                                            process_clocks, parent_pid);
+                        handle.add_future(f, pid);
+                    }
                     // Recursively call run process to handle the new child process!
-                    let f = run_process(child, handle.clone(),
-                                        resource_clocks.clone(),
-                                        process_clocks.clone(), pid);
-                    handle.add_future(f, child);
+                    wrapper(child, &handle, resource_clocks.clone(),
+                            process_clocks.clone(), pid);
 
                     // Increment the parent's clock upon fork.
-                    let mut process_mutex = process_clocks.lock().unwrap();
                     let new_parent: HashMap<Pid, u64> = HashMap::new();
-                    let parent_time = process_mutex.entry(pid)
+                    let mut pcs_borrow = process_clocks.borrow_mut();
+                    let parent_time = pcs_borrow.entry(pid)
                         .or_insert(new_parent)
                         .entry(pid)
                         .or_insert(0);
                     *parent_time += 1;
-                    process_mutex.get_mut(&pid).unwrap().insert(child, 0);
+                    pcs_borrow.get_mut(&pid).unwrap().insert(child, 0);
 
                     //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
                     //let mut parent_clock = process_mutex.get_mut(&pid).unwrap();
@@ -314,31 +322,31 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     debug!("Running whole program");
 
     let event = AsyncPtrace { pid: first_proc };
-    let mut pool = WaitidExecutor::new();
+    let mut executor = WaitidExecutor::new();
 
     let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
-    let resource_clocks = Arc::new(Mutex::new(resource_map));
+    let resource_clocks = Rc::new(RefCell::new(resource_map));
 
     let process_map: HashMap<Pid, HashMap<Pid, u64>> = HashMap::new();
-    let process_clocks = Arc::new(Mutex::new(process_map));
+    let process_clocks = Rc::new(RefCell::new(process_map));
 
     // Wait for child to be ready.
-    pool.add_future(async { event.await; }, first_proc);
-    pool.run_all();
+    executor.add_future(async { event.await; }, first_proc);
+    executor.run_all();
     debug!("Child returned ready!");
 
     // Child ready!
     ptrace_set_options(first_proc)?;
     let no_parent = Pid::from_raw(0 as i32);
 
-    let f = run_process(first_proc, pool.clone(),
-                        resource_clocks.clone(),
+    let f = run_process(first_proc, executor.clone(),
+                        resource_clocks,
                         process_clocks.clone(),
                         no_parent);
-    pool.add_future(f, first_proc);
-    pool.run_all();
+    executor.add_future(f, first_proc);
+    executor.run_all();
 
-    for (pid, clock) in process_clocks.lock().unwrap().iter() {
+    for (pid, clock) in process_clocks.borrow().iter() {
         println!("Process clock for: {}", pid);
         for (p, t) in clock.iter() {
             println!("Pid: {}, Time: {}", p, t);
@@ -360,6 +368,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
 
 async fn handle_getcwd(pid: Pid){
     // Pre-hook
+
     let regs = posthook(pid).await;
 
     // Post-hook
