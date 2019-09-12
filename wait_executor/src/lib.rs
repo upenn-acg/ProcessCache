@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 pub mod ptrace_event;
-mod waker;
 pub mod task;
 
 use crate::task::Task;

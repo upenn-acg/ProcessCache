@@ -100,6 +100,9 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
     AsyncPtrace { pid }.await
 }
 
+/// It would seem that &RefCell would be enough. Rc<RefCell<_>> is needed to
+/// convice Rust that the clocks will live long  enough, otherwise we run into
+/// lifetime issues.
 pub async fn run_process(pid: Pid,
                          handle: WaitidExecutor<PtraceReactor>,
                          resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,

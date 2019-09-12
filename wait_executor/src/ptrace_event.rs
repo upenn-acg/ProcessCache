@@ -11,14 +11,12 @@ use nix::errno::Errno;
 
 use std::collections::HashMap;
 use std::task::Waker;
-
-use std::rc::Rc;
 use std::cell::RefCell;
 use crate::Reactor;
 
 thread_local! {
-    pub static WAKERS: Rc<RefCell<HashMap<Pid, Waker>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Future representing calling ptrace() and waitpid() on a Pid.
