@@ -7,8 +7,9 @@ use wait_executor::ptrace_event::AsyncPtrace;
 use libc::{c_char};
 use nix;
 use nix::sys::ptrace::Event::*;
-
 use std::collections::{HashMap};
+use wait_executor::ptrace_event::PtraceReactor;
+use wait_executor::task::Task;
 
 use crate::ptracer::*;
 use wait_executor::WaitidExecutor;
@@ -100,7 +101,7 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
 }
 
 pub async fn run_process(pid: Pid,
-                         handle: WaitidExecutor,
+                         handle: WaitidExecutor<PtraceReactor>,
                          resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
                          process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
                          parent_pid: Pid) {
@@ -261,14 +262,14 @@ pub async fn run_process(pid: Pid,
                     let child = Pid::from_raw(ptrace_getevent(pid) as i32);
 
                     fn wrapper(pid: Pid,
-                         handle: &WaitidExecutor,
+                         handle: &WaitidExecutor<PtraceReactor>,
                          resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
                          process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
                          parent_pid: Pid) {
                         let f = run_process(pid, handle.clone(),
                                             resource_clocks,
                                             process_clocks, parent_pid);
-                        handle.add_future(f, pid);
+                        handle.add_future(Task::new(f, pid));
                     }
                     // Recursively call run process to handle the new child process!
                     wrapper(child, &handle, resource_clocks.clone(),
@@ -322,7 +323,8 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     debug!("Running whole program");
 
     let event = AsyncPtrace { pid: first_proc };
-    let mut executor = WaitidExecutor::new();
+    let reactor = PtraceReactor::new();
+    let mut executor = WaitidExecutor::new(reactor);
 
     let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
     let resource_clocks = Rc::new(RefCell::new(resource_map));
@@ -331,7 +333,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     let process_clocks = Rc::new(RefCell::new(process_map));
 
     // Wait for child to be ready.
-    executor.add_future(async { event.await; }, first_proc);
+    executor.add_future(Task::new(async { event.await; }, first_proc));
     executor.run_all();
     debug!("Child returned ready!");
 
@@ -343,7 +345,7 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
                         resource_clocks,
                         process_clocks.clone(),
                         no_parent);
-    executor.add_future(f, first_proc);
+    executor.add_future(Task::new(f, first_proc));
     executor.run_all();
 
     for (pid, clock) in process_clocks.borrow().iter() {
