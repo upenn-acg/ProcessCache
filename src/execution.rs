@@ -1,22 +1,20 @@
-use system_call_names::SYSTEM_CALL_NAMES;
-
+use crate::system_call_names::SYSTEM_CALL_NAMES;
+use std::cell::RefCell;
 use nix::sys::wait::*;
 use nix::unistd::*;
-
+use std::rc::Rc;
+use wait_executor::ptrace_event::AsyncPtrace;
 use libc::{c_char};
 use nix;
 use nix::sys::ptrace::Event::*;
+use std::collections::{HashMap};
+use wait_executor::ptrace_event::PtraceReactor;
+use wait_executor::task::Task;
 
-use log::Level;
-use generator::Gn;
+use crate::ptracer::*;
+use wait_executor::WaitidExecutor;
 
-use std::collections::{HashSet, HashMap, hash_map::Entry};
-use nix::sys::signal::Signal;
-
-use ptracer::*;
-use coroutines::{Yielder, Coroutine};
-use actions::*;
-use handlers::*;
+use nix::sys::wait::WaitStatus::PtraceSyscall;
 
 enum PtraceNextStep {
     SkipCurrentPid,
@@ -24,308 +22,359 @@ enum PtraceNextStep {
     EndProgram,
 }
 
-struct Execution<'a> {
-    // Map which keeps track of what action each pid is waiting for.
-    waiting_coroutines: HashMap<Pid, (Actions, Coroutine<'a>)>,
-
-    // Keep track of all live processes, when none are left, we know that the program
-    // is done running.
-    // While a hashset is nice for being able to print the processes, and see their pids,
-    // it is a bit heavyweight. It would make just as much sense to have a single i32,
-    // to keep track of the number of live processes. TODO?
-    live_processes: HashSet<Pid>,
-
+struct Execution {
     // A single continue variable isn't enough, we could receive events from any live
     // process, so we must know which one to use, per proc.
     proc_continue_event: HashMap<Pid, ContinueEvent>,
 }
 
-impl<'a> Execution<'a> {
-    fn new(starting_pid: Pid) -> Execution<'a> {
-        let waiting_coroutines = HashMap::new();
-        let mut live_processes = HashSet::new();
-        live_processes.insert(starting_pid);
-
+impl Execution {
+    fn new(starting_pid: Pid) -> Execution {
         let mut proc_continue_event = HashMap::new();
         proc_continue_event.insert(starting_pid, ContinueEvent::Continue);
 
-        Execution {waiting_coroutines, live_processes, proc_continue_event}
+        Execution {proc_continue_event}
     }
 
-    fn fork_event_handler(&mut self, pid: Pid){
-        debug!("[{}] fork event!", pid);
+    // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
+    //     // This is a regular signal, inject it to the process.
+    //     if self.live_processes.contains(& pid){
+    //         return Some(signal);
+    //     }
 
-        // We don't handle the child at all here. We wait for it's signal event
-        // to come, we will know it's "it" since it will be the first time we ever
-        // see it's pid with a STOPPED signal.
-        if log_enabled!(Level::Debug) {
-            let child = Pid::from_raw(ptrace_getevent(pid) as i32);
-            debug!("New child with pid: {}", child);
+    //     // This is a new child spawned by a fork event! This is the first time we're
+    //     // seeing it as a STOPPED event. Add it to our records.
+    //     if signal == Signal::SIGSTOP {
+    //         info!("New child is registered and it's STOPPED signal captured.");
+    //         self.live_processes.insert(pid);
+    //         self.proc_continue_event.insert(pid, ContinueEvent::Continue);
+
+    //         // NOTE: We want to ignore this signal! This is not something that should
+    //         // be propegated down to the process, it is only for US (the tracer).
+    //         return None;
+    //     }
+
+    //     panic!("Uknown signal {:?} for uknown process {:?}", signal, pid);
+
+    // }
+}
+
+pub struct ResourceClock {
+    read_clock: HashMap<Pid, u64>,
+    write_clock: (Pid, u64),
+}
+
+pub async fn posthook(pid: Pid) -> Regs<Unmodified> {
+    let event = AsyncPtrace { pid };
+    debug!("waiting for posthook event");
+
+    ptrace_syscall(pid, ContinueEvent::SystemCall, None).
+    // Might want to switch this to return the error instead of failing.
+        expect("ptrace syscall failed.");
+    match event.await {
+        PtraceSyscall(_) =>  {
+            debug!("got posthook event");
+            // refetch regs.
+            return Regs::get_regs(pid);
+        }
+        e =>  panic!(format!("Unexpected {:?} event, expected posthook!", e)),
+    };
+}
+
+// Todo extend with signals.
+pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
+    trace!("Waiting for next ptrace event.");
+
+    // This cannot be a posthook event. Those are explicitly caught in the
+    // seccomp handler.
+    //ptrace_syscall(pid, ContinueEvent::Continue, None).
+        // Might want to switch this to return the error instead of failing.
+        //expect("ptrace continue failed.");
+
+    loop {
+        match ptrace_syscall(pid, ContinueEvent::Continue, None) {
+           Err(_e) => continue,
+           Ok(_v) => break,
+        }
+    }
+    AsyncPtrace { pid }.await
+}
+
+/// It would seem that &RefCell would be enough. Rc<RefCell<_>> is needed to
+/// convice Rust that the clocks will live long  enough, otherwise we run into
+/// lifetime issues.
+pub async fn run_process(pid: Pid,
+                         handle: WaitidExecutor<PtraceReactor>,
+                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
+                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
+                         parent_pid: Pid) {
+    debug!("Starting to run process");
+    use nix::sys::wait::WaitStatus::*;
+
+    let mut new_clock: HashMap<Pid, u64> = HashMap::new();
+
+    if parent_pid != Pid::from_raw(0 as i32) {
+        let pcs_borrows = process_clocks.borrow();
+        let parent_map = pcs_borrows.get(&parent_pid).unwrap();
+        for (process, time) in parent_map.iter() {
+            new_clock.insert(*process, *time);
         }
     }
 
-    fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
-        // This is a regular signal, inject it to the process.
-        if self.live_processes.contains(& pid){
-            return Some(signal);
-        }
+    new_clock.insert(pid, 1);
+    process_clocks.borrow_mut().insert(pid, new_clock);
 
-        // This is a new child spawned by a fork event! This is the first time we're
-        // seeing it as a STOPPED event. Add it to our records.
-        if signal == Signal::SIGSTOP {
-            info!("New child is registered and it's STOPPED signal captured.");
-            self.live_processes.insert(pid);
-            self.proc_continue_event.insert(pid, ContinueEvent::Continue);
+    loop {
+        match next_ptrace_event(pid).await {
+            PtraceEvent(pid,_, status)
+                if PTRACE_EVENT_EXEC as i32 == status => {
+                    debug!("[{}] Saw exec event.", pid);
+                }
 
-            // NOTE: We want to ignore this signal! This is not something that should
-            // be propegated down to the process, it is only for US (the tracer).
-            return None;
-        }
+            // This is the stop before the final, from here we know we will receive an
+            // actual exit.
+            PtraceEvent(pid, _, status)
+                if PTRACE_EVENT_EXIT as i32 == status => {
+                    debug!("[{}] Saw ptrace exit event.", pid);
+                }
 
-        panic!("Uknown signal {:?} for uknown process {:?}", signal, pid);
+            PtraceEvent(pid,_, status)
+                if PTRACE_EVENT_SECCOMP as i32 == status => {
+                    debug!("[{}] Saw seccomp event.", pid);
+                    let regs = Regs::get_regs(pid);
+                    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
-    }
+                    info!("[{}] Intercepted: {}", pid, name);
 
-    fn handle_action(&mut self, action: Action, pid: Pid) -> PtraceNextStep {
-        trace!("Handling action {:?} for pid {}", action, pid);
-        // This is probably happening inside a thread where the thread is exiting
-        // due to an exit_group.
-        if action == Action::EventExit && self.waiting_coroutines.contains_key(& pid) {
-            trace!("An coroutine was already waiting for event!  \
-                    Probably a post-hook, instead we saw an exit event.");
+                    // Special cases, we won't get a posthook event. Instead we will get
+                    // an execve event or a posthook if execve returns failure. We don't
+                    // bother handling it, let the main loop take care of it.
+                    // TODO: Handle them properly...
+                    if name == "execve" || name == "exit_group" || name == "clone" {
+                        debug!("continuing to next event..");
+                        continue;
+                    }
 
-            // Remove the exiting entry. This way, the vacant branch below will
-            // generate a new coroutine
-            trace!("Removing coroutine for {}, it's time to exit!", pid);
-            self.waiting_coroutines.remove(& pid).unwrap();
-        }
+                    // TODO: This should probably be broken out into functions.
+                    match name {
+                        "write" => {
+                            let fd = regs.arg1() as u64;
+                            if fd != 1 {
+                                let pcs_borrow = process_clocks.borrow();
+                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
+                                let new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                                let new_write_clock = (pid, *time);
 
-        // Reset to default. We wait until here to set it to default
-        // as the events above might need the original value.
-        *self.proc_continue_event.get_mut(& pid).unwrap() = ContinueEvent::Continue;
+                                let rc: ResourceClock = ResourceClock {
+                                    read_clock: new_read_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                let mut rcs_borrow = resource_clocks.borrow_mut();
 
-        // Let a waiting coroutine run for this event, otherwise, create a new coroutine
-        // to handle this event!
-        // Returns which kind of ContinueEvent to use, i.e. should we go to the post-hook?
-        if ! self.waiting_coroutines.contains_key(& pid) {
-            trace!("No coroutine waiting for this (pid, event). Spawning one!");
-            // No coroutine waiting for this (pid, event) spawn one!
-            let mut cor = new_event_handler(pid, action);
+                                if rcs_borrow.contains_key(&fd) {
+                                    println!("Updating write clock for fd: {}", fd);
+                                    println!("Write clock --> Pid: {}, Time: {}", pid, time);
+                                } else {
+                                    println!("Adding write clock for fd: {}", fd);
+                                    println!("Write clock --> Pid: {} , Time: {}", pid, time);
+                                }
 
-            // Run until it yields!
-            let waiting_on: Actions = cor.resume().unwrap();
 
-            if waiting_on.contains(& Action::PostHook) {
-                *self.proc_continue_event.get_mut(& pid).unwrap() =
-                    ContinueEvent::SystemCall;
+                                let clock = rcs_borrow.entry(fd).or_insert(rc);
+                                let ResourceClock {
+                                    read_clock: _read_c,
+                                    write_clock: write_c } = clock;
+                                let (p, t) = write_c;
+                                *p = pid;
+                                *t = *time;
+                            }
+                        }
+                        "read" => {
+                            let fd = regs.arg1() as u64;
+                            if fd != 1 {
+                                let pcs_borrow = process_clocks.borrow();
+                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
+
+                                let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
+                                new_read_clock.insert(pid, *time);
+                                // If we are making a new clock, because this is the first
+                                // time the resource is being accessed, just a dummy write clock.
+                                let new_write_clock = (Pid::from_raw(0 as i32), 0);
+                                let rc: ResourceClock = ResourceClock {
+                                    read_clock: new_read_clock,
+                                    write_clock: new_write_clock,
+                                };
+                                let mut rc_borrow = resource_clocks.borrow_mut();
+                                let clock = rc_borrow.entry(fd).or_insert(rc);
+                                let ResourceClock {
+                                    read_clock: read_c,
+                                    write_clock: _write_c } = clock;
+                                read_c.insert(pid, *time);
+
+                                if rc_borrow.contains_key(&fd) {
+                                    println!("Updating read clock for fd: {}", fd);
+                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
+                                } else {
+                                    println!("Adding read clock for fd: {}", fd);
+                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+
+                    let regs = posthook(pid).await;
+
+                    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+                    match name {
+                        "wait4" => {
+                            let p = regs.retval() as i32;
+                            if p != -1 {
+                                let mut pc_borrow = process_clocks.borrow_mut();
+                                let exited_child = Pid::from_raw(p);
+                                let child_map = pc_borrow.get(&exited_child).unwrap();
+                                let old_map = pc_borrow.get(&pid).unwrap();
+                                let mut new_map: HashMap<Pid, u64> = HashMap::new();
+                                new_map = old_map.clone();
+                                for (process, time) in child_map.iter() {
+                                    let my_time = match old_map.get(&process) {
+                                        Some(t) => t,
+                                        None => &0,
+                                    };
+                                    if time > my_time {
+                                        new_map.insert(*process, *time);
+                                    }
+                                    else {
+                                        new_map.insert(*process, *my_time);
+                                    }
+                                }
+                                pc_borrow.insert(pid, new_map);
+                            }
+                        }
+                        _ => (),
+                    }
+                    // In posthook.
+                    info!("[{}] return value = {}", pid, regs.retval() as i32);
+                }
+
+            PtraceEvent(_, _, status)
+                if PTRACE_EVENT_FORK as i32 == status ||
+                PTRACE_EVENT_CLONE as i32 == status ||
+                PTRACE_EVENT_VFORK as i32 == status => {
+                    debug!("[{}] Saw forking event!", pid);
+                    let child = Pid::from_raw(ptrace_getevent(pid) as i32);
+
+                    fn wrapper(pid: Pid,
+                         handle: &WaitidExecutor<PtraceReactor>,
+                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
+                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
+                         parent_pid: Pid) {
+                        let f = run_process(pid, handle.clone(),
+                                            resource_clocks,
+                                            process_clocks, parent_pid);
+                        handle.add_future(Task::new(f, pid));
+                    }
+                    // Recursively call run process to handle the new child process!
+                    wrapper(child, &handle, resource_clocks.clone(),
+                            process_clocks.clone(), pid);
+
+                    // Increment the parent's clock upon fork.
+                    let new_parent: HashMap<Pid, u64> = HashMap::new();
+                    let mut pcs_borrow = process_clocks.borrow_mut();
+                    let parent_time = pcs_borrow.entry(pid)
+                        .or_insert(new_parent)
+                        .entry(pid)
+                        .or_insert(0);
+                    *parent_time += 1;
+                    pcs_borrow.get_mut(&pid).unwrap().insert(child, 0);
+
+                    //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
+                    //let mut parent_clock = process_mutex.get_mut(&pid).unwrap();
+                    //parent_clock.insert(child, 0);
+
+                }
+
+            PtraceSyscall(pid) => {
+                debug!("[{}] Saw post hook event.", pid);
+                debug!("Probably a failed execve...");
             }
 
-            // This coroutine doesn't live long enough, to even need another loop.
-            // It has done it's part, let it drop at the bottom of this scope.
-            if ! waiting_on.contains(& Action::Done) {
-                trace!("Waiting for actions: {:?}", waiting_on);
-                self.waiting_coroutines.insert(pid, (waiting_on, cor));
-            }
-        }
-        // There was a coroutine waiting for this event. Let it run and inform it
-        // what event arrived.
-        else {
-            trace!("Existing coroutine waiting for this (pid, event)!");
-            // This pid/tid was not expecting to receive this action!
-            if ! self.waiting_coroutines.get(&pid).unwrap().0.contains(& action){
-                panic!("[{}] Existing coroutine was not expecting action: {:?}",
-                       pid, action);
+            Exited(pid, _) => {
+                debug!("[{}] Saw actual exit event", pid);
+                break;
             }
 
-            // Found it! Run coroutine until it yields;
-            let new_waiting_on: Actions =
-                self.waiting_coroutines.get_mut(&pid).unwrap().1.send(action);
+            // Received a signal event.
+            Stopped(pid, signal) => {
+                debug!("[{}] Received signal event {:?}", pid, signal);
 
-            if new_waiting_on.contains(& Action::ProcessExited) {
-                let all_done = self.handle_process_exit(pid);
-                self.waiting_coroutines.remove_entry(& pid);
-                return if all_done { EndProgram } else { SkipCurrentPid };
             }
 
-            // If this coroutine is done, erase it.
-            else if new_waiting_on.contains(& Action::Done) {
-                trace!("Coroutine done, dropping it.");
-                self.waiting_coroutines.remove_entry(&pid);
+            Signaled(pid, signal, _) => {
+                debug!("[{}] Process killed by singal: {:?}", pid, signal);
+
             }
 
-            trace!("Waiting for actions: {:?}", new_waiting_on);
+            s => {
+                panic!("Unhandled case for get_action_pid(): {:?}", s);
+            }
         }
-
-        DoContinueEvent
-    }
-
-
-
-    /// Cleans up process from our maps. Returns whether we're all_done running our tracer.
-    /// this is the case when the live_process map is empty.
-    fn handle_process_exit(&mut self, pid: Pid) -> bool {
-        debug!("Process {} has exited.", pid);
-
-        // Remove process forever.
-        if ! self.live_processes.remove(& pid) {
-            panic!("Cannot remove entry live_process. No such pid {}", pid);
-        }
-        if self.proc_continue_event.remove(& pid) == None {
-            panic!("Cannot remove entry proc_continue_event. \
-                    No such pid {}", pid);
-        }
-
-        // No more processes exit, program.
-        if self.live_processes.is_empty() {
-            debug!("Whole program done!");
-            return true;
-        }else {
-            trace!("Live processes: {:?}", self.live_processes);
-            return false;
-        }
-    }
-
-    fn get_continue_type(&self, pid: &Pid) -> ContinueEvent {
-        *self.proc_continue_event.get(pid).unwrap()
-    }
-
-    fn remove_waiting_coroutine(&mut self, pid: &Pid) {
-        self.waiting_coroutines.remove(& pid).unwrap();
     }
 }
 
-use self::PtraceNextStep::*;
-
 pub fn run_program(first_proc: Pid) -> nix::Result<()> {
+    debug!("Running whole program");
+
+    let event = AsyncPtrace { pid: first_proc };
+    let reactor = PtraceReactor::new();
+    let mut executor = WaitidExecutor::new(reactor);
+
+    let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
+    let resource_clocks = Rc::new(RefCell::new(resource_map));
+
+    let process_map: HashMap<Pid, HashMap<Pid, u64>> = HashMap::new();
+    let process_clocks = Rc::new(RefCell::new(process_map));
+
     // Wait for child to be ready.
-    let _s: WaitStatus = waitpid(first_proc, None)?;
+    executor.add_future(Task::new(async { event.await; }, first_proc));
+    executor.run_all();
+    debug!("Child returned ready!");
 
     // Child ready!
     ptrace_set_options(first_proc)?;
+    let no_parent = Pid::from_raw(0 as i32);
 
-    ptrace_syscall(first_proc, ContinueEvent::Continue , None).
-        expect(&format!("Failed to intial ptrace on first_proc {}.", first_proc));
+    let f = run_process(first_proc, executor.clone(),
+                        resource_clocks,
+                        process_clocks.clone(),
+                        no_parent);
+    executor.add_future(Task::new(f, first_proc));
+    executor.run_all();
 
-    let mut exe = Execution::new(first_proc);
-
-    loop {
-        let (current_pid, new_action) = get_next_action();
-        let mut signal_to_inject: Option<Signal> = None;
-        let mut ptrace_next_action = DoContinueEvent;
-
-        match new_action {
-            Action::KilledBySignal(signal) => {
-                exe.handle_process_exit(current_pid);
-                exe.remove_waiting_coroutine(& current_pid);
-                ptrace_next_action = SkipCurrentPid;
-            }
-            Action::Fork => exe.fork_event_handler(current_pid),
-            Action::Signal(signal) => {
-                signal_to_inject = exe.signal_event_handler(signal, current_pid);
-            }
-            _ => {
-                ptrace_next_action =
-                    exe.handle_action(new_action, current_pid);
-            }
+    for (pid, clock) in process_clocks.borrow().iter() {
+        println!("Process clock for: {}", pid);
+        for (p, t) in clock.iter() {
+            println!("Pid: {}, Time: {}", p, t);
         }
+    }
+    //         Action::KilledBySignal(signal) => {
+    //             exe.handle_process_exit(current_pid);
+    //             exe.remove_waiting_coroutine(& current_pid);
+    //             ptrace_next_action = SkipCurrentPid;
+    //         }
+    //         Action::Fork => exe.fork_event_handler(current_pid),
+    //         Action::Signal(signal) => {
+    //             signal_to_inject = exe.signal_event_handler(signal, current_pid);
+    //         }
 
-        match ptrace_next_action {
-            SkipCurrentPid => continue,
-            EndProgram => break,
-            DoContinueEvent => {
-                // Must refetch, may change after handling seccomp event.
-                let continue_type = exe.get_continue_type(& current_pid);
-                trace!("Calling ptrace_sycall with {:?}", continue_type);
-
-                ptrace_syscall(current_pid, continue_type, signal_to_inject).
-                    expect( &format!("Failed to call ptrace on pid {}.", current_pid));
-            }
-        }
-    } // end of loop
 
     Ok(())
 }
 
-
-
-/// TODO
-pub fn get_next_action() -> (Pid, Action) {
-    use nix::sys::wait::WaitStatus::*;
-
-    match waitpid(None, None).expect("Failed to waitpid.") {
-        PtraceEvent(pid,_, status)
-            if PTRACE_EVENT_EXEC as i32 == status => {
-                debug!("[{}] Saw exec event.", pid);
-                return (pid, Action::Execve);
-            }
-
-        // This is the stop before the final, from here we know we will receive an
-        // actual exit.
-        PtraceEvent(pid, _, status)
-            if PTRACE_EVENT_EXIT as i32 == status => {
-                debug!("[{}] Saw ptrace exit event.", pid);
-                return (pid, Action::EventExit)
-            }
-
-        PtraceEvent(pid,_, status)
-            if PTRACE_EVENT_SECCOMP as i32 == status => {
-                trace!("[{}] Saw seccomp event.", pid);
-                return (pid, Action::Seccomp);
-            }
-
-        PtraceEvent(pid, signal, status)
-            if PTRACE_EVENT_FORK as i32 == status ||
-            PTRACE_EVENT_CLONE as i32 == status ||
-            PTRACE_EVENT_VFORK as i32 == status => {
-                trace!("[{}] Saw forking event!", pid);
-                return (pid, Action::Fork)
-            }
-
-        PtraceSyscall(pid) => {
-            trace!("[{}] Saw post hook event.", pid);
-            return (pid, Action::PostHook);
-        }
-
-        Exited(pid, _) => {
-            trace!("[{}] Saw actual exit event", pid);
-            return (pid, Action::ActualExit)
-        }
-
-        // Received a signal event.
-        Stopped(pid, signal) => {
-            debug!("[{}] Received signal event {:?}", pid, signal);
-            return (pid, Action::Signal(signal))
-        }
-
-        Signaled(pid, signal, _) => {
-            debug!("[{}] Process killed by singal: {:?}", pid, signal);
-            return (pid, Action::KilledBySignal(signal));
-        }
-
-        s => {
-            panic!("Unhandled case for get_action_pid(): {:?}", s);
-        }
-    }
-}
-
-fn empty_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
-}
-
-
-fn print_coroutine(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
-    let regs = Regs::get_regs(pid);
-    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
-
-    info!("[{}] {}", pid, name);
-
-    let regs = await_posthook(regs.same(), pid, y);
-    trace!("in post hook :)");
-    info!("[{}] return value = {}", pid, regs.retval() as i32);
-}
-
-fn handle_getcwd(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder){
+async fn handle_getcwd(pid: Pid){
     // Pre-hook
-    let regs = await_posthook(regs.same(), pid, y);
+
+    let regs = posthook(pid).await;
 
     // Post-hook
     let buf = regs.arg1() as *const c_char;
@@ -334,41 +383,31 @@ fn handle_getcwd(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder){
     info!("cwd({}, {})", cwd, length);
 }
 
-/// Wait for post-hook even to arrive.
-/// Returns the new register state after the post-hook event.
-fn await_posthook(regs: Regs<Flushed>, pid: Pid, mut y: Yielder) -> Regs<Unmodified> {
-    // Blocks until event arrives.
-    let actions = new_actions(& [Action::PostHook]);
-    y.yield_with(actions);
-    // new_regs
-    Regs::get_regs(pid)
-}
+// Convert to new implementaiton.
+// pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
+//     let arg1 = regs.arg1() as *const c_char;
+//     let exe = read_string(arg1, pid);
+//     debug!("[{}] executable: {}", pid, exe);
 
-/// Return the coroutine which will handle this event!
-pub fn new_event_handler<'a>(pid: Pid, action: Action) -> Coroutine<'a> {
-    match action {
-        // Basically a pre-hook event.
-        Action::Seccomp => {
-            trace!("New event handler for seccomp.");
+//     let argv = regs.arg2() as *const *const c_char;
 
-            let regs = Regs::get_regs(pid);
-            let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+//     // Read all of argv
+//     for i in 0.. {
+//         let p = read_value(unsafe { argv.offset(i) }, pid);
+//         if p == null() { break; }
 
-            match name {
-                "execve" => return make_handler!(handle_execve, regs, pid),
-                "exit" | "exit_group" => {
-                    return make_handler!(empty_coroutine, regs, pid);
-                }
-                _ => {
-                    return make_handler!(print_coroutine, regs, pid);
-                }
-            }
-        }
-        Action::EventExit => {
-            trace!("New handler for exit event");
-            let regs = Regs::get_regs(pid);
-            return make_handler!(handle_exit);
-        }
-        _ => panic!("new_event_handler(): unexpected action: {:?}", action),
-    };
-}
+//         let arg = read_string(p, pid);
+//         debug!("[{}] arg{}: {}", pid, i, arg);
+//     }
+
+//     let res = await_execve(y);
+//     debug!("await_execve results: {:?}", res);
+
+//     fn await_execve(mut y: Yielder) -> Action {
+//         // Wait for either postHook of execve (in case of failure),
+//         // Or execve event on succ
+//         let actions = new_actions(& [Action::PostHook, Action::Execve]);
+//         y.yield_with(actions);
+//         y.get_yield().unwrap()
+//     }
+// }

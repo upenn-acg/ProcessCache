@@ -1,5 +1,5 @@
 [package]
-name = "partracer"
+name = "wait_executor"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 edition = "2018"
@@ -7,15 +7,8 @@ edition = "2018"
 [dependencies]
 nix = "0.10"
 libc = "0.2"
-structopt = "0.2"
-byteorder = "1"
 log = "0.4"
-env_logger = "0.5"
-seccomp-sys = "0.1.2"
-wait_executor = {path = "./wait_executor"}
-
-[build-dependencies]
-cc = "1.0"
+futures-preview = "0.3.0-alpha"
 
 # [profile.release]
 # debug = true

@@ -145,7 +145,7 @@ pub fn ptrace_set_options(pid: Pid) -> nix::Result<()> {
 
 /// Nix's version doesn't take a signal as an argument. This one does.
 pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Signal>)
-                      -> nix::Result<()> {
+                      -> nix::Result<c_long> {
     let signal = match signal_to_deliver {
         None => 0 as *mut c_void,
         Some(s) => s as i64 as *mut c_void,
@@ -158,9 +158,9 @@ pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Sig
 
     unsafe {
         #[allow(deprecated)]
-        ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
         // Omit integer, not interesting.
-            .map(|_| ())
+        let ret: nix::Result<c_long> = ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal);
+        ret
     }
 }
 

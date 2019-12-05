@@ -1,5 +1,3 @@
-use std::str::FromStr;
-use structopt::clap::AppSettings;
 use structopt::StructOpt;
 
 
