@@ -1,20 +1,30 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 use std::cell::RefCell;
-use nix::sys::wait::*;
-use nix::unistd::*;
+// use nix::sys::wait::*;
+use crate::ptracer::ptrace_syscall;
+use crate::ptracer::Unmodified;
+use libc::c_char;
+use nix;
+use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::rc::Rc;
 use wait_executor::ptrace_event::AsyncPtrace;
-use libc::{c_char};
-use nix;
-use nix::sys::ptrace::Event::*;
-use std::collections::{HashMap};
 use wait_executor::ptrace_event::PtraceReactor;
 use wait_executor::task::Task;
-
-use crate::ptracer::*;
+// use crate::ptracer::*;
+use crate::ptracer::ptrace_getevent;
+use crate::ptracer::ptrace_set_options;
+use crate::ptracer::read_string;
+use crate::ptracer::ContinueEvent;
+use crate::ptracer::PtraceEvent;
+use crate::ptracer::Regs;
+use nix::sys::wait::WaitStatus;
 use wait_executor::WaitidExecutor;
 
-use nix::sys::wait::WaitStatus::PtraceSyscall;
+thread_local! {
+    pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
+        RefCell::new(HashMap::new());
+}
 
 enum PtraceNextStep {
     SkipCurrentPid,
@@ -33,7 +43,9 @@ impl Execution {
         let mut proc_continue_event = HashMap::new();
         proc_continue_event.insert(starting_pid, ContinueEvent::Continue);
 
-        Execution {proc_continue_event}
+        Execution {
+            proc_continue_event,
+        }
     }
 
     // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
@@ -58,12 +70,71 @@ impl Execution {
 
     // }
 }
+#[derive(Debug, PartialOrd, PartialEq, Clone, Copy)]
+pub struct LogicalTime(u64);
 
-pub struct ResourceClock {
-    read_clock: HashMap<Pid, u64>,
-    write_clock: (Pid, u64),
+impl LogicalTime {
+    fn new() -> LogicalTime {
+        LogicalTime(0)
+    }
+
+    fn increment(&mut self) {
+        self.0 = self.0 + 1;
+    }
 }
 
+#[derive(Clone)]
+pub struct ProcessClock {
+    clock: HashMap<Pid, LogicalTime>,
+    our_pid: Pid,
+}
+
+impl ProcessClock {
+    fn get_current_time(&self, pid: &Pid) -> Option<LogicalTime> {
+        self.clock.get(pid).cloned()
+    }
+
+    fn add_new_process(&mut self, pid: &Pid) {
+        self.clock.insert(*pid, LogicalTime::new());
+    }
+
+    fn new(pid: Pid) -> ProcessClock {
+        ProcessClock { clock: HashMap::new(), our_pid: pid }
+    }
+
+    fn update_entry(&mut self, pid: &Pid, new_time: LogicalTime) {
+        let time = self.clock.get_mut(pid).expect("No such entry to update.");
+        *time = new_time;
+    }
+
+    fn increment_time(&mut self, pid: &Pid) {
+        let time = self.clock.get_mut(pid).
+            expect("increment_time: Requested time not found.");
+        time.increment();
+    }
+
+    fn increment_own_time(&mut self) {
+        let pid = self.our_pid;
+        self.increment_time(&pid);
+    }
+
+    fn iter(self) -> std::collections::hash_map::IntoIter<Pid, LogicalTime> {
+        self.clock.into_iter()
+    }
+}
+
+// use std::collections::hash_map::Iter;
+// impl IntoIterator for ProcessClock {
+//     type item = (Pid, LogicalTime);
+//     type IntoIterator = Iter<'a, Pid, LogicalTime>;
+// }
+
+pub struct ResourceClock {
+    read_clock: HashMap<Pid, LogicalTime>,
+    write_clock: (Pid, LogicalTime),
+}
+
+/// Wait until posthook event comes from specified Pid.
 pub async fn posthook(pid: Pid) -> Regs<Unmodified> {
     let event = AsyncPtrace { pid };
     debug!("waiting for posthook event");
@@ -72,12 +143,12 @@ pub async fn posthook(pid: Pid) -> Regs<Unmodified> {
     // Might want to switch this to return the error instead of failing.
         expect("ptrace syscall failed.");
     match event.await {
-        PtraceSyscall(_) =>  {
+        WaitStatus::PtraceSyscall(_) => {
             debug!("got posthook event");
             // refetch regs.
             return Regs::get_regs(pid);
         }
-        e =>  panic!(format!("Unexpected {:?} event, expected posthook!", e)),
+        e => panic!(format!("Unexpected {:?} event, expected posthook!", e)),
     };
 }
 
@@ -88,237 +159,136 @@ pub async fn next_ptrace_event(pid: Pid) -> WaitStatus {
     // This cannot be a posthook event. Those are explicitly caught in the
     // seccomp handler.
     //ptrace_syscall(pid, ContinueEvent::Continue, None).
-        // Might want to switch this to return the error instead of failing.
-        //expect("ptrace continue failed.");
+    // Might want to switch this to return the error instead of failing.
+    //expect("ptrace continue failed.");
 
+    // TODO Kelly Why are we looping here.
     loop {
         match ptrace_syscall(pid, ContinueEvent::Continue, None) {
-           Err(_e) => continue,
-           Ok(_v) => break,
+            Err(_e) => continue,
+            Ok(_v) => break,
         }
     }
-    AsyncPtrace { pid }.await
+
+    // Wait for ptrace event from this pid here.
+    AsyncPtrace{ pid }.await.into()
 }
 
 /// It would seem that &RefCell would be enough. Rc<RefCell<_>> is needed to
 /// convice Rust that the clocks will live long  enough, otherwise we run into
 /// lifetime issues.
-pub async fn run_process(pid: Pid,
-                         handle: WaitidExecutor<PtraceReactor>,
-                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
-                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
-                         parent_pid: Pid) {
+pub async fn run_process(
+    pid: Pid,
+    handle: WaitidExecutor<PtraceReactor>,
+    mut current_clock: ProcessClock,
+) {
     debug!("Starting to run process");
-    use nix::sys::wait::WaitStatus::*;
 
-    let mut new_clock: HashMap<Pid, u64> = HashMap::new();
-
-    if parent_pid != Pid::from_raw(0 as i32) {
-        let pcs_borrows = process_clocks.borrow();
-        let parent_map = pcs_borrows.get(&parent_pid).unwrap();
-        for (process, time) in parent_map.iter() {
-            new_clock.insert(*process, *time);
-        }
-    }
-
-    new_clock.insert(pid, 1);
-    process_clocks.borrow_mut().insert(pid, new_clock);
+    current_clock.add_new_process(&pid);
+    let mut process_clock = current_clock;
 
     loop {
-        match next_ptrace_event(pid).await {
-            PtraceEvent(pid,_, status)
-                if PTRACE_EVENT_EXEC as i32 == status => {
-                    debug!("[{}] Saw exec event.", pid);
+        match next_ptrace_event(pid).await.into() {
+            PtraceEvent::Exec(pid) => {
+                debug!("[{}] Saw exec event.", pid);
+            }
+            PtraceEvent::PreExit(pid) => {
+                debug!("[{}] Saw ptrace exit event.", pid);
+                break;
+            }
+            PtraceEvent::Prehook(pid) => {
+                debug!("[{}] Saw seccomp event.", pid);
+                let regs = Regs::get_regs(pid);
+                let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+
+                info!("[{}] Intercepted: {}", pid, name);
+
+                // Special cases, we won't get a posthook event. Instead we will get
+                // an execve event or a posthook if execve returns failure. We don't
+                // bother handling it, let the main loop take care of it.
+                // TODO: Handle them properly...
+                if name == "execve" || name == "exit_group" || name == "clone" {
+                    debug!("continuing to next event..");
+                    continue;
                 }
 
-            // This is the stop before the final, from here we know we will receive an
-            // actual exit.
-            PtraceEvent(pid, _, status)
-                if PTRACE_EVENT_EXIT as i32 == status => {
-                    debug!("[{}] Saw ptrace exit event.", pid);
+                match name {
+                    "write" => {
+                        handle_write_syscall(pid, regs, &process_clock);
+                    }
+                    "read" => {
+                        handle_read_syscall();
+                    }
+                    _ => (),
                 }
 
-            PtraceEvent(pid,_, status)
-                if PTRACE_EVENT_SECCOMP as i32 == status => {
-                    debug!("[{}] Saw seccomp event.", pid);
-                    let regs = Regs::get_regs(pid);
-                    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+                let regs = posthook(pid).await;
+                // In posthook.
 
-                    info!("[{}] Intercepted: {}", pid, name);
-
-                    // Special cases, we won't get a posthook event. Instead we will get
-                    // an execve event or a posthook if execve returns failure. We don't
-                    // bother handling it, let the main loop take care of it.
-                    // TODO: Handle them properly...
-                    if name == "execve" || name == "exit_group" || name == "clone" {
-                        debug!("continuing to next event..");
-                        continue;
+                let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+                match name {
+                    "wait4" => {
+                        handle_wait4_syscall(pid, &regs, &mut process_clock);
                     }
-
-                    // TODO: This should probably be broken out into functions.
-                    match name {
-                        "write" => {
-                            let fd = regs.arg1() as u64;
-                            if fd != 1 {
-                                let pcs_borrow = process_clocks.borrow();
-                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
-                                let new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                                let new_write_clock = (pid, *time);
-
-                                let rc: ResourceClock = ResourceClock {
-                                    read_clock: new_read_clock,
-                                    write_clock: new_write_clock,
-                                };
-                                let mut rcs_borrow = resource_clocks.borrow_mut();
-
-                                if rcs_borrow.contains_key(&fd) {
-                                    println!("Updating write clock for fd: {}", fd);
-                                    println!("Write clock --> Pid: {}, Time: {}", pid, time);
-                                } else {
-                                    println!("Adding write clock for fd: {}", fd);
-                                    println!("Write clock --> Pid: {} , Time: {}", pid, time);
-                                }
-
-
-                                let clock = rcs_borrow.entry(fd).or_insert(rc);
-                                let ResourceClock {
-                                    read_clock: _read_c,
-                                    write_clock: write_c } = clock;
-                                let (p, t) = write_c;
-                                *p = pid;
-                                *t = *time;
-                            }
-                        }
-                        "read" => {
-                            let fd = regs.arg1() as u64;
-                            if fd != 1 {
-                                let pcs_borrow = process_clocks.borrow();
-                                let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
-
-                                let mut new_read_clock: HashMap<Pid, u64> = HashMap::new();
-                                new_read_clock.insert(pid, *time);
-                                // If we are making a new clock, because this is the first
-                                // time the resource is being accessed, just a dummy write clock.
-                                let new_write_clock = (Pid::from_raw(0 as i32), 0);
-                                let rc: ResourceClock = ResourceClock {
-                                    read_clock: new_read_clock,
-                                    write_clock: new_write_clock,
-                                };
-                                let mut rc_borrow = resource_clocks.borrow_mut();
-                                let clock = rc_borrow.entry(fd).or_insert(rc);
-                                let ResourceClock {
-                                    read_clock: read_c,
-                                    write_clock: _write_c } = clock;
-                                read_c.insert(pid, *time);
-
-                                if rc_borrow.contains_key(&fd) {
-                                    println!("Updating read clock for fd: {}", fd);
-                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
-                                } else {
-                                    println!("Adding read clock for fd: {}", fd);
-                                    println!("Read clock --> Pid: {}, Time: {}", pid, *time);
-                                }
-                            }
-                        }
-                        _ => (),
-                    }
-
-                    let regs = posthook(pid).await;
-
-                    let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
-                    match name {
-                        "wait4" => {
-                            let p = regs.retval() as i32;
-                            if p != -1 {
-                                let mut pc_borrow = process_clocks.borrow_mut();
-                                let exited_child = Pid::from_raw(p);
-                                let child_map = pc_borrow.get(&exited_child).unwrap();
-                                let old_map = pc_borrow.get(&pid).unwrap();
-                                let mut new_map: HashMap<Pid, u64> = HashMap::new();
-                                new_map = old_map.clone();
-                                for (process, time) in child_map.iter() {
-                                    let my_time = match old_map.get(&process) {
-                                        Some(t) => t,
-                                        None => &0,
-                                    };
-                                    if time > my_time {
-                                        new_map.insert(*process, *time);
-                                    }
-                                    else {
-                                        new_map.insert(*process, *my_time);
-                                    }
-                                }
-                                pc_borrow.insert(pid, new_map);
-                            }
-                        }
-                        _ => (),
-                    }
-                    // In posthook.
-                    info!("[{}] return value = {}", pid, regs.retval() as i32);
+                    _ => (),
                 }
 
-            PtraceEvent(_, _, status)
-                if PTRACE_EVENT_FORK as i32 == status ||
-                PTRACE_EVENT_CLONE as i32 == status ||
-                PTRACE_EVENT_VFORK as i32 == status => {
-                    debug!("[{}] Saw forking event!", pid);
-                    let child = Pid::from_raw(ptrace_getevent(pid) as i32);
+                info!("[{}] return value = {}", pid, regs.retval() as i32);
+            }
 
-                    fn wrapper(pid: Pid,
-                         handle: &WaitidExecutor<PtraceReactor>,
-                         resource_clocks: Rc<RefCell<HashMap<u64, ResourceClock>>>,
-                         process_clocks: Rc<RefCell<HashMap<Pid, HashMap<Pid, u64>>>>,
-                         parent_pid: Pid) {
-                        let f = run_process(pid, handle.clone(),
-                                            resource_clocks,
-                                            process_clocks, parent_pid);
-                        handle.add_future(Task::new(f, pid));
-                    }
-                    // Recursively call run process to handle the new child process!
-                    wrapper(child, &handle, resource_clocks.clone(),
-                            process_clocks.clone(), pid);
+            PtraceEvent::Fork(pid) | PtraceEvent::VFork(pid) | PtraceEvent::Clone(pid) => {
+                debug!("[{}] Saw forking event!", pid);
+                let child = Pid::from_raw(ptrace_getevent(pid) as i32);
 
-                    // Increment the parent's clock upon fork.
-                    let new_parent: HashMap<Pid, u64> = HashMap::new();
-                    let mut pcs_borrow = process_clocks.borrow_mut();
-                    let parent_time = pcs_borrow.entry(pid)
-                        .or_insert(new_parent)
-                        .entry(pid)
-                        .or_insert(0);
-                    *parent_time += 1;
-                    pcs_borrow.get_mut(&pid).unwrap().insert(child, 0);
+                // Recursively call run process to handle the new child process!
+                wrapper(
+                    child,
+                    &handle,
+                    process_clock.clone(),
+                );
 
-                    //*process_mutex.get_mut(&pid).unwrap().get_mut(&pid).unwrap() += 1;
-                    //let mut parent_clock = process_mutex.get_mut(&pid).unwrap();
-                    //parent_clock.insert(child, 0);
+                // Start of a new epoch, increment the parent's clock upon fork.
+                process_clock.increment_own_time();
+            }
 
-                }
-
-            PtraceSyscall(pid) => {
+            PtraceEvent::Posthook(pid) => {
                 debug!("[{}] Saw post hook event.", pid);
                 debug!("Probably a failed execve...");
             }
 
-            Exited(pid, _) => {
-                debug!("[{}] Saw actual exit event", pid);
-                break;
-            }
-
             // Received a signal event.
-            Stopped(pid, signal) => {
+            PtraceEvent::ReceivedSignal(pid, signal) => {
                 debug!("[{}] Received signal event {:?}", pid, signal);
-
             }
 
-            Signaled(pid, signal, _) => {
+            PtraceEvent::KilledBySignal(pid, signal) => {
                 debug!("[{}] Process killed by singal: {:?}", pid, signal);
-
             }
-
-            s => {
-                panic!("Unhandled case for get_action_pid(): {:?}", s);
+            PtraceEvent::ProcessExited(pid) => {
+                // No idea how this could happen.
+                unreachable!("Did not expect to see ProcessExited event here.");
             }
         }
+    }
+
+    // We only get here via a PreExit where we break out of the loop.
+    // TODO should probably break on some signal events as well.
+
+    // Put this process's logical clock in the global map of
+    // process clocks. This child won't need its clock no 'mo.
+    EXITED_CLOCKS.with(|exited_clocks| {
+        if let Some(_) = exited_clocks.borrow_mut().insert(pid, process_clock) {
+            // This should never happen.
+            panic!("EXITED_CLOCKS already had an entry for this PID");
+        }
+    });
+
+    // Saw pre-exit event, wait for final exit event.
+    match next_ptrace_event(pid).await.into() {
+        PtraceEvent::ProcessExited(pid) => {
+            debug!("[{}] Saw actual exit event", pid);
+        }
+        _ => panic!("Saw other event when expecting ProcessExited event"),
     }
 }
 
@@ -329,34 +299,38 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     let reactor = PtraceReactor::new();
     let mut executor = WaitidExecutor::new(reactor);
 
-    let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
-    let resource_clocks = Rc::new(RefCell::new(resource_map));
-
-    let process_map: HashMap<Pid, HashMap<Pid, u64>> = HashMap::new();
-    let process_clocks = Rc::new(RefCell::new(process_map));
+    // let resource_map: HashMap<u64, ResourceClock> = HashMap::new();
+    // let resource_clocks = Rc::new(RefCell::new(resource_map));
 
     // Wait for child to be ready.
-    executor.add_future(Task::new(async { event.await; }, first_proc));
+    executor.add_future(Task::new(
+        async {
+            event.await;
+        },
+        first_proc,
+    ));
     executor.run_all();
     debug!("Child returned ready!");
 
     // Child ready!
     ptrace_set_options(first_proc)?;
-    let no_parent = Pid::from_raw(0 as i32);
 
-    let f = run_process(first_proc, executor.clone(),
-                        resource_clocks,
-                        process_clocks.clone(),
-                        no_parent);
+    let f = run_process(
+        first_proc,
+        executor.clone(),
+        ProcessClock::new(first_proc),
+    );
     executor.add_future(Task::new(f, first_proc));
     executor.run_all();
 
-    for (pid, clock) in process_clocks.borrow().iter() {
-        println!("Process clock for: {}", pid);
-        for (p, t) in clock.iter() {
-            println!("Pid: {}, Time: {}", p, t);
-        }
-    }
+    // Not really useful to output the process clocks in their
+    // final state.
+    // for (pid, clock) in process_clocks.borrow().iter() {
+    //     println!("Process clock for: {}", pid);
+    //     for (p, t) in clock {
+    //         println!("Pid: {}, Time: {:?}", p, t);
+    //     }
+    // }
     //         Action::KilledBySignal(signal) => {
     //             exe.handle_process_exit(current_pid);
     //             exe.remove_waiting_coroutine(& current_pid);
@@ -367,11 +341,10 @@ pub fn run_program(first_proc: Pid) -> nix::Result<()> {
     //             signal_to_inject = exe.signal_event_handler(signal, current_pid);
     //         }
 
-
     Ok(())
 }
 
-async fn handle_getcwd(pid: Pid){
+async fn handle_getcwd(pid: Pid) {
     // Pre-hook
 
     let regs = posthook(pid).await;
@@ -411,3 +384,112 @@ async fn handle_getcwd(pid: Pid){
 //         y.get_yield().unwrap()
 //     }
 // }
+
+/// We recursively call run_process from run_process. The futures state machine
+/// does not like the recursive type. We use this wrapper to break the recursion.
+fn wrapper(
+    pid: Pid,
+    handle: &WaitidExecutor<PtraceReactor>,
+    current_clock: ProcessClock) {
+    let f = run_process(
+        pid,
+        handle.clone(),
+        current_clock,
+    );
+    handle.add_future(Task::new(f, pid));
+}
+
+fn handle_write_syscall(pid: Pid,
+                        regs: Regs<Unmodified>,
+                        process_clock: &ProcessClock,
+                        /*resource_clock: &ResourceClock*/) {
+    let fd = regs.arg1() as u64;
+    if fd != 1 {
+        let time = process_clock.get_current_time(&pid);
+
+        // let rc: ResourceClock = ResourceClock {
+        //     read_clock: HashMap::new(),
+        //     write_clock: (pid, *time),
+        // };
+        // let mut rcs_borrow = resource_clocks.borrow_mut();
+
+        // if rcs_borrow.contains_key(&fd) {
+        //     println!("Updating write clock for fd: {}", fd);
+        //     println!("Write clock --> Pid: {}, Time: {:?}", pid, time);
+        // } else {
+        //     println!("Adding write clock for fd: {}", fd);
+        //     println!("Write clock --> Pid: {} , Time: {:?}", pid, time);
+        // }
+
+        // let clock = rcs_borrow.entry(fd).or_insert(rc);
+        // let ResourceClock {
+        //     read_clock: _read_c,
+        //     write_clock: write_c,
+        // } = clock;
+        // let (p, t) = write_c;
+        // *p = pid;
+        // *t = *time;
+    }
+}
+
+fn handle_read_syscall() {
+    // let fd = regs.arg1() as u64;
+    // if fd != 1 {
+    //     let pcs_borrow = process_clocks.borrow();
+    //     let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
+
+    //     let mut new_read_clock: HashMap<Pid, _> = HashMap::new();
+    //     new_read_clock.insert(pid, *time);
+    //     // If we are making a new clock, because this is the first
+    //     // time the resource is being accessed, just a dummy write clock.
+    //     let new_write_clock = (Pid::from_raw(0 as i32), LogicalTime::new());
+    //     let rc: ResourceClock = ResourceClock {
+    //         read_clock: new_read_clock,
+    //         write_clock: new_write_clock,
+    //     };
+    //     let mut rc_borrow = resource_clocks.borrow_mut();
+    //     let clock = rc_borrow.entry(fd).or_insert(rc);
+    //     let ResourceClock {
+    //         read_clock: read_c,
+    //         write_clock: _write_c,
+    //     } = clock;
+    //     read_c.insert(pid, *time);
+
+    //     if rc_borrow.contains_key(&fd) {
+    //         println!("Updating read clock for fd: {}", fd);
+    //         println!("Read clock --> Pid: {}, Time: {:?}", pid, time);
+    //     } else {
+    //         println!("Adding read clock for fd: {}", fd);
+    //         println!("Read clock --> Pid: {}, Time: {:?}", pid, *time);
+    //     }
+    // }
+}
+
+fn handle_wait4_syscall(pid: Pid,
+                        regs: &Regs<Unmodified>,
+                        process_clock: &mut ProcessClock) {
+    let p = regs.retval() as i32;
+    if p != -1 {
+        let child: Pid = Pid::from_raw(p);
+        // This might happen because of a data race?
+        let child_clock = EXITED_CLOCKS.with(|exited_clock| {
+            exited_clock.borrow_mut().remove(&child).
+                expect("Child was reported as exited, \
+                        but no entry for it found in EXITED_CLOCKS.")
+        });
+
+        // Update our times based on any newer times that our child might have.
+        for (process, other_time) in child_clock.iter() {
+            match process_clock.get_current_time(&process) {
+                Some(our_time) => {
+                    if other_time > our_time {
+                        process_clock.update_entry(&process, other_time);
+                    }
+                }
+                None => {
+                    process_clock.update_entry(&process, other_time);
+                }
+            }
+        }
+    }
+}

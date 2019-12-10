@@ -1,22 +1,67 @@
 use libc::c_char;
-use libc::{c_void, user_regs_struct, PT_NULL, c_long};
-use std::mem;
-use nix::sys::ptrace;
-use nix::sys::ptrace::*;
-
-use nix::unistd::*;
 use libc::exit;
+use libc::{c_long, c_void, user_regs_struct, PT_NULL};
+use nix::sys::ptrace;
+use nix::sys::ptrace::{Options, Request};
+use nix::sys::wait::WaitStatus;
+use nix::unistd::*;
+use std::mem;
 
+use byteorder::LittleEndian;
 use nix;
 use nix::sys::signal::Signal;
 use std::ptr;
-use byteorder::LittleEndian;
 
 use byteorder::WriteBytesExt;
 use std::marker::PhantomData;
 
+pub enum PtraceEvent {
+    Exec(Pid),
+    /// This is the stop before the final, from here we know we will receive an
+    /// actual exit.
+    PreExit(Pid),
+    /// This is really a seccomp event, but with our setup, it represents a
+    /// prehook event.
+    Prehook(Pid),
+    Fork(Pid),
+    Clone(Pid),
+    VFork(Pid),
+    Posthook(Pid),
+    ProcessExited(Pid),
+    ReceivedSignal(Pid, Signal),
+    KilledBySignal(Pid, Signal),
+}
+
+impl From<WaitStatus> for PtraceEvent {
+    fn from(w: WaitStatus) -> PtraceEvent {
+        match w {
+            WaitStatus::PtraceEvent(pid, _, status) => match status as i32 {
+                libc::PTRACE_EVENT_EXEC => PtraceEvent::Exec(pid),
+                libc::PTRACE_EVENT_EXIT => PtraceEvent::PreExit(pid),
+                libc::PTRACE_EVENT_SECCOMP => PtraceEvent::Prehook(pid),
+                libc::PTRACE_EVENT_FORK => PtraceEvent::Fork(pid),
+                libc::PTRACE_EVENT_CLONE => PtraceEvent::Clone(pid),
+                libc::PTRACE_EVENT_VFORK => PtraceEvent::VFork(pid),
+                _ => panic!("Unknown status from PtraceEven: {:?}", status as i32),
+            },
+            WaitStatus::PtraceSyscall(pid) => PtraceEvent::Posthook(pid),
+            WaitStatus::Exited(pid, _exit_code) => PtraceEvent::ProcessExited(pid),
+            WaitStatus::Stopped(pid, signal) => PtraceEvent::ReceivedSignal(pid, signal),
+            // Not really expecting to see these. Might need them later.
+            WaitStatus::Signaled(pid, signal, _core_duped) => {
+                PtraceEvent::KilledBySignal(pid, signal)
+            }
+            WaitStatus::Continued(_) => panic!("from(): Continued not supported"),
+            WaitStatus::StillAlive => panic!("from(): StillAlive not supported"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ContinueEvent {Continue, SystemCall}
+pub enum ContinueEvent {
+    Continue,
+    SystemCall,
+}
 
 /// Represents a register which has never been written to.
 pub enum Unmodified {}
@@ -28,7 +73,7 @@ pub enum Flushed {}
 
 pub struct Regs<T> {
     pub regs: user_regs_struct,
-    _type: PhantomData<T>
+    _type: PhantomData<T>,
 }
 
 /// Create function with named $fname which returns register contents in $reg:
@@ -58,7 +103,6 @@ impl Regs<Unmodified> {
     read_regs_function!(retval, rax);
     read_regs_function!(syscall_number, orig_rax);
 
-
     /// Nix does not yet have a way to fetch registers. We use our own instead.
     /// Given the pid of a process that is currently being traced. Return the registers
     /// for that process.
@@ -74,7 +118,10 @@ impl Regs<Unmodified> {
                 &mut regs as *mut _ as *mut c_void,
             );
             match res {
-                Ok(_) => Regs{regs, _type: PhantomData},
+                Ok(_) => Regs {
+                    regs,
+                    _type: PhantomData,
+                },
                 Err(e) => {
                     error!("[{}] Unable to fetch registers: {:?}", pid, e);
                     exit(1);
@@ -85,15 +132,20 @@ impl Regs<Unmodified> {
 
     /// Nothing has been changed. Mark as flushed but do no not call set_regs.
     pub fn same(self) -> Regs<Flushed> {
-        Regs{regs: self.regs, _type: PhantomData}
+        Regs {
+            regs: self.regs,
+            _type: PhantomData,
+        }
     }
 
     /// Set registers as writeable. Changes will not be written to tracee until
     /// flush() is called.
     pub fn to_modified(self) -> Regs<Modified> {
-        Regs{regs: self.regs, _type: PhantomData}
+        Regs {
+            regs: self.regs,
+            _type: PhantomData,
+        }
     }
-
 }
 
 /// Create function with named $fname which writes to register contents in $reg.
@@ -121,18 +173,19 @@ impl Regs<Modified> {
     pub fn set_regs(&mut self, pid: Pid) {
         unsafe {
             #[allow(deprecated)]
-            ptrace::ptrace(Request::PTRACE_SETREGS, pid,
-                           PT_NULL as *mut c_void,
-                           &mut self.regs as *mut _ as *mut c_void).
-                expect(& format!("Unable to set regs for pid: {}", pid));
+            ptrace::ptrace(
+                Request::PTRACE_SETREGS,
+                pid,
+                PT_NULL as *mut c_void,
+                &mut self.regs as *mut _ as *mut c_void,
+            )
+            .expect(&format!("Unable to set regs for pid: {}", pid));
         }
     }
 }
 
-
 pub fn ptrace_set_options(pid: Pid) -> nix::Result<()> {
-    let options =
-        Options::PTRACE_O_EXITKILL
+    let options = Options::PTRACE_O_EXITKILL
         | Options::PTRACE_O_TRACECLONE
         | Options::PTRACE_O_TRACEEXEC
         | Options::PTRACE_O_TRACEFORK
@@ -144,8 +197,11 @@ pub fn ptrace_set_options(pid: Pid) -> nix::Result<()> {
 }
 
 /// Nix's version doesn't take a signal as an argument. This one does.
-pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Signal>)
-                      -> nix::Result<c_long> {
+pub fn ptrace_syscall(
+    pid: Pid,
+    ce: ContinueEvent,
+    signal_to_deliver: Option<Signal>,
+) -> nix::Result<c_long> {
     let signal = match signal_to_deliver {
         None => 0 as *mut c_void,
         Some(s) => s as i64 as *mut c_void,
@@ -153,7 +209,7 @@ pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Sig
 
     let request = match ce {
         ContinueEvent::Continue => Request::PTRACE_CONT,
-        ContinueEvent::SystemCall => Request::PTRACE_SYSCALL
+        ContinueEvent::SystemCall => Request::PTRACE_SYSCALL,
     };
 
     unsafe {
@@ -165,13 +221,12 @@ pub fn ptrace_syscall(pid: Pid, ce: ContinueEvent, signal_to_deliver: Option<Sig
 }
 
 pub fn ptrace_getevent(pid: Pid) -> c_long {
-    ptrace::getevent(pid).
-        expect("Unable to call getevent.")
+    ptrace::getevent(pid).expect("Unable to call getevent.")
 }
 
 // Read string from user.
 pub fn read_string(address: *const c_char, pid: Pid) -> String {
-    let address  = address as *mut c_void;
+    let address = address as *mut c_void;
     let mut string = String::new();
     // Move 8 bytes up each time for next read.
     let mut count = 0;
@@ -181,17 +236,20 @@ pub fn read_string(address: *const c_char, pid: Pid) -> String {
         let mut bytes: Vec<u8> = vec![];
         let res = unsafe {
             #[allow(deprecated)]
-            ptrace::ptrace(Request::PTRACE_PEEKDATA,
-                           pid,
-                           address.offset(count),
-                           ptr::null_mut()).expect("Failed to ptrace peek data")
+            ptrace::ptrace(
+                Request::PTRACE_PEEKDATA,
+                pid,
+                address.offset(count),
+                ptr::null_mut(),
+            )
+            .expect("Failed to ptrace peek data")
         };
 
         bytes.write_i64::<LittleEndian>(res).unwrap();
         for b in bytes {
             if b != 0 {
                 string.push(b as char);
-            }else{
+            } else {
                 break 'done;
             }
         }
@@ -202,20 +260,23 @@ pub fn read_string(address: *const c_char, pid: Pid) -> String {
 }
 
 pub fn read_value<T>(address: *const T, pid: Pid) -> T {
-    use nix::sys::uio::{process_vm_readv, RemoteIoVec, IoVec};
+    use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
     use std::mem::size_of;
 
     // Ugh rust doesn't support this type as a const so I can use a stack allocated
     // array here.
     let type_size: usize = size_of::<T>();
-    let remote = RemoteIoVec{base: address as usize, len: type_size};
+    let remote = RemoteIoVec {
+        base: address as usize,
+        len: type_size,
+    };
     let mut buffer = vec![0; type_size];
 
     // Local mutable burrow, buffer needs to by borrowed again later.
     {
         let local = IoVec::from_mut_slice(&mut buffer);
-        process_vm_readv(pid, &[local], &[remote]).
-            expect("process_vm_readv: Unable to read memory: ");
+        process_vm_readv(pid, &[local], &[remote])
+            .expect("process_vm_readv: Unable to read memory: ");
     }
 
     unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }

@@ -1,6 +1,6 @@
-use std::collections::HashSet;
-use nix::unistd::Pid;
 use nix::sys::signal::Signal;
+use nix::unistd::Pid;
+use std::collections::HashSet;
 
 /// Action represents events that a coroutine yields to wait for.
 /// The main thread takes this action, and runs ptrace until the correct
@@ -42,7 +42,6 @@ impl Into<Actions> for Action {
     }
 }
 
-
 pub type Actions = HashSet<Action>;
 
 pub fn new_actions(array: &[Action]) -> Actions {
@@ -55,4 +54,3 @@ pub fn new_actions(array: &[Action]) -> Actions {
 
     set
 }
-
