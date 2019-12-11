@@ -1,17 +1,18 @@
+extern crate byteorder;
+extern crate env_logger;
 extern crate libc;
 extern crate nix;
-extern crate byteorder;
 extern crate structopt;
-extern crate env_logger;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate seccomp_sys;
 
-mod system_call_names;
-mod args;
-mod ptracer;
-mod execution;
-mod seccomp;
 mod actions;
+mod args;
+mod execution;
+mod ptracer;
+mod seccomp;
+mod system_call_names;
 
 use nix::unistd::{fork, ForkResult};
 
@@ -23,8 +24,8 @@ use nix::sys::ptrace;
 use nix::unistd::*;
 use std::ffi::CString;
 
-use nix::sys::signal::Signal;
 use nix::sys::signal::raise;
+use nix::sys::signal::Signal;
 use std::process::exit;
 
 struct Command(String, Vec<String>);
@@ -38,18 +39,16 @@ impl Command {
 /// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {
     // Init logger with no timestamp data.
-    env_logger::Builder::from_default_env().
-        default_format_timestamp(false).
-        default_format_module_path(false).
-        init();
+    env_logger::Builder::from_default_env()
+        .default_format_timestamp(false)
+        .default_format_module_path(false)
+        .init();
 
     let opt = Opt::from_args();
     let command = Command::new(opt.exe, opt.args);
 
     match fork()? {
-        ForkResult::Parent { child } => {
-            execution::run_program(child)
-        },
+        ForkResult::Parent { child } => execution::run_program(child),
         ForkResult::Child => run_tracee(command),
     }
 }
@@ -70,12 +69,18 @@ fn run_tracee(command: Command) -> nix::Result<()> {
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
-    let mut args: Vec<CString> =
-        command.1.into_iter().map(|s| CString::new(s).unwrap()).collect();
+    let mut args: Vec<CString> = command
+        .1
+        .into_iter()
+        .map(|s| CString::new(s).unwrap())
+        .collect();
     args.insert(0, exe.clone());
 
     if let Err(e) = execvp(&exe, &args) {
-        error!("Error executing execve for your program {:?}. Reason {}", args, e);
+        error!(
+            "Error executing execve for your program {:?}. Reason {}",
+            args, e
+        );
         // TODO parent does not know that child exited it may report a weird abort
         // message.
         exit(1);

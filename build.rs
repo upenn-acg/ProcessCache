@@ -1,5 +1,3 @@
 fn main() {
-    cc::Build::new()
-        .file("src/getPid.c")
-        .compile("getPid");
+    cc::Build::new().file("src/getPid.c").compile("getPid");
 }
