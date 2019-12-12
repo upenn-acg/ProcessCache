@@ -1,5 +1,3 @@
-use futures::future::Future;
-use futures::task::{Context, Poll};
 use log::{trace, debug, info};
 use nix::unistd::Pid;
 use std::cell::RefCell;
@@ -9,6 +7,8 @@ pub mod ptrace_event;
 pub mod task;
 
 use crate::task::Task;
+use std::task::Context;
+use std::task::Poll;
 
 thread_local! {
     pub static WAITING_TASKS: RefCell<HashMap<Pid, Task>> =
@@ -34,7 +34,7 @@ pub trait Reactor {
 /// in the main process, as child-threads of a ptracer are not allowed to ptrace or
 /// wait on the tracee.
 #[derive(Clone)]
-pub struct WaitidExecutor<R: Clone> {
+pub struct WaitidExecutor<R> {
     reactor: R,
 }
 

@@ -8,7 +8,6 @@ edition = "2018"
 nix = "0.10"
 libc = "0.2"
 log = "0.4"
-futures-preview = "0.3.0-alpha"
 
 # [profile.release]
 # debug = true

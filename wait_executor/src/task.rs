@@ -1,16 +1,19 @@
 use nix::unistd::Pid;
-use futures::task::{RawWaker, RawWakerVTable, Waker};
-use futures::future::LocalBoxFuture;
 use log::trace;
 use crate::WAITING_TASKS;
 use crate::NEXT_TASK;
 use std::pin::Pin;
-use futures::Future;
+use std::task::RawWakerVTable;
+use std::task::RawWaker;
+use std::task::Waker;
+use std::future::Future;
 
 const WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(Task::clone,
                                                          Task::wake,
                                                          Task::wake_by_ref,
                                                          Task::drop);
+
+type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 pub struct Task {
     pub pid: Pin<Box<Pid>>,

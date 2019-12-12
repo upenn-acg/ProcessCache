@@ -1,7 +1,3 @@
-use futures::core_reexport::pin::Pin;
-use futures::future::Future;
-use futures::task::{Context, Poll};
-
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{Pid};
 use log::trace;
@@ -13,6 +9,11 @@ use std::collections::HashMap;
 use std::task::Waker;
 use std::cell::RefCell;
 use crate::Reactor;
+
+use std::task::Poll;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Context;
 
 thread_local! {
     pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
