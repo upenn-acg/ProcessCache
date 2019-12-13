@@ -1,5 +1,5 @@
 [package]
-name = "wait_executor"
+name = "single_threaded_runtime"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 edition = "2018"

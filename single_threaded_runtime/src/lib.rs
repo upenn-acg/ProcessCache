@@ -34,13 +34,13 @@ pub trait Reactor {
 /// in the main process, as child-threads of a ptracer are not allowed to ptrace or
 /// wait on the tracee.
 #[derive(Clone)]
-pub struct WaitidExecutor<R> {
+pub struct SingleThreadedRuntime<R> {
     reactor: R,
 }
 
-impl<R: Reactor + Clone> WaitidExecutor<R> {
+impl<R: Reactor + Clone> SingleThreadedRuntime<R> {
     pub fn new(reactor: R) -> Self {
-        WaitidExecutor { reactor }
+        SingleThreadedRuntime { reactor }
     }
 
     pub fn add_future(&self, mut task: Task) -> () {
