@@ -12,6 +12,8 @@ use crate::regs::Unmodified;
 use crate::tracer::Tracer;
 use single_threaded_runtime::Reactor;
 
+use crate::clocks::ProcessClock;
+
 thread_local! {
     pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
         RefCell::new(HashMap::new());
@@ -38,63 +40,6 @@ thread_local! {
 //     panic!("Uknown signal {:?} for uknown process {:?}", signal, pid);
 
 // }
-
-#[derive(Debug, PartialOrd, PartialEq, Clone, Copy)]
-pub struct LogicalTime(u64);
-
-impl LogicalTime {
-    fn new() -> LogicalTime {
-        LogicalTime(0)
-    }
-
-    fn increment(&mut self) {
-        self.0 = self.0 + 1;
-    }
-}
-
-#[derive(Clone)]
-pub struct ProcessClock {
-    clock: HashMap<Pid, LogicalTime>,
-    our_pid: Pid,
-}
-
-impl ProcessClock {
-    fn get_current_time(&self, pid: &Pid) -> Option<LogicalTime> {
-        self.clock.get(pid).cloned()
-    }
-
-    fn add_new_process(&mut self, pid: &Pid) {
-        self.clock.insert(*pid, LogicalTime::new());
-    }
-
-    fn new(pid: Pid) -> ProcessClock {
-        ProcessClock { clock: HashMap::new(), our_pid: pid }
-    }
-
-    fn update_entry(&mut self, pid: &Pid, new_time: LogicalTime) {
-        self.clock.insert(*pid, new_time);
-    }
-
-    fn increment_time(&mut self, pid: &Pid) {
-        let time = self.clock.get_mut(pid).
-            expect("increment_time: Requested time not found.");
-        time.increment();
-    }
-
-    fn increment_own_time(&mut self) {
-        let pid = self.our_pid;
-        self.increment_time(&pid);
-    }
-
-    fn iter(self) -> std::collections::hash_map::IntoIter<Pid, LogicalTime> {
-        self.clock.into_iter()
-    }
-}
-
-pub struct ResourceClock {
-    read_clock: HashMap<Pid, LogicalTime>,
-    write_clock: (Pid, LogicalTime),
-}
 
 /// It would seem that &RefCell would be enough. Rc<RefCell<_>> is needed to
 /// convice Rust that the clocks will live long  enough, otherwise we run into
