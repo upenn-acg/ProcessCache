@@ -329,7 +329,7 @@ fn handle_wait4_syscall(regs: &Regs<Unmodified>, process_clock: &mut ProcessCloc
         });
 
         // Update our times based on any newer times that our child might have.
-        for (process, other_time) in child_clock.iter() {
+        for (process, other_time) in child_clock {
             match process_clock.get_current_time(&process) {
                 Some(our_time) => {
                     if other_time > our_time {

@@ -47,8 +47,13 @@ impl ProcessClock {
         let pid = self.our_pid;
         self.increment_time(&pid);
     }
+}
 
-    pub fn iter(self) -> std::collections::hash_map::IntoIter<Pid, LogicalTime> {
+impl IntoIterator for ProcessClock {
+    type Item = (Pid, LogicalTime);
+    type IntoIter = std::collections::hash_map::IntoIter<Pid, LogicalTime>;
+
+    fn into_iter(self) -> Self::IntoIter {
         self.clock.into_iter()
     }
 }
