@@ -12,7 +12,8 @@ byteorder = "1"
 log = "0.4"
 env_logger = "0.5"
 seccomp-sys = "0.1.2"
-wait_executor = {path = "./wait_executor"}
+single_threaded_runtime = {path = "./single_threaded_runtime"}
+async-trait = "0.1.21"
 
 [build-dependencies]
 cc = "1.0"
