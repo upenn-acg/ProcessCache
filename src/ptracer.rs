@@ -6,7 +6,7 @@ use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
 use std::mem;
 use std::ffi::CString;
-use single_threaded_runtime::SingleThreadedRuntime;
+use single_threaded_runtime::ptrace_event::PtraceReactor;
 
 use byteorder::LittleEndian;
 use nix;
@@ -27,6 +27,7 @@ use crate::Command;
 use crate::seccomp;
 
 use async_trait::async_trait;
+use tracing::{error, debug, info, trace};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {
@@ -61,6 +62,12 @@ impl Ptracer {
 
 #[async_trait]
 impl Tracer for Ptracer {
+    type Reactor = PtraceReactor;
+
+    fn get_reactor(&self) -> Self::Reactor {
+        PtraceReactor::new()
+    }
+
     fn get_event_message(&self) -> c_long {
         ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
     }
@@ -69,7 +76,7 @@ impl Tracer for Ptracer {
         use crate::ptracer::ContinueEvent;
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 
-        debug!("waiting for posthook event");
+        info!("Waiting for posthook event.");
         let event = AsyncPtrace { pid: self.current_process };
 
         // Might want to switch this to return the error instead of failing.
@@ -127,8 +134,8 @@ impl Tracer for Ptracer {
             count += word_size;
         }
 
+        trace!(read_string = ?string);
         string
-
     }
 
     fn read_value<T>(&self, address: *const T, pid: Pid) -> T {
@@ -157,7 +164,7 @@ impl Tracer for Ptracer {
 
     async fn get_next_event(&self) -> TraceEvent {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
-        trace!("Waiting for next ptrace event.");
+        // info!("Waiting for next ptrace event.");
 
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
@@ -220,7 +227,6 @@ impl Tracer for Ptracer {
 
 impl Ptracer {
     pub fn run_tracer_and_tracee(command: Command) -> nix::Result<()> {
-        use single_threaded_runtime::ptrace_event::PtraceReactor;
         use nix::sys::wait::waitpid;
 
         match fork()? {
@@ -232,9 +238,8 @@ impl Ptracer {
                 debug!("Child returned ready!");
                 Ptracer::set_trace_options(child);
 
-                let executor = SingleThreadedRuntime::new(PtraceReactor::new());
                 let ptracer = Ptracer::new(child, command);
-                execution::run_program(ptracer, executor)?;
+                execution::run_program(ptracer)?;
                 Ok(())
             }
             ForkResult::Child => {

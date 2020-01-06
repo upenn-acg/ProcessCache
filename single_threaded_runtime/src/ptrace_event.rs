@@ -46,7 +46,6 @@ impl Future for AsyncPtrace {
     }
 }
 
-#[derive(Clone)]
 pub struct PtraceReactor {
 }
 

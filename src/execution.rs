@@ -1,6 +1,7 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
+
+use std::rc::Rc;
 use std::cell::RefCell;
-// use nix::sys::wait::*;
 use crate::regs::Regs;
 use nix;
 use nix::unistd::Pid;
@@ -13,6 +14,8 @@ use crate::tracer::Tracer;
 use single_threaded_runtime::Reactor;
 
 use crate::clocks::ProcessClock;
+
+use tracing::{event, span, Level, debug, info};
 
 thread_local! {
     pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
@@ -46,14 +49,15 @@ thread_local! {
 /// lifetime issues.
 pub async fn run_process<T, R>(
     pid: Pid,
-    handle: SingleThreadedRuntime<R>,
+    executor: Rc<SingleThreadedRuntime<R>>,
     tracer: T,
     mut current_clock: ProcessClock,
 )
-where R: Clone + Reactor + 'static,
+where R: Reactor + 'static,
       T: Tracer + 'static
 {
-    debug!("Starting to run process");
+    let proc_span = span!(Level::INFO, "proc", ?pid);
+    let _enter = proc_span.enter();
 
     current_clock.add_new_process(&pid);
     let mut process_clock = current_clock;
@@ -61,18 +65,19 @@ where R: Clone + Reactor + 'static,
     loop {
         match tracer.get_next_event().await {
             TraceEvent::Exec(pid) => {
-                debug!("[{}] Saw exec event.", pid);
+                debug!("Saw exec event.");
             }
             TraceEvent::PreExit(pid) => {
-                debug!("[{}] Saw ptrace exit event.", pid);
                 break;
             }
             TraceEvent::Prehook(pid) => {
-                debug!("[{}] Saw seccomp event.", pid);
                 let regs = tracer.get_registers();
                 let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
-                info!("[{}] Intercepted: {}", pid, name);
+                let syscall_span = span!(Level::INFO, "syscall", name);
+                let _senter = syscall_span.enter();
+
+                info!(?pid, ?name);
 
                 // Special cases, we won't get a posthook event. Instead we will get
                 // an execve event or a posthook if execve returns failure. We don't
@@ -94,27 +99,30 @@ where R: Clone + Reactor + 'static,
                 }
 
                 let regs: Regs<Unmodified> = tracer.posthook().await;
-                // In posthook.
 
+                // In posthook.
+                let retval = regs.retval() as i32;
+                let posthook_span = span!(Level::INFO, "posthook", retval);
+                let _penter = posthook_span.enter();
                 let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+
+                debug!("in posthook");
                 match name {
                     "wait4" => {
                         handle_wait4_syscall(&regs, &mut process_clock);
                     }
                     _ => (),
                 }
-
-                info!("[{}] return value = {}", pid, regs.retval() as i32);
             }
 
             TraceEvent::Fork(pid) | TraceEvent::VFork(pid) | TraceEvent::Clone(pid) => {
-                debug!("[{}] Saw forking event!", pid);
+                debug!("Fork Event!");
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
 
                 // Recursively call run process to handle the new child process!
                 wrapper(
                     child,
-                    &handle,
+                    executor.clone(),
                     tracer.clone_tracer_for_new_process(child),
                     process_clock.clone(),
                 );
@@ -124,17 +132,19 @@ where R: Clone + Reactor + 'static,
             }
 
             TraceEvent::Posthook(pid) => {
-                debug!("[{}] Saw post hook event.", pid);
-                debug!("Probably a failed execve...");
+                debug!("Saw post hook event.");
+                // The posthooks should be handled internally by the system
+                // call handler functions.
+                panic!("We should not see posthook events.");
             }
 
             // Received a signal event.
             TraceEvent::ReceivedSignal(pid, signal) => {
-                debug!("[{}] Received signal event {:?}", pid, signal);
+                debug!(?signal, "Received signal event");
             }
 
             TraceEvent::KilledBySignal(pid, signal) => {
-                debug!("[{}] Process killed by singal: {:?}", pid, signal);
+                debug!(?signal, "Process killed by signal");
             }
             TraceEvent::ProcessExited(_pid) => {
                 // No idea how this could happen.
@@ -158,16 +168,15 @@ where R: Clone + Reactor + 'static,
     // Saw pre-exit event, wait for final exit event.
     match tracer.get_next_event().await {
         TraceEvent::ProcessExited(pid) => {
-            debug!("[{}] Saw actual exit event", pid);
+            debug!("Saw actual exit event");
         }
         _ => panic!("Saw other event when expecting ProcessExited event"),
     }
 }
 
-pub fn run_program<T, R>(tracer: T,
-                      mut executor: SingleThreadedRuntime<R>) -> nix::Result<()>
-where R: Clone + Reactor + 'static,
-      T: Tracer + 'static {
+pub fn run_program<T>(tracer: T) -> nix::Result<()>
+where T: Tracer + 'static {
+    let executor = Rc::new(SingleThreadedRuntime::new(tracer.get_reactor()));
     debug!("Running whole program");
     let first_process = tracer.get_current_process();
     let f = run_process(
@@ -237,24 +246,27 @@ where R: Clone + Reactor + 'static,
 /// does not like the recursive type. We use this wrapper to break the recursion.
 fn wrapper<R>(
     pid: Pid,
-    handle: &SingleThreadedRuntime<R>,
+    executor: Rc<SingleThreadedRuntime<R>>,
     tracer: impl Tracer + 'static,
     current_clock: ProcessClock)
-where R: Clone + Reactor + 'static
+where R: Reactor + 'static
 {
     let f = run_process(
         pid,
-        handle.clone(),
+        executor.clone(),
         tracer,
         current_clock,
     );
-    handle.add_future(Task::new(f, pid));
+    executor.add_future(Task::new(f, pid));
 }
 
 fn handle_write_syscall(pid: Pid,
                         regs: Regs<Unmodified>,
                         process_clock: &ProcessClock,
                         /*resource_clock: &ResourceClock*/) {
+    let span = span!(Level::INFO, "handle_write_syscall()");
+    let _enter = span.enter();
+
     let fd = regs.arg1() as u64;
     if fd != 1 {
         let _time = process_clock.get_current_time(&pid);

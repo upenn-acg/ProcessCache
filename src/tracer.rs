@@ -6,6 +6,7 @@ use crate::regs::Regs;
 use crate::regs::Modified;
 use crate::regs::Unmodified;
 use async_trait::async_trait;
+use single_threaded_runtime::Reactor;
 use libc::c_long;
 
 #[derive(Debug)]
@@ -53,6 +54,10 @@ impl From<WaitStatus> for TraceEvent {
 
 #[async_trait]
 pub trait Tracer {
+    type Reactor: Reactor;
+
+    fn get_reactor(&self) -> Self::Reactor;
+
     fn get_event_message(&self) -> c_long;
 
     fn clone_tracer_for_new_process(&self, new_child: Pid) -> Self;

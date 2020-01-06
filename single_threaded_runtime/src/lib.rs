@@ -30,17 +30,19 @@ pub trait Reactor {
 /// This is our futures runtime. It is responsible for accepting futures to run,
 /// polling them, registering the Pid the future is waiting for, and scheduling,
 /// the next task to run.
-/// This executor is meant to be used in a ptrace context. So all tasks run
-/// in the main process, as child-threads of a ptracer are not allowed to ptrace or
-/// wait on the tracee.
-#[derive(Clone)]
 pub struct SingleThreadedRuntime<R> {
-    reactor: R,
+    /// The reactor is RefCelled so it can be implemented with mutable methods.
+    /// This "hides" the mutability as we want the methods of SingleThreadedRuntime
+    /// to appear inmutable, this is needed as we need to dynamically add processes
+    /// via run_process. So every run_process function needs a reference to
+    /// SingleThreadedRuntime, this RefCell avoids issues with borrowing and
+    /// mutability for the code that uses it.
+    reactor: RefCell<R>,
 }
 
-impl<R: Reactor + Clone> SingleThreadedRuntime<R> {
+impl<R: Reactor> SingleThreadedRuntime<R> {
     pub fn new(reactor: R) -> Self {
-        SingleThreadedRuntime { reactor }
+        SingleThreadedRuntime { reactor: RefCell::new(reactor) }
     }
 
     pub fn add_future(&self, mut task: Task) -> () {
@@ -63,7 +65,7 @@ impl<R: Reactor + Clone> SingleThreadedRuntime<R> {
         }
     }
 
-    pub fn run_all(&mut self) {
+    pub fn run_all(&self) {
         info!("Running all futures.");
         // The future may have polled and finished in the add_future method.
         // Let program continue running (no more tasks for us to execute).
@@ -76,7 +78,7 @@ impl<R: Reactor + Clone> SingleThreadedRuntime<R> {
 
         while !all_done {
             // Block here for actual events to come.
-            self.reactor.wait_for_event();
+            self.reactor.borrow_mut().wait_for_event();
 
             NEXT_TASK.with(|nt| {
                 let mut task = nt.borrow_mut().take()
