@@ -14,18 +14,18 @@ use crate::regs::Modified;
 use crate::regs::empty_regs;
 use crate::tracer::TraceEvent;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::Context;
 use std::task::Poll;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::marker::PhantomData;
-use std::sync::MutexGuard;
 use crate::tracer::Tracer;
 
 use tracing::{event, span, Level, debug, info, trace};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-type BoxedSyscall = Box<dyn Syscall + Send + Sync>;
+type BoxedSyscall = Box<dyn Syscall>;
+type Shared<T> = Rc<RefCell<T>>;
 
 enum MockedTraceEvent {
     BlockingSyscall(BlockingSyscall<BlockingEnd>),
@@ -61,9 +61,7 @@ trait Syscall {
     fn get_posthook_regs(&self) -> Regs<Unmodified>;
 }
 
-struct ReadSyscall {
-
-}
+struct ReadSyscall {}
 
 impl Syscall for ReadSyscall {
     fn name(&self) -> &str {
@@ -124,41 +122,41 @@ enum BlockedEnd {}
 /// more processes).
 #[derive(Clone)]
 struct ProgramHandle {
-    exited_procs: Arc<Mutex<HashSet<Pid>>>,
-    running_procs: Arc<Mutex<HashSet<Pid>>>,
-    blocked_procs: Arc<Mutex<HashSet<Pid>>>,
+    exited_procs: Shared<HashSet<Pid>>,
+    running_procs: Shared<HashSet<Pid>>,
+    blocked_procs: Shared<HashSet<Pid>>,
     /// Blocking system calls are waiting on some event to unblock.
     /// We keep track of whether that event has unblocked here. Both
     /// events on a blocking syscall have a handle to some entry in this array.
-    live_syscalls: Arc<Mutex<Vec<bool>>>,
-    per_process_events: Arc<Mutex<HashMap<Pid, VecDeque<MockedTraceEvent>>>>,
+    live_syscalls: Shared<Vec<bool>>,
+    per_process_events: Shared<HashMap<Pid, VecDeque<MockedTraceEvent>>>,
     /// Keeps track of the current event per process.
-    current_event: Arc<Mutex<HashMap<Pid, MockedTraceEvent>>>
+    current_event: Shared<HashMap<Pid, MockedTraceEvent>>
 }
 
 impl ProgramHandle {
     fn new() -> ProgramHandle {
         ProgramHandle {
-            exited_procs: Arc::new(Mutex::new(HashSet::new())),
-            live_syscalls: Arc::new(Mutex::new(Vec::new())),
-            blocked_procs: Arc::new(Mutex::new(HashSet::new())),
-            running_procs: Arc::new(Mutex::new(HashSet::new())),
-            per_process_events: Arc::new(Mutex::new(HashMap::new())),
-            current_event: Arc::new(Mutex::new(HashMap::new())),
+            exited_procs: Rc::new(RefCell::new(HashSet::new())),
+            live_syscalls: Rc::new(RefCell::new(Vec::new())),
+            blocked_procs: Rc::new(RefCell::new(HashSet::new())),
+            running_procs: Rc::new(RefCell::new(HashSet::new())),
+            per_process_events: Rc::new(RefCell::new(HashMap::new())),
+            current_event: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
     /// Return the current register state for the current_event for _pid_.
     /// Notice setting the register state is the responsibility of the MockedTraceEvent.
     fn get_registers(&self, pid: Pid) -> Regs<Unmodified> {
-        let event = self.current_event.lock().unwrap();
+        let event = self.current_event.borrow_mut();
         let event = event.get(&pid).expect("Missing current event.");
         event.get_prehook_regs()
     }
 
     fn add_events(&mut self, events: VecDeque<MockedTraceEvent>, pid: Pid) {
         debug!("ProgramHandle::add_events(pid: {})", pid);
-        let mut per_process_events = self.per_process_events.lock().unwrap();
+        let mut per_process_events = self.per_process_events.borrow_mut();
         if let Some(event) = per_process_events.insert(pid, events) {
             panic!("Unexpected events already present for {}", pid);
         }
@@ -170,15 +168,11 @@ impl ProgramHandle {
     async fn posthook(&self, pid: Pid) -> Regs<Unmodified> {
         trace!("ProgramHandle::posthook(pid: {})", pid);
 
-        // Block needed to convince Rust we are not locking mutex across yield point
-        // (await).
-        let event = {
-            let mut mutex_guard = self.current_event.lock().unwrap();
-            // No other task should try to access this same event, so it is safe
-            // to remove. If a task accidentally double calls "posthook" this could
-            // fail, but that's kinda what we want?
-            mutex_guard.remove(&pid).expect("Missing current event.")
-        };
+        // No other task should try to access this same event, so it is safe
+        // to remove. If a task accidentally double calls "posthook" this could
+        // fail, but that's kinda what we want?
+        let event =
+            self.current_event.borrow_mut().remove(&pid).expect("Missing current event.");
 
         use MockedTraceEvent::*;
         match event {
@@ -190,13 +184,12 @@ impl ProgramHandle {
             BlockedSyscall(syscall) => {
                 // Find out if it is blocked.
                 if syscall.is_blocked() {
-                    let present = self.running_procs.lock().unwrap().remove(&pid);
+                    let present = self.running_procs.borrow_mut().remove(&pid);
                     if !present {
                         panic!("Expected process {} to be in running_procs", pid);
                     }
 
-                    let not_there = self.blocked_procs.lock().
-                        unwrap().insert(pid);
+                    let not_there = self.blocked_procs.borrow_mut().insert(pid);
                     if ! not_there {
                         panic!("{} should not already be present in blocked_procs.",
                                pid);
@@ -244,7 +237,7 @@ impl ProgramHandle {
         // Code block required to convice Rust we're not borrowing a MutexGuart across
         // yield points.
         let event = {
-            let mut per_process_events = self.per_process_events.lock().unwrap();
+            let mut per_process_events = self.per_process_events.borrow_mut();
 
             per_process_events.get_mut(&pid).
                 expect("No such event for Pid").pop_front()
@@ -252,7 +245,7 @@ impl ProgramHandle {
 
         // End of the process, return exit event.
         if let None = event {
-            let mut exited_procs = self.exited_procs.lock().unwrap();
+            let mut exited_procs = self.exited_procs.borrow_mut();
             if exited_procs.contains(&pid) {
                 return TraceEvent::ProcessExited(pid);
             } else {
@@ -280,7 +273,7 @@ impl ProgramHandle {
             }
         };
         // Set this event as the current event for _pid_.
-        self.current_event.lock().unwrap().insert(pid, event);
+        self.current_event.borrow_mut().insert(pid, event);
         trace_event
     }
 
@@ -289,7 +282,7 @@ impl ProgramHandle {
     /// on a pipe, or a waitpid waiting for an exit on some process.
     fn new_blocking_pair(&mut self) -> (Handle<BlockingEnd>, Handle<BlockedEnd>) {
         // Add new entry to live_syscalls
-        let mut live_syscalls = self.live_syscalls.lock().unwrap();
+        let mut live_syscalls = self.live_syscalls.borrow_mut();
         live_syscalls.push(true);
 
         let index = live_syscalls.len() - 1;
@@ -331,27 +324,28 @@ impl Program {
 struct Handle<T> {
     /// Vector of all live syscalls, Handle should only access the member specified
     /// by index.
-    live_syscalls: Arc<Mutex<Vec<bool>>>,
+    live_syscalls: Shared<Vec<bool>>,
     index: usize,
     phantom: PhantomData<T>
 }
 
 impl<T> Handle<T> {
-    fn new(handle: Arc<Mutex<Vec<bool>>>, index: usize) -> Handle<T> {
+    fn new(handle: Shared<Vec<bool>>, index: usize) -> Handle<T> {
         Handle{ live_syscalls: handle, index, phantom: PhantomData }
     }
 }
 
 impl Handle<BlockedEnd> {
     fn is_blocked(&self) -> bool {
-        *self.live_syscalls.lock().unwrap().get(self.index).
+        *self.live_syscalls.borrow_mut().get(self.index).
             expect("Expected entry to be here.")
     }
 }
 
 impl Handle<BlockingEnd> {
     fn consume(&self) {
-        *self.live_syscalls.lock().unwrap().get_mut(self.index).expect("Expected entry to be here.") = false;
+        *self.live_syscalls.borrow_mut().
+            get_mut(self.index).expect("Expected entry to be here.") = false;
     }
 }
 
@@ -434,7 +428,7 @@ pub struct MockedTracer {
     program_handle: ProgramHandle,
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Tracer for MockedTracer {
     type Reactor = MockedReactor;
 

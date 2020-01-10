@@ -52,7 +52,7 @@ impl From<WaitStatus> for TraceEvent {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Tracer {
     type Reactor: Reactor;
 

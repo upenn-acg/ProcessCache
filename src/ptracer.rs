@@ -60,7 +60,7 @@ impl Ptracer {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Tracer for Ptracer {
     type Reactor = PtraceReactor;
 
