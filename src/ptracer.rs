@@ -164,7 +164,7 @@ impl Tracer for Ptracer {
         unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }
     }
 
-    async fn get_next_event(&self) -> TraceEvent {
+    async fn get_next_event(&mut self) -> TraceEvent {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
         // info!("Waiting for next ptrace event.");
 
@@ -201,10 +201,7 @@ impl Tracer for Ptracer {
             match res {
                 Ok(_) => {
                     let regs = regs.assume_init();
-                    Regs {
-                        regs,
-                        _type: PhantomData,
-                    }
+                    Regs::new(regs)
                 }
                 Err(e) => {
                     error!(

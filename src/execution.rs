@@ -49,14 +49,14 @@ thread_local! {
 pub async fn run_process<T, R>(
     pid: Pid,
     executor: Rc<SingleThreadedRuntime<R>>,
-    tracer: T,
+    mut tracer: T,
     mut current_clock: ProcessClock,
 ) where
     R: Reactor + 'static,
     T: Tracer + 'static,
 {
     let proc_span = span!(Level::INFO, "proc", ?pid);
-    let _enter = proc_span.enter();
+    let _proc_span_enter = proc_span.enter();
 
     current_clock.add_new_process(pid);
     let mut process_clock = current_clock;
@@ -174,7 +174,7 @@ pub async fn run_process<T, R>(
         TraceEvent::ProcessExited(pid) => {
             debug!("Saw actual exit event for pid {}", pid);
         }
-        _ => panic!("Saw other event when expecting ProcessExited event"),
+        e => panic!("Saw other event when expecting ProcessExited event: {:?}", e),
     }
 }
 

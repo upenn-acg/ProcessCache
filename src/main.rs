@@ -13,6 +13,7 @@ pub mod regs;
 pub mod seccomp;
 mod system_call_names;
 mod tracer;
+mod MockReactor;
 
 use crate::ptracer::Ptracer;
 use tracing_subscriber::filter::EnvFilter;

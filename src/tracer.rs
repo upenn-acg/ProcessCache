@@ -9,7 +9,7 @@ use nix::unistd::Pid;
 use single_threaded_runtime::Reactor;
 use std::os::raw::c_char;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TraceEvent {
     Exec(Pid),
     /// This is the stop before the final, from here we know we will receive an
@@ -76,5 +76,5 @@ pub trait Tracer {
 
     async fn posthook(&self) -> Regs<Unmodified>;
     // TODO Result<TraceEvent, ?> ?
-    async fn get_next_event(&self) -> TraceEvent;
+    async fn get_next_event(&mut self) -> TraceEvent;
 }
