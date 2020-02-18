@@ -65,9 +65,9 @@ where R: Reactor + 'static,
     loop {
         match tracer.get_next_event().await {
             TraceEvent::Exec(pid) => {
-                debug!("Saw exec event.");
+                debug!("Saw exec event for pid {}", pid);
             }
-            TraceEvent::PreExit(pid) => {
+            TraceEvent::PreExit(_pid) => {
                 break;
             }
             TraceEvent::Prehook(pid) => {
@@ -116,7 +116,7 @@ where R: Reactor + 'static,
             }
 
             TraceEvent::Fork(pid) | TraceEvent::VFork(pid) | TraceEvent::Clone(pid) => {
-                debug!("Fork Event!");
+                debug!("Fork Event from pid {}!", pid);
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
 
                 // Recursively call run process to handle the new child process!
@@ -132,7 +132,7 @@ where R: Reactor + 'static,
             }
 
             TraceEvent::Posthook(pid) => {
-                debug!("Saw post hook event.");
+                debug!("Saw post hook event from pid {}", pid);
                 // The posthooks should be handled internally by the system
                 // call handler functions.
                 panic!("We should not see posthook events.");
@@ -140,11 +140,11 @@ where R: Reactor + 'static,
 
             // Received a signal event.
             TraceEvent::ReceivedSignal(pid, signal) => {
-                debug!(?signal, "Received signal event");
+                debug!(?signal, "pid {} received signal {:?}", pid, signal);
             }
 
             TraceEvent::KilledBySignal(pid, signal) => {
-                debug!(?signal, "Process killed by signal");
+                debug!(?signal, "Process {} killed by signal {:?}", pid, signal);
             }
             TraceEvent::ProcessExited(_pid) => {
                 // No idea how this could happen.
@@ -168,7 +168,7 @@ where R: Reactor + 'static,
     // Saw pre-exit event, wait for final exit event.
     match tracer.get_next_event().await {
         TraceEvent::ProcessExited(pid) => {
-            debug!("Saw actual exit event");
+            debug!("Saw actual exit event for pid {}", pid);
         }
         _ => panic!("Saw other event when expecting ProcessExited event"),
     }
