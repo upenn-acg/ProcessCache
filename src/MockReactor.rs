@@ -1,3 +1,5 @@
+//! Mock reactor docs here.
+
 use std::collections::HashSet;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -27,7 +29,12 @@ use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 type BoxedSyscall = Box<dyn Syscall>;
 type Shared<T> = Rc<RefCell<T>>;
 
+/// All the different events we want to allow our mock trace to contain: blocking system
+/// calls, non-blocking syscalls, and forking for multi process. Signals, threads, and
+/// other events may come later. Blocking syscalls come in pairs: a blocking end and a
+/// blocked end.
 enum MockedTraceEvent {
+    /// Represents a syscall that is blocking
     BlockingSyscall(BlockingSyscall<BlockingEnd>),
     BlockedSyscall(BlockingSyscall<BlockedEnd>),
     NonBlockingSyscall(BoxedSyscall),
@@ -117,9 +124,9 @@ enum BlockingEnd {}
 enum BlockedEnd {}
 
 /// We need some variable that "owns" the live processes, and blocking system calls.
-/// We could use TLS but that wouldn't work well for tests. So instead we create a Program
-/// struct which holds the entire context representing one running Program (made of one or
-/// more processes).
+/// We could use TLS but that wouldn't work well for multiple concurrently running tests,
+/// as `cargo test` does. So instead we create a Program struct which holds the entire
+/// context representing one running Program (made of one or more processes).
 #[derive(Clone)]
 struct ProgramHandle {
     exited_procs: Shared<HashSet<Pid>>,
@@ -366,8 +373,8 @@ fn run_program_test() {
     let mut events: VecDeque<MockedTraceEvent> = VecDeque::new();
 
     let (we, re) = program.new_blocking_pair();
-    let syscall = Box::new(ReadSyscall{});
-    events.push_back(MockedTraceEvent::BlockingSyscall(BlockingSyscall::new(we, syscall)));
+    let read_syscall = Box::new(ReadSyscall{});
+    events.push_back(MockedTraceEvent::BlockingSyscall(BlockingSyscall::new(we, read_syscall)));
 
     program.add_events(events, pid);
     let mt = MockedTracer { current_pid: pid,
@@ -428,10 +435,13 @@ pub struct MockedTracer {
     program_handle: ProgramHandle,
 }
 
+
+// By default, Rust doesn't allow trait methods to be async,
+// but of course, there is a macro to fix that ;)
+// Tell async trait macro we do not need our data to implement Send.
 #[async_trait(?Send)]
 impl Tracer for MockedTracer {
     type Reactor = MockedReactor;
-
 
     fn get_reactor(&self) -> Self::Reactor {
         trace!("get_reactor: MockedReactor created.");
