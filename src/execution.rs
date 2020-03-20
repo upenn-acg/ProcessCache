@@ -67,6 +67,7 @@ pub async fn run_process<T, R>(
                 debug!("Saw exec event for pid {}", pid);
             }
             TraceEvent::PreExit(_pid) => {
+                debug!("Saw preexit event.");
                 break;
             }
             TraceEvent::Prehook(pid) => {
@@ -99,6 +100,7 @@ pub async fn run_process<T, R>(
 
                 let regs: Regs<Unmodified> = tracer.posthook().await;
 
+                debug!("in posthook");
                 // In posthook.
                 let retval = regs.retval() as i32;
                 let posthook_span = span!(Level::INFO, "posthook", retval);
@@ -116,9 +118,8 @@ pub async fn run_process<T, R>(
             }
 
             TraceEvent::Fork(pid) | TraceEvent::VFork(pid) | TraceEvent::Clone(pid) => {
-                debug!("Fork Event from pid {}!", pid);
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
-
+                debug!("Fork Event. Creating task for new child: {:?}", child);
                 // Recursively call run process to handle the new child process!
                 wrapper(
                     child,
