@@ -21,6 +21,7 @@ pub enum TraceEvent {
     /// This is really a seccomp event, but with our setup, it represents a
     /// prehook event.
     Prehook(Pid),
+    /// This is the parent's PID, not the child.
     Fork(Pid),
     Clone(Pid),
     VFork(Pid),

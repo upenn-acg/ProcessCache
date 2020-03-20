@@ -13,7 +13,6 @@ use nix::sys::signal::Signal;
 use std::ptr;
 
 use byteorder::WriteBytesExt;
-use std::marker::PhantomData;
 
 use crate::execution;
 use crate::regs::Modified;
@@ -252,6 +251,7 @@ impl Ptracer {
     /// uses execve to call the tracee program and have it ready to be ptraced.
     fn run_tracee(command: Command) -> nix::Result<()> {
         use nix::sys::signal::raise;
+        use std::ffi::CStr;
 
         // New ptracee and set ourselves to be traced.
         ptrace::traceme()?;
@@ -273,7 +273,12 @@ impl Ptracer {
             .collect();
         args.insert(0, exe.clone());
 
-        if let Err(e) = execvp(&exe, &args) {
+        let args_cstr: Vec<&CStr> = (&args).
+            into_iter().
+            map(|s: &CString| s.as_c_str()).
+            collect();
+
+        if let Err(e) = execvp(&exe, args_cstr.as_slice()) {
             error!(
                 "Error executing execve for your program {:?}. Reason {}",
                 args, e
