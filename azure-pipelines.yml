@@ -1,0 +1,54 @@
+# Copied from: https://github.com/crate-ci/azure-pipelines
+jobs:
+ - job: style
+   displayName: Style linting
+   strategy:
+     matrix:
+       stable:
+         rust: stable
+   pool:
+     vmImage: ubuntu-18.04
+   continueOnError: $[eq(variables.rust, 'beta')]
+   steps:
+     - template: install-rust.yml@templates
+       parameters:
+         rust: $(rust)
+         components:
+           - rustfmt
+           - clippy
+     # Run any user-specific setup steps
+     - script: cargo fmt --all -- --check
+       displayName: cargo fmt --check
+     - script: cargo clippy --all
+       displayName: cargo clippy -- -D warnings
+ - job: main
+   displayName: Compile and test
+   dependsOn: []
+   strategy:
+     matrix:
+       "Linux (nightly)":
+         vmImage: ubuntu-18.04
+         rust: nightly
+       Linux:
+         vmImage: ubuntu-18.04
+         rust: stable
+   pool:
+     vmImage: $(vmImage)
+   continueOnError: $[eq(variables.rust, 'nightly')]
+   steps:
+     - template: install-rust.yml@templates
+       parameters:
+         rust: $(rust)
+     # Run any user-specific setup steps
+     - script: cargo check
+       displayName: cargo check
+     - script: cargo doc --no-deps
+       displayName: cargo doc
+
+resources:
+  repositories:
+    - repository: templates
+      type: github
+      name: crate-ci/azure-pipelines
+      ref: refs/heads/v0.4
+      endpoint: ProcessCache
