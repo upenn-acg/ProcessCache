@@ -1,12 +1,17 @@
 use libc::c_int;
 use seccomp_sys::*;
 use std::env;
-use std::ptr::null_mut;
 use std::u32;
 
 pub enum OnDebug {
     Intercept,
     LetPass,
+}
+
+impl Default for RuleLoader {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct RuleLoader {
@@ -61,7 +66,7 @@ impl RuleLoader {
         // as it means there is no explicit rule for this syscall.
         let scmp = SCMP_ACT_TRACE(u32::MAX);
         let ctx = unsafe { seccomp_init(scmp) };
-        if ctx == null_mut() {
+        if ctx.is_null() {
             panic!("Unable to init seccomp filter.");
         }
 

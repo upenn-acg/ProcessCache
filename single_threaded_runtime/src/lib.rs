@@ -45,7 +45,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         SingleThreadedRuntime { reactor: RefCell::new(reactor) }
     }
 
-    pub fn add_future(&self, mut task: Task) -> () {
+    pub fn add_future(&self, mut task: Task) {
         info!("Adding new future through handle.");
         let waker = task.wait_waker();
 
@@ -69,7 +69,8 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         info!("Running all futures.");
         // The future may have polled and finished in the add_future method.
         // Let program continue running (no more tasks for us to execute).
-        if WAITING_TASKS.with(|tb| { tb.borrow().is_empty() }) {
+        let no_waiting_tasks = WAITING_TASKS.with(|tb| { tb.borrow().is_empty() });
+        if no_waiting_tasks {
             debug!("All done!");
             return;
         }

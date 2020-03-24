@@ -3,7 +3,6 @@ use crate::system_call_names::SYSTEM_CALL_NAMES;
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::regs::Regs;
-use nix;
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use single_threaded_runtime::task::Task;
@@ -15,7 +14,7 @@ use single_threaded_runtime::Reactor;
 
 use crate::clocks::ProcessClock;
 
-use tracing::{event, span, Level, debug, info};
+use tracing::{span, Level, debug, info};
 
 thread_local! {
     pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
@@ -59,7 +58,7 @@ where R: Reactor + 'static,
     let proc_span = span!(Level::INFO, "proc", ?pid);
     let _enter = proc_span.enter();
 
-    current_clock.add_new_process(&pid);
+    current_clock.add_new_process(pid);
     let mut process_clock = current_clock;
 
     loop {
@@ -107,6 +106,7 @@ where R: Reactor + 'static,
                 let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
                 debug!("in posthook");
+                #[allow(clippy::single_match)]
                 match name {
                     "wait4" => {
                         handle_wait4_syscall(&regs, &mut process_clock);
@@ -159,7 +159,7 @@ where R: Reactor + 'static,
     // Put this process's logical clock in the global map of
     // process clocks. This child won't need its clock no 'mo.
     EXITED_CLOCKS.with(|exited_clocks| {
-        if let Some(_) = exited_clocks.borrow_mut().insert(pid, process_clock) {
+        if exited_clocks.borrow_mut().insert(pid, process_clock).is_some() {
             // This should never happen.
             panic!("EXITED_CLOCKS already had an entry for this PID");
         }
@@ -269,7 +269,7 @@ fn handle_write_syscall(pid: Pid,
 
     let fd = regs.arg1() as u64;
     if fd != 1 {
-        let _time = process_clock.get_current_time(&pid);
+        let _time = process_clock.get_current_time(pid);
 
         // let rc: ResourceClock = ResourceClock {
         //     read_clock: HashMap::new(),
@@ -342,14 +342,14 @@ fn handle_wait4_syscall(regs: &Regs<Unmodified>, process_clock: &mut ProcessCloc
 
         // Update our times based on any newer times that our child might have.
         for (process, other_time) in child_clock {
-            match process_clock.get_current_time(&process) {
+            match process_clock.get_current_time(process) {
                 Some(our_time) => {
                     if other_time > our_time {
-                        process_clock.update_entry(&process, other_time);
+                        process_clock.update_entry(process, other_time);
                     }
                 }
                 None => {
-                    process_clock.update_entry(&process, other_time);
+                    process_clock.update_entry(process, other_time);
                 }
             }
         }

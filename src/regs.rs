@@ -54,7 +54,7 @@ impl Regs<Unmodified> {
 
     /// Set registers as writeable. Changes will not be written to tracee until
     /// flush() is called.
-    pub fn to_modified(self) -> Regs<Modified> {
+    pub fn make_modified(self) -> Regs<Modified> {
         Regs {
             regs: self.regs,
             _type: PhantomData,

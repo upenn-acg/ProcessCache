@@ -46,8 +46,10 @@ impl Future for AsyncPtrace {
     }
 }
 
+#[derive(Default)]
 pub struct PtraceReactor {
 }
+
 
 impl PtraceReactor {
     pub fn new() -> PtraceReactor {
@@ -83,7 +85,7 @@ impl Reactor for PtraceReactor {
                 // Child finished it is done running.
                 if let Sys(Errno::ECHILD) = error {
                     trace!("done!");
-                    return true;
+                    true
                 } else {
                     panic!("Unexpected error reason: {}", error);
                 }
@@ -100,7 +102,7 @@ impl Reactor for PtraceReactor {
                 waker.wake();
 
                 trace!("waitid() = {}", pid);
-                return false;
+                false
             }
         }
     }

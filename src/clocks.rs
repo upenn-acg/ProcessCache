@@ -10,7 +10,7 @@ impl LogicalTime {
     }
 
     fn increment(&mut self) {
-        self.0 = self.0 + 1;
+        self.0 += self.0;
     }
 }
 
@@ -21,31 +21,31 @@ pub struct ProcessClock {
 }
 
 impl ProcessClock {
-    pub fn get_current_time(&self, pid: &Pid) -> Option<LogicalTime> {
-        self.clock.get(pid).cloned()
+    pub fn get_current_time(&self, pid: Pid) -> Option<LogicalTime> {
+        self.clock.get(&pid).cloned()
     }
 
-    pub fn add_new_process(&mut self, pid: &Pid) {
-        self.clock.insert(*pid, LogicalTime::new());
+    pub fn add_new_process(&mut self, pid: Pid) {
+        self.clock.insert(pid, LogicalTime::new());
     }
 
     pub fn new(pid: Pid) -> ProcessClock {
         ProcessClock { clock: HashMap::new(), our_pid: pid }
     }
 
-    pub fn update_entry(&mut self, pid: &Pid, new_time: LogicalTime) {
-        self.clock.insert(*pid, new_time);
+    pub fn update_entry(&mut self, pid: Pid, new_time: LogicalTime) {
+        self.clock.insert(pid, new_time);
     }
 
-    pub fn increment_time(&mut self, pid: &Pid) {
-        let time = self.clock.get_mut(pid).
+    pub fn increment_time(&mut self, pid: Pid) {
+        let time = self.clock.get_mut(&pid).
             expect("increment_time: Requested time not found.");
         time.increment();
     }
 
     pub fn increment_own_time(&mut self) {
         let pid = self.our_pid;
-        self.increment_time(&pid);
+        self.increment_time(pid);
     }
 }
 
@@ -58,7 +58,7 @@ impl IntoIterator for ProcessClock {
     }
 }
 
-pub struct ResourceClock {
+struct _ResourceClock {
     read_clock: HashMap<Pid, LogicalTime>,
     write_clock: (Pid, LogicalTime),
 }

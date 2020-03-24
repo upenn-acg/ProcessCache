@@ -9,7 +9,6 @@ use std::ffi::CString;
 use single_threaded_runtime::ptrace_event::PtraceReactor;
 
 use byteorder::LittleEndian;
-use nix;
 use nix::sys::signal::Signal;
 use std::ptr;
 
@@ -87,8 +86,7 @@ impl Tracer for Ptracer {
             TraceEvent::Posthook(_) => {
                 debug!("got posthook event");
                 // refetch regs.
-                return self.get_registers();
-                // return Regs::get_regs(pid);
+                self.get_registers()
             }
             e => panic!(format!("Unexpected {:?} event, expected posthook!", e)),
         }
@@ -174,13 +172,8 @@ impl Tracer for Ptracer {
 
         // TODO Kelly Why are we looping here.
         use crate::ptracer::ContinueEvent;
-        loop {
-            match ptrace_syscall(self.current_process, ContinueEvent::Continue, None) {
-                Err(_e) => continue,
-                Ok(_v) => break,
-            }
-        }
-
+        while let Err(_e) =
+            ptrace_syscall(self.current_process, ContinueEvent::Continue, None) { };
         // Wait for ptrace event from this pid here.
         AsyncPtrace{ pid: self.current_process }.await.into()
     }
@@ -219,8 +212,9 @@ impl Tracer for Ptracer {
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
-            )
-                .expect(&format!("Unable to set regs for pid: {}", self.current_process));
+            ).unwrap_or_else(|_|
+                             panic!("Unable to set regs for pid: {}", self.current_process));
+
         }
     }
 }
@@ -294,7 +288,7 @@ pub fn ptrace_syscall(
     signal_to_deliver: Option<Signal>,
 ) -> nix::Result<c_long> {
     let signal = match signal_to_deliver {
-        None => 0 as *mut c_void,
+        None => std::ptr::null_mut::<c_void>(),
         Some(s) => s as i64 as *mut c_void,
     };
 

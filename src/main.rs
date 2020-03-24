@@ -14,7 +14,7 @@ mod system_call_names;
 pub mod regs;
 mod tracer;
 
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+use tracing_subscriber::filter::{EnvFilter};
 use crate::ptracer::Ptracer;
 
 use args::*;
