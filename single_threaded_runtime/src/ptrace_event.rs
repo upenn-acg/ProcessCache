@@ -1,19 +1,19 @@
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{Pid};
 use log::trace;
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::Pid;
 
-use nix::Error::Sys;
 use nix::errno::Errno;
+use nix::Error::Sys;
 
+use crate::Reactor;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::task::Waker;
-use std::cell::RefCell;
-use crate::Reactor;
 
-use std::task::Poll;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
+use std::task::Poll;
 
 thread_local! {
     pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
@@ -33,27 +33,24 @@ impl Future for AsyncPtrace {
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<WaitStatus> {
         trace!("AsyncPtrace polling once for: {}", self.pid);
 
-        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).
-            expect("Unable to waitpid from poll") {
-                WaitStatus::StillAlive => {
-                    WAKERS.with(|wakers| {
-                        wakers.borrow_mut().insert(self.pid, cx.waker().clone());
-                    });
-                    Poll::Pending
-                }
-                w => Poll::Ready(w),
+        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).expect("Unable to waitpid from poll") {
+            WaitStatus::StillAlive => {
+                WAKERS.with(|wakers| {
+                    wakers.borrow_mut().insert(self.pid, cx.waker().clone());
+                });
+                Poll::Pending
             }
+            w => Poll::Ready(w),
+        }
     }
 }
 
 #[derive(Default)]
-pub struct PtraceReactor {
-}
-
+pub struct PtraceReactor {}
 
 impl PtraceReactor {
     pub fn new() -> PtraceReactor {
-        PtraceReactor { }
+        PtraceReactor {}
     }
 }
 
@@ -96,8 +93,10 @@ impl Reactor for PtraceReactor {
                 let pid = Pid::from_raw(pid);
 
                 let waker = WAKERS.with(|wakers| {
-                    wakers.borrow_mut().remove(&pid).
-                        expect("Expected waker to be in our set.")
+                    wakers
+                        .borrow_mut()
+                        .remove(&pid)
+                        .expect("Expected waker to be in our set.")
                 });
                 waker.wake();
 

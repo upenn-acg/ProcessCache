@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use nix::unistd::Pid;
+use std::collections::HashMap;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone, Copy)]
 pub struct LogicalTime(u64);
@@ -30,7 +30,10 @@ impl ProcessClock {
     }
 
     pub fn new(pid: Pid) -> ProcessClock {
-        ProcessClock { clock: HashMap::new(), our_pid: pid }
+        ProcessClock {
+            clock: HashMap::new(),
+            our_pid: pid,
+        }
     }
 
     pub fn update_entry(&mut self, pid: Pid, new_time: LogicalTime) {
@@ -38,8 +41,10 @@ impl ProcessClock {
     }
 
     pub fn increment_time(&mut self, pid: Pid) {
-        let time = self.clock.get_mut(&pid).
-            expect("increment_time: Requested time not found.");
+        let time = self
+            .clock
+            .get_mut(&pid)
+            .expect("increment_time: Requested time not found.");
         time.increment();
     }
 

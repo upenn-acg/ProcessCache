@@ -1,4 +1,4 @@
-use log::{trace, debug, info};
+use log::{debug, info, trace};
 use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,14 +42,16 @@ pub struct SingleThreadedRuntime<R> {
 
 impl<R: Reactor> SingleThreadedRuntime<R> {
     pub fn new(reactor: R) -> Self {
-        SingleThreadedRuntime { reactor: RefCell::new(reactor) }
+        SingleThreadedRuntime {
+            reactor: RefCell::new(reactor),
+        }
     }
 
     pub fn add_future(&self, mut task: Task) {
         info!("Adding new future through handle.");
         let waker = task.wait_waker();
 
-        match task.future.as_mut().poll(&mut Context::from_waker(& waker)) {
+        match task.future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Pending => {
                 trace!("Polled once, still pending.");
                 // Made progress but still pending. Add to our queue.
@@ -69,7 +71,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         info!("Running all futures.");
         // The future may have polled and finished in the add_future method.
         // Let program continue running (no more tasks for us to execute).
-        let no_waiting_tasks = WAITING_TASKS.with(|tb| { tb.borrow().is_empty() });
+        let no_waiting_tasks = WAITING_TASKS.with(|tb| tb.borrow().is_empty());
         if no_waiting_tasks {
             debug!("All done!");
             return;
@@ -82,15 +84,14 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
             self.reactor.borrow_mut().wait_for_event();
 
             NEXT_TASK.with(|nt| {
-                let mut task = nt.borrow_mut().take()
+                let mut task = nt
+                    .borrow_mut()
+                    .take()
                     .expect("No such entry, should have been there.");
-               let waker = task.wait_waker();
+                let waker = task.wait_waker();
 
                 // as_mut(&mut self) -> Pin<&mut <P as Deref>::Target>
-                let poll = task
-                    .future
-                    .as_mut()
-                    .poll(&mut Context::from_waker(&waker));
+                let poll = task.future.as_mut().poll(&mut Context::from_waker(&waker));
 
                 WAITING_TASKS.with(|tasks| {
                     match poll {

@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io::{self, Write};
+use std::process::Command;
 
 // NB: cwd when running these tests is ProcessCache/
 
@@ -29,8 +29,8 @@ fn sleep1() -> io::Result<()> {
 #[test]
 fn usr_lib() -> io::Result<()> {
     let output = Command::new("target/debug/conflict_tracer")
-					.args(&["ls", "/usr/lib"])
-    				.output()?;
+        .args(&["ls", "/usr/lib"])
+        .output()?;
 
     println!("status: {}", output.status);
     io::stdout().write_all(&output.stdout)?;

@@ -1,7 +1,6 @@
 use libc::user_regs_struct;
 use std::marker::PhantomData;
 
-
 /// Represents a register which has never been written to.
 pub enum Unmodified {}
 /// Represents a register which has been changed. Data must be written to tracee
@@ -27,7 +26,7 @@ macro_rules! read_regs_function {
         pub fn $fname(&self) -> u64 {
             self.regs.$reg
         }
-    }
+    };
 }
 
 impl Regs<Unmodified> {
@@ -42,7 +41,6 @@ impl Regs<Unmodified> {
     read_regs_function!(rax, rax);
     read_regs_function!(retval, rax);
     read_regs_function!(syscall_number, orig_rax);
-
 
     /// Nothing has been changed. Mark as flushed but do no not call set_regs.
     pub fn same(self) -> Regs<Flushed> {
@@ -68,7 +66,7 @@ macro_rules! write_regs_function {
         pub fn $fname(&mut self, value: u64) {
             self.regs.$reg = value;
         }
-    }
+    };
 }
 
 impl Regs<Modified> {

@@ -1,12 +1,12 @@
-use std::process::exit;
 use libc::c_char;
 use libc::{c_long, c_void, PT_NULL};
 use nix::sys::ptrace;
 use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
-use std::mem;
-use std::ffi::CString;
 use single_threaded_runtime::ptrace_event::PtraceReactor;
+use std::ffi::CString;
+use std::mem;
+use std::process::exit;
 
 use byteorder::LittleEndian;
 use nix::sys::signal::Signal;
@@ -15,18 +15,18 @@ use std::ptr;
 use byteorder::WriteBytesExt;
 use std::marker::PhantomData;
 
-use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
+use crate::execution;
+use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
-use crate::regs::Modified;
-use crate::execution;
+use crate::tracer::TraceEvent;
+use crate::tracer::Tracer;
 
-use crate::Command;
 use crate::seccomp;
+use crate::Command;
 
 use async_trait::async_trait;
-use tracing::{error, debug, info, trace};
+use tracing::{debug, error, info, trace};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {
@@ -34,10 +34,9 @@ pub enum ContinueEvent {
     SystemCall,
 }
 
-
 pub struct Ptracer {
     current_process: Pid,
-    command: Command
+    command: Command,
 }
 
 impl Ptracer {
@@ -50,12 +49,14 @@ impl Ptracer {
             | Options::PTRACE_O_TRACEEXIT
             | Options::PTRACE_O_TRACESYSGOOD
             | Options::PTRACE_O_TRACESECCOMP;
-        ptrace::setoptions(pid, options).
-            expect("Unable to set ptrace options");
+        ptrace::setoptions(pid, options).expect("Unable to set ptrace options");
     }
 
     fn new(starting_process: Pid, command: Command) -> Ptracer {
-        Ptracer { current_process: starting_process, command }
+        Ptracer {
+            current_process: starting_process,
+            command,
+        }
     }
 }
 
@@ -76,11 +77,13 @@ impl Tracer for Ptracer {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 
         info!("Waiting for posthook event.");
-        let event = AsyncPtrace { pid: self.current_process };
+        let event = AsyncPtrace {
+            pid: self.current_process,
+        };
 
         // Might want to switch this to return the error instead of failing.
-        ptrace_syscall(self.current_process, ContinueEvent::SystemCall, None).
-            expect("ptrace syscall failed.");
+        ptrace_syscall(self.current_process, ContinueEvent::SystemCall, None)
+            .expect("ptrace syscall failed.");
 
         match event.await.into() {
             TraceEvent::Posthook(_) => {
@@ -97,9 +100,11 @@ impl Tracer for Ptracer {
     }
 
     fn clone_tracer_for_new_process(&self, new_child: Pid) -> Ptracer {
-        Ptracer { current_process: new_child, command: self.command.clone()}
+        Ptracer {
+            current_process: new_child,
+            command: self.command.clone(),
+        }
     }
-
 
     fn read_cstring(&self, address: *const c_char, pid: Pid) -> String {
         let address = address as *mut c_void;
@@ -118,7 +123,7 @@ impl Tracer for Ptracer {
                     address.offset(count),
                     ptr::null_mut(),
                 )
-                    .expect("Failed to ptrace peek data")
+                .expect("Failed to ptrace peek data")
             };
 
             bytes.write_i64::<LittleEndian>(res).unwrap();
@@ -157,7 +162,6 @@ impl Tracer for Ptracer {
         }
 
         unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }
-
     }
 
     async fn get_next_event(&self) -> TraceEvent {
@@ -172,10 +176,13 @@ impl Tracer for Ptracer {
 
         // TODO Kelly Why are we looping here.
         use crate::ptracer::ContinueEvent;
-        while let Err(_e) =
-            ptrace_syscall(self.current_process, ContinueEvent::Continue, None) { };
+        while let Err(_e) = ptrace_syscall(self.current_process, ContinueEvent::Continue, None) {}
         // Wait for ptrace event from this pid here.
-        AsyncPtrace{ pid: self.current_process }.await.into()
+        AsyncPtrace {
+            pid: self.current_process,
+        }
+        .await
+        .into()
     }
 
     /// Nix does not yet have a way to fetch registers. We use our own instead.
@@ -194,10 +201,16 @@ impl Tracer for Ptracer {
             match res {
                 Ok(_) => {
                     let regs = regs.assume_init();
-                    Regs { regs, _type: PhantomData }
+                    Regs {
+                        regs,
+                        _type: PhantomData,
+                    }
                 }
                 Err(e) => {
-                    error!("[{}] Unable to fetch registers: {:?}", self.current_process, e);
+                    error!(
+                        "[{}] Unable to fetch registers: {:?}",
+                        self.current_process, e
+                    );
                     exit(1);
                 }
             }
@@ -212,9 +225,8 @@ impl Tracer for Ptracer {
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
-            ).unwrap_or_else(|_|
-                             panic!("Unable to set regs for pid: {}", self.current_process));
-
+            )
+            .unwrap_or_else(|_| panic!("Unable to set regs for pid: {}", self.current_process));
         }
     }
 }
@@ -226,8 +238,7 @@ impl Ptracer {
         match fork()? {
             ForkResult::Parent { child } => {
                 // Wait for program to be ready.
-                waitpid(child, None).
-                    expect("Unable to wait for child to be ready");
+                waitpid(child, None).expect("Unable to wait for child to be ready");
 
                 debug!("Child returned ready!");
                 Ptracer::set_trace_options(child);
@@ -236,9 +247,7 @@ impl Ptracer {
                 execution::run_program(ptracer)?;
                 Ok(())
             }
-            ForkResult::Child => {
-                Ptracer::run_tracee(command)
-            }
+            ForkResult::Child => Ptracer::run_tracee(command),
         }
     }
 

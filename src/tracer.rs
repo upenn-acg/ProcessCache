@@ -1,13 +1,13 @@
-use nix::sys::wait::WaitStatus;
-use nix::unistd::Pid;
-use nix::sys::signal::Signal;
-use std::os::raw::c_char;
-use crate::regs::Regs;
 use crate::regs::Modified;
+use crate::regs::Regs;
 use crate::regs::Unmodified;
 use async_trait::async_trait;
-use single_threaded_runtime::Reactor;
 use libc::c_long;
+use nix::sys::signal::Signal;
+use nix::sys::wait::WaitStatus;
+use nix::unistd::Pid;
+use single_threaded_runtime::Reactor;
+use std::os::raw::c_char;
 
 #[derive(Debug)]
 pub enum TraceEvent {

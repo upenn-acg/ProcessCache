@@ -1,20 +1,20 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
-use std::rc::Rc;
-use std::cell::RefCell;
 use crate::regs::Regs;
-use nix::unistd::Pid;
-use std::collections::HashMap;
-use single_threaded_runtime::task::Task;
-use single_threaded_runtime::SingleThreadedRuntime;
-use crate::tracer::TraceEvent;
 use crate::regs::Unmodified;
+use crate::tracer::TraceEvent;
 use crate::tracer::Tracer;
+use nix::unistd::Pid;
+use single_threaded_runtime::task::Task;
 use single_threaded_runtime::Reactor;
+use single_threaded_runtime::SingleThreadedRuntime;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::clocks::ProcessClock;
 
-use tracing::{span, Level, debug, info};
+use tracing::{debug, info, span, Level};
 
 thread_local! {
     pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
@@ -51,9 +51,9 @@ pub async fn run_process<T, R>(
     executor: Rc<SingleThreadedRuntime<R>>,
     tracer: T,
     mut current_clock: ProcessClock,
-)
-where R: Reactor + 'static,
-      T: Tracer + 'static
+) where
+    R: Reactor + 'static,
+    T: Tracer + 'static,
 {
     let proc_span = span!(Level::INFO, "proc", ?pid);
     let _enter = proc_span.enter();
@@ -159,7 +159,11 @@ where R: Reactor + 'static,
     // Put this process's logical clock in the global map of
     // process clocks. This child won't need its clock no 'mo.
     EXITED_CLOCKS.with(|exited_clocks| {
-        if exited_clocks.borrow_mut().insert(pid, process_clock).is_some() {
+        if exited_clocks
+            .borrow_mut()
+            .insert(pid, process_clock)
+            .is_some()
+        {
             // This should never happen.
             panic!("EXITED_CLOCKS already had an entry for this PID");
         }
@@ -175,7 +179,9 @@ where R: Reactor + 'static,
 }
 
 pub fn run_program<T>(tracer: T) -> nix::Result<()>
-where T: Tracer + 'static {
+where
+    T: Tracer + 'static,
+{
     let executor = Rc::new(SingleThreadedRuntime::new(tracer.get_reactor()));
     debug!("Running whole program");
     let first_process = tracer.get_current_process();
@@ -248,22 +254,20 @@ fn wrapper<R>(
     pid: Pid,
     executor: Rc<SingleThreadedRuntime<R>>,
     tracer: impl Tracer + 'static,
-    current_clock: ProcessClock)
-where R: Reactor + 'static
+    current_clock: ProcessClock,
+) where
+    R: Reactor + 'static,
 {
-    let f = run_process(
-        pid,
-        executor.clone(),
-        tracer,
-        current_clock,
-    );
+    let f = run_process(pid, executor.clone(), tracer, current_clock);
     executor.add_future(Task::new(f, pid));
 }
 
-fn handle_write_syscall(pid: Pid,
-                        regs: Regs<Unmodified>,
-                        process_clock: &ProcessClock,
-                        /*resource_clock: &ResourceClock*/) {
+fn handle_write_syscall(
+    pid: Pid,
+    regs: Regs<Unmodified>,
+    process_clock: &ProcessClock,
+    /*resource_clock: &ResourceClock*/
+) {
     let span = span!(Level::INFO, "handle_write_syscall()");
     let _enter = span.enter();
 
@@ -335,9 +339,10 @@ fn handle_wait4_syscall(regs: &Regs<Unmodified>, process_clock: &mut ProcessCloc
         let child: Pid = Pid::from_raw(p);
         // This might happen because of a data race?
         let child_clock = EXITED_CLOCKS.with(|exited_clock| {
-            exited_clock.borrow_mut().remove(&child).
-                expect("Child was reported as exited, \
-                        but no entry for it found in EXITED_CLOCKS.")
+            exited_clock.borrow_mut().remove(&child).expect(
+                "Child was reported as exited, \
+                        but no entry for it found in EXITED_CLOCKS.",
+            )
         });
 
         // Update our times based on any newer times that our child might have.

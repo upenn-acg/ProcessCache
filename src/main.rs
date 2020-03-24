@@ -2,20 +2,20 @@ extern crate byteorder;
 extern crate env_logger;
 extern crate libc;
 extern crate nix;
-extern crate structopt;
 extern crate seccomp_sys;
+extern crate structopt;
 
 mod args;
+mod clocks;
 mod execution;
 mod ptracer;
-pub mod seccomp;
-mod clocks;
-mod system_call_names;
 pub mod regs;
+pub mod seccomp;
+mod system_call_names;
 mod tracer;
 
-use tracing_subscriber::filter::{EnvFilter};
 use crate::ptracer::Ptracer;
+use tracing_subscriber::filter::EnvFilter;
 
 use args::*;
 use structopt::StructOpt;
@@ -31,11 +31,11 @@ impl Command {
 
 /// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {
-    tracing_subscriber::fmt::Subscriber::builder().
-        with_env_filter(EnvFilter::from_default_env()).
-        with_target(false).
-        without_time().
-        init();
+    tracing_subscriber::fmt::Subscriber::builder()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .without_time()
+        .init();
 
     let opt = Opt::from_args();
     let command = Command::new(opt.exe, opt.args);
