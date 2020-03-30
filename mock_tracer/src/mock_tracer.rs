@@ -1,30 +1,25 @@
 //! Testing infrastructure to test mocked streams of events.
 
 use std::collections::{HashSet, HashMap, BTreeSet};
-use std::sync::Mutex;
 use std::cell::RefCell;
 use async_trait::async_trait;
 use single_threaded_runtime::Reactor;
 use nix::unistd::Pid;
 use std::os::raw::c_long;
 use std::os::raw::c_char;
-use std::future::Future;
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use crate::regs::Modified;
-use crate::regs::empty_regs;
-use crate::tracer::TraceEvent;
-use std::pin::Pin;
+use tracer::regs::{Regs,Unmodified, Modified};
+use tracer::TraceEvent;
+use tracer::Tracer;
+
 use std::rc::Rc;
-use std::task::Context;
-use std::task::Poll;
-use std::collections::VecDeque;
-use std::marker::PhantomData;
-use crate::tracer::Tracer;
 use std::cmp::Ordering;
 
 use tracing::{event, span, Level, debug, info, trace};
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+
+use crate::blocking_event::BlockingHandle;
+use crate::system_call::{BlockingSyscall, BlockedSyscall, Syscall};
+
+use crate::events::{Events, Ready, {MockedTraceEvent, ForkData, MockedAsyncEvent}};
 
 /// New type pattern to allows us to implement ordering for Pids.
 ///
@@ -44,236 +39,10 @@ impl PartialOrd for OrdPid {
     }
 }
 
-
-/// Allows us to use and store different types of system calls using
-/// a dynamic trait object.
-type BoxedSyscall = Box<dyn Syscall>;
-
 /// Data shared across multiple different types. This data lives as long as the last
 /// reference there is to it. I chose this approach over a global as we want it to
 /// be thread safe when running tests.
-type Shared<T> = Rc<RefCell<T>>;
-
-/// State for Events. Still adding new events.
-enum AddingEvents {}
-/// State for Events. Ready to be consumed.
-enum Ready {}
-
-/// List of MockedTraceEvents to execute.
-struct Events<T> {
-    events: VecDeque<MockedTraceEvent>,
-    _state: PhantomData<T>,
-}
-
-impl Events<Ready> {
-    fn pop_next_event(&mut self) -> Option<MockedTraceEvent> {
-        self.events.pop_front()
-    }
-}
-
-impl Events<AddingEvents> {
-    fn new() -> Events<AddingEvents> {
-        Events { events: VecDeque::new(), _state: PhantomData }
-    }
-
-    fn add_blocking(mut self, s: BlockingSyscall) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::BlockingSyscall(s));
-        Events { events: self.events, _state: PhantomData }
-    }
-
-    fn add_blocked(mut self, s: BlockedSyscall) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::BlockedSyscall(s));
-        Events { events: self.events, _state: PhantomData }
-    }
-
-    fn add_process(mut self, events: Events<Ready>) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::Fork(ForkData::EventStream(events)));
-        Events { events: self.events, _state: PhantomData }
-    }
-
-    fn add_syscall(mut self, s: impl Syscall + 'static) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::Syscall(Box::new(s)));
-        Events { events: self.events, _state: PhantomData }
-    }
-
-    /// Adds ending Prehook and ProcessExited events to event sequence.
-    fn finished(mut self) -> Events<Ready> {
-        self.events.push_back(MockedTraceEvent::PreExit);
-        self.events.push_back(MockedTraceEvent::ProcessExited);
-        Events { events: self.events, _state: PhantomData }
-    }
-}
-
-/// This is Events<Ready> when first initialized and executed. When `get_next_event`
-/// encounters MockedTraceEvent::Fork, we will set it to it's child Pid and move the
-/// `Events<Ready>` value into `per_process_events`.
-/// Pid is then used by get_event_message.
-enum ForkData {
-    EventStream(Events<Ready>),
-    ChildPid(Pid),
-}
-
-/// All the different events we want to allow our mock trace to contain: blocking system
-/// calls, non-blocking syscalls, and forking for multi process. Signals, threads, and
-/// other events may come later. Blocking syscalls come in pairs: a blocking end and a
-/// blocked end.
-///
-/// No PID information is carried by the MockedTraceEvent or Events<_>, this information
-/// is a property of the running `Program`.
-enum MockedTraceEvent {
-    /// A syscall that is blocking a blocked syscall.
-    BlockingSyscall(BlockingSyscall),
-    /// A syscall blocked by some blocking syscall.
-    BlockedSyscall(BlockedSyscall),
-    Syscall(BoxedSyscall),
-    /// Fork event
-    Fork(ForkData),
-    /// Event received right before process exits.
-    PreExit,
-    /// Process has exited and is no longer accepting tracer commands.
-    ProcessExited,
-}
-
-impl MockedTraceEvent {
-    /// Fetch the registers based on the type of event.
-    fn get_prehook_regs(&self) -> Regs<Unmodified> {
-        use MockedTraceEvent::*;
-        match self {
-            BlockingSyscall(blocking_syscall) => {
-                blocking_syscall.syscall.get_prehook_regs()
-            }
-            BlockedSyscall(blocked_syscall) => {
-                blocked_syscall.syscall.get_prehook_regs()
-            }
-            Syscall(syscall) => {
-                syscall.get_prehook_regs()
-            }
-            Fork(_) => {
-                unimplemented!()
-            }
-            ProcessExited =>
-                panic!("get_prehook_regs(): ProcessExited has no registers."),
-            PreExit =>
-                panic!("get_prehook_regs(): PreExit has no registers."),
-        }
-    }
-}
-
-/// Interface for describing system calls.
-/// Allow us to implement per system call expected values.
-trait Syscall {
-    fn name(&self) -> &str;
-    fn syscall_number(&self) -> u32;
-    /// Default values system call should contain on prehook event.
-    /// Should at least have system call number set.
-    fn get_prehook_regs(&self) -> Regs<Unmodified>;
-    /// Default values system call should contain on posthook event.
-    /// Should at least have some meaningful return value set.
-    fn get_posthook_regs(&self) -> Regs<Unmodified>;
-}
-
-struct ReadSyscall {}
-
-impl Syscall for ReadSyscall {
-    fn name(&self) -> &str {
-        "read"
-    }
-    fn syscall_number(&self) -> u32 {
-        0
-    }
-
-    fn get_prehook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).make_modified();
-
-        regs.write_syscall_number(libc::SYS_read as u64);
-        regs.to_unmodified()
-    }
-
-    fn get_posthook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).make_modified();
-
-        regs.write_syscall_number(libc::SYS_read as u64);
-        regs.write_retval(1000 /*arbitrary bytes*/);
-        regs.to_unmodified()
-    }
-}
-
-struct WriteSyscall {}
-
-impl Syscall for WriteSyscall {
-    fn name(&self) -> &str {
-        "write"
-    }
-    fn syscall_number(&self) -> u32 {
-        1
-    }
-
-    fn get_prehook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).make_modified();
-
-        regs.write_syscall_number(libc::SYS_write as u64);
-        regs.to_unmodified()
-    }
-
-    fn get_posthook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).make_modified();
-
-        regs.write_syscall_number(libc::SYS_write as u64);
-        regs.write_retval(1000 /*arbitrary bytes*/);
-        regs.to_unmodified()
-    }
-}
-
-struct BlockingSyscall {
-    handle: BlockingHandle<BlockingEnd>,
-    pub syscall: BoxedSyscall,
-}
-
-impl BlockingSyscall {
-    /// Notify BlockedSyscall that it may now continue.
-    fn consume(&self) {
-        debug!("BlockingSyscall::consume()");
-        self.handle.consume();
-    }
-
-    /// Get unique index representing handle. Useful for uniquely identifying a unique
-    /// pair of system calls.
-    fn get_handle_index(&self) -> usize {
-        self.handle.index
-    }
-
-
-    fn new(handle: BlockingHandle<BlockingEnd>, syscall: BoxedSyscall)
-           -> BlockingSyscall {
-        BlockingSyscall { handle, syscall }
-    }
-}
-
-struct BlockedSyscall {
-    handle: BlockingHandle<BlockedEnd>,
-    pub syscall: BoxedSyscall,
-}
-
-impl BlockedSyscall {
-    /// Get unique index representing handle. Useful for uniquely identifying a unique
-    /// pair of system calls.
-    fn get_handle_index(&self) -> usize {
-        self.handle.index
-    }
-
-    fn is_blocked(&self) -> bool {
-        self.handle.is_blocked()
-    }
-
-    fn new(handle: BlockingHandle<BlockedEnd>, syscall: BoxedSyscall)
-           -> BlockedSyscall {
-        BlockedSyscall { handle, syscall }
-    }
-
-    fn clone_handle(&self) -> BlockingHandle<BlockedEnd> {
-        self.handle.clone()
-    }
-}
+pub type Shared<T> = Rc<RefCell<T>>;
 
 /// Runtime representation of a program.
 ///
@@ -360,7 +129,7 @@ impl Program {
     fn add_events(&mut self, events: Events<Ready>) {
         debug!("Program::add_events(pid: {:?})", self.current_pid());
         let mut per_process_events = self.per_process_events.borrow_mut();
-        if matches!(per_process_events.insert(self.current_pid(), events), Some(event)) {
+        if matches!(per_process_events.insert(self.current_pid(), events), Some(_)) {
             panic!("Unexpected events already present for {:?}", self.current_pid());
         }
     }
@@ -392,7 +161,7 @@ impl Program {
     /// We just iterate through our running processes and pick the next avaliable one.
     /// This is determininistic thanks to our use of BTreeSets.
     /// Panics if deadlock is detected, i.e. no available processes!
-    fn pick_next_process(&mut self) -> Pid {
+    fn pick_next_process(&self) -> Pid {
         let pid = self.running_procs.
             borrow_mut().
             iter().
@@ -428,51 +197,9 @@ impl Reactor for Program {
     }
 }
 
-#[derive(Clone)]
-enum BlockingEnd {}
-#[derive(Clone)]
-enum BlockedEnd {}
-
-/// Handle that a blocking system call can query to see if its partner system call
-/// is blocking.
-#[derive(Clone)]
-struct BlockingHandle<T> {
-    /// Shared vector of all live syscalls across all threads. API enforces that any given
-    /// instance of this struct only accesses it's live_syscalls element at index!
-    /// true represents a blocked system call, false represents unblocked.
-    live_syscalls: Shared<Vec<bool>>,
-    /// Only element BlockingHandle should be accessing.
-    index: usize,
-    phantom: PhantomData<T>
-}
-
-impl<T> BlockingHandle<T> {
-    fn new(handle: Shared<Vec<bool>>, index: usize) -> BlockingHandle<T> {
-        BlockingHandle{ live_syscalls: handle, index, phantom: PhantomData }
-    }
-}
-
-impl BlockingHandle<BlockedEnd> {
-    /// Only BlockedEnd handles may check if they're still blocked.
-    fn is_blocked(&self) -> bool {
-        *self.live_syscalls.borrow_mut().get(self.index).
-            expect("Expected entry to be here.")
-    }
-}
-
-impl BlockingHandle<BlockingEnd> {
-    /// Only BlockingEnd handles may convey when they're done blocking.
-    /// Next time the BlockedEnd pair call `.is_blocked()` it will be false.
-    fn consume(&self) {
-        *self.live_syscalls.borrow_mut().
-            get_mut(self.index).expect("Expected entry to be here.") = false;
-    }
-}
-
-
 // #[test]
 // fn couple_syscalls_test() {
-//     use crate::execution::run_program;
+//     use conflict_tracer::execution::run_program;
 //     tracing_subscriber::fmt::Subscriber::builder().
 //         with_env_filter(EnvFilter::from_default_env()).
 //         without_time().
@@ -491,7 +218,7 @@ impl BlockingHandle<BlockingEnd> {
 // #[test]
 // #[should_panic(expected = "No next available process. This is a deadlock!")]
 // fn deadlocking_syscall_test() {
-//     use crate::execution::run_program;
+//     use conflict_tracer::execution::run_program;
 //     tracing_subscriber::fmt::Subscriber::builder().
 //         with_env_filter(EnvFilter::from_default_env()).
 //     // with_target(false).
@@ -513,7 +240,7 @@ impl BlockingHandle<BlockingEnd> {
 
 #[test]
 fn blocking_syscall_test() {
-    use crate::execution::run_program;
+    use conflict_tracer::execution::run_program;
     tracing_subscriber::fmt::Subscriber::builder().
         with_env_filter(EnvFilter::from_default_env()).
     // with_target(false).
@@ -537,54 +264,6 @@ fn blocking_syscall_test() {
 
     program.add_events(events.finished());
     run_program(program);
-}
-
-/// Future representing a mocked objects which eventually produces a TraceEvent.
-/// This allows us to set events as pending (blocked) causing the executor to
-/// pick a different task to run.
-pub struct MockedAsyncEvent {
-    pid: Pid,
-    trace_event: TraceEvent,
-    handle: BlockingHandle<BlockedEnd>,
-    /// Check that our reactor is behaving accordingly by only ever having poll called twice:
-    /// once the very first time this future is polled (where it should return Pending).
-    /// And once more when it is rescheduled only when the event is ready (is_blocked() will return true).
-    polled_once: bool
-}
-
-impl MockedAsyncEvent {
-    fn new(pid: nix::unistd::Pid, trace_event: TraceEvent, handle: BlockingHandle<BlockedEnd>) -> MockedAsyncEvent {
-        MockedAsyncEvent {pid , trace_event, handle, polled_once: false }
-    }
-}
-
-impl Future for MockedAsyncEvent {
-    type Output = TraceEvent;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<TraceEvent> {
-        match (self.as_ref().handle.is_blocked(), self.polled_once) {
-            // Syscall is blocked, but we have already polled once before...
-            // The reactor should not have picked this process to run as it wasn't
-            // ready. This is a bug.
-            (true, true) => {
-                panic!("Bug: Reactor should not have picked this process, it wasn't ready.");
-            }
-            // First time being polled. We yield.
-            (true, false) => {
-                info!("MockedAsyncEvent returned pending.");
-                self.polled_once = true;
-                Poll::Pending
-            }
-            // This is the good case where we ran once, set polled_once to true and are now
-            // here.
-            (false, true) => {
-                info!("MockedAsyncEvent now ready on second poll.");
-                Poll::Ready(self.trace_event.clone())
-            }
-            (false, false) => {
-                panic!("polled_once is expected to be set to true on init");
-            }
-        }
-    }
 }
 
 // By default, Rust doesn't allow trait methods to be async,
@@ -658,7 +337,6 @@ impl Tracer for Program {
     /// TODO I probably need some state to tell whether I'm in the pre-hook
     /// or posthook
     async fn posthook(&self) -> Regs<Unmodified> {
-        use MockedTraceEvent::*;
         trace!("Program::posthook(pid: {:?})", self.current_pid());
 
         // No other task should try to access this same event, so it is safe
@@ -671,13 +349,13 @@ impl Tracer for Program {
             expect("Missing process in current_per_process_event");
 
         match event {
-            BlockingSyscall(blocking_syscall) => {
+            MockedTraceEvent::BlockingSyscall(blocking_syscall) => {
                 // Unblock blocked end.
                 blocking_syscall.consume();
                 // Move blocked syscall from blocked processes back to running.
                 let handle_index = blocking_syscall.get_handle_index();
                 match self.blocked_proc_index.borrow_mut().remove(& handle_index) {
-                    Some(blocked_pid) => {
+                    Some(_blocked_pid) => {
                         // Move process from blocked to running.
                         if matches!(
                             self.blocked_procs.borrow_mut().take(&self.current_pid()),
@@ -695,12 +373,14 @@ impl Tracer for Program {
                         // Proc wasn't in blocked_procs, this is because the blocking
                         // syscall executed before the blocked syscall. This is okay :)
                         // Nothing to do.
+                        // TODO Verify process is in running queue
+
                     }
                 }
 
                 blocking_syscall.syscall.get_posthook_regs()
             }
-            BlockedSyscall(syscall) => {
+            MockedTraceEvent::BlockedSyscall(syscall) => {
                 if !syscall.is_blocked() {
                     trace!("BlockedSyscall is not blocked anymore!");
                     syscall.syscall.get_posthook_regs()
@@ -761,14 +441,14 @@ impl Tracer for Program {
                     }
                 }
             }
-            Syscall(syscall) => {
+            MockedTraceEvent::Syscall(syscall) => {
                 // Nothing to wait on, this is it.
                 syscall.get_posthook_regs()
             }
-            Fork(child_events) => {
-                unimplemented!()
+            MockedTraceEvent::Fork(_) => {
+                panic!("Posthook not valid for Fork event.");
             }
-            e => unimplemented!(),
+            _exits => panic!("PreExit/ProcessExited not valid for Fork event."),
         }
     }
 
@@ -813,17 +493,17 @@ impl Tracer for Program {
         // We cannot "merge" branches here, as all the _syscall_ have different
         // types.
         let trace_event = match & event {
-            MockedTraceEvent::Syscall(syscall)  => {
+            MockedTraceEvent::Syscall(_)  => {
                 TraceEvent::Prehook(self.current_pid())
             }
-            MockedTraceEvent::BlockedSyscall(syscall)  => {
+            MockedTraceEvent::BlockedSyscall(_)  => {
                 TraceEvent::Prehook(self.current_pid())
             }
-            MockedTraceEvent::BlockingSyscall(syscall) => {
+            MockedTraceEvent::BlockingSyscall(_) => {
                 TraceEvent::Prehook(self.current_pid())
             }
 
-            MockedTraceEvent::Fork(child_events) => {
+            MockedTraceEvent::Fork(_) => {
                 panic!("This case handled above ^");
             }
             MockedTraceEvent::PreExit => {

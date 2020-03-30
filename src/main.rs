@@ -6,14 +6,11 @@ extern crate seccomp_sys;
 extern crate structopt;
 
 mod args;
-mod clocks;
 mod execution;
 mod ptracer;
-pub mod regs;
-pub mod seccomp;
+mod seccomp;
+mod clocks;
 mod system_call_names;
-mod tracer;
-mod MockReactor;
 
 use crate::ptracer::Ptracer;
 use tracing_subscriber::filter::EnvFilter;

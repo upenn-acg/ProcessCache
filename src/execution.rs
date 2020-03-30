@@ -1,16 +1,18 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
+
+use std::rc::Rc;
+use std::cell::RefCell;
+use tracer::regs::Regs;
+use nix;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
+use tracer::TraceEvent;
+use tracer::regs::Unmodified;
+use tracer::Tracer;
 use single_threaded_runtime::Reactor;
 use single_threaded_runtime::SingleThreadedRuntime;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::clocks::ProcessClock;
 

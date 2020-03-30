@@ -14,7 +14,8 @@ structopt = "0.2"
 byteorder = "1"
 env_logger = "0.5"
 seccomp-sys = "0.1.2"
-single_threaded_runtime = {path = "./single_threaded_runtime"}
+single_threaded_runtime = {path = "./single_threaded_runtime/"}
+tracer = {path = "./tracer/"}
 async-trait = "0.1.21"
 
 [build-dependencies]

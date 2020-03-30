@@ -34,7 +34,7 @@ macro_rules! read_regs_function {
         pub fn $fname(&self) -> u64 {
             self.regs.$reg
         }
-    };
+    }
 }
 
 impl Regs<Unmodified> {
@@ -50,6 +50,7 @@ impl Regs<Unmodified> {
     read_regs_function!(retval, rax);
     read_regs_function!(syscall_number, orig_rax);
 
+
     /// Nothing has been changed. Mark as flushed but do no not call set_regs.
     pub fn same(self) -> Regs<Flushed> {
         Regs {
@@ -60,7 +61,7 @@ impl Regs<Unmodified> {
 
     /// Set registers as writeable. Changes will not be written to tracee until
     /// flush() is called.
-    pub fn make_modified(self) -> Regs<Modified> {
+    pub fn to_modified(self) -> Regs<Modified> {
         Regs {
             regs: self.regs,
             _type: PhantomData,
@@ -74,7 +75,7 @@ macro_rules! write_regs_function {
         pub fn $fname(&mut self, value: u64) {
             self.regs.$reg = value;
         }
-    };
+    }
 }
 
 impl Regs<Modified> {

@@ -14,13 +14,12 @@ use std::ptr;
 
 use byteorder::WriteBytesExt;
 
+use tracer::TraceEvent;
+use tracer::Tracer;
+use tracer::regs::Regs;
+use tracer::regs::Unmodified;
+use tracer::regs::Modified;
 use crate::execution;
-use crate::regs::Modified;
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
-
 use crate::seccomp;
 use crate::Command;
 
