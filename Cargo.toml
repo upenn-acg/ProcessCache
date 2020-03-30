@@ -1,25 +1,6 @@
-[package]
-name = "conflict_tracer"
-version = "0.1.0"
-authors = ["gatowololo <gatowololo@gmail.com>", "kship"]
-edition = "2018"
-
-[dependencies]
-tracing = "0.1.10"
-tracing-subscriber = "0.2.0-alpha.2"
-
-nix = "0.17"
-libc = "0.2"
-structopt = "0.2"
-byteorder = "1"
-env_logger = "0.5"
-seccomp-sys = "0.1.2"
-single_threaded_runtime = {path = "./single_threaded_runtime/"}
-tracer = {path = "./tracer/"}
-async-trait = "0.1.21"
-
-[build-dependencies]
-cc = "1.0"
-
-# [profile.release]
-# debug = true
+[workspace]
+members = [
+  "single_threaded_runtime",
+  "tracer",
+  "mock_tracer"
+]

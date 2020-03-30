@@ -7,6 +7,5 @@ edition = "2018"
 [dependencies]
 nix = "0.17"
 libc = "0.2"
-# log = "0.4"
 async-trait = "0.1.21"
 single_threaded_runtime = { path = "../single_threaded_runtime/"}
