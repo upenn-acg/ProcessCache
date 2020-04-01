@@ -1,5 +1,7 @@
 [workspace]
 members = [
+  "conflict_tracer",
+  "conflict_tracer_app",
   "single_threaded_runtime",
   "tracer",
   "mock_tracer"

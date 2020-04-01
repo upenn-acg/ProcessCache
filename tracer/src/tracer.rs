@@ -78,7 +78,7 @@ pub trait Tracer {
 
     fn set_regs(&self, regs: &mut Regs<Modified>);
 
-    async fn posthook(&self) -> Regs<Unmodified>;
+    async fn posthook(&mut self) -> Regs<Unmodified>;
     // TODO Result<TraceEvent, ?> ?
     async fn get_next_event(&mut self) -> TraceEvent;
 }

@@ -21,7 +21,15 @@ use tracer::regs::Unmodified;
 use tracer::regs::Modified;
 use crate::execution;
 use crate::seccomp;
-use crate::Command;
+
+#[derive(Clone)]
+pub struct Command(String, Vec<String>);
+
+impl Command {
+    pub fn new(exe: String, args: Vec<String>) -> Self {
+        Command(exe, args)
+    }
+}
 
 use async_trait::async_trait;
 use tracing::{debug, error, info, trace};
@@ -70,7 +78,7 @@ impl Tracer for Ptracer {
         ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
     }
 
-    async fn posthook(&self) -> Regs<Unmodified> {
+    async fn posthook(&mut self) -> Regs<Unmodified> {
         use crate::ptracer::ContinueEvent;
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 

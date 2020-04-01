@@ -19,7 +19,7 @@ pub trait Syscall {
     fn get_posthook_regs(&self) -> Regs<Unmodified>;
 }
 
-struct ReadSyscall {}
+pub struct ReadSyscall {}
 
 impl Syscall for ReadSyscall {
     fn name(&self) -> &str {
@@ -45,7 +45,7 @@ impl Syscall for ReadSyscall {
     }
 }
 
-struct WriteSyscall {}
+pub struct WriteSyscall {}
 
 impl Syscall for WriteSyscall {
     fn name(&self) -> &str {
@@ -78,9 +78,9 @@ pub struct BlockingSyscall {
 
 impl BlockingSyscall {
     /// Notify BlockedSyscall that it may now continue.
-    pub fn consume(&self) {
+    pub fn unblock_blocked_end(&self) {
         debug!("BlockingSyscall::consume()");
-        self.handle.consume();
+        self.handle.unblock_blocked_end();
     }
 
     /// Get unique index representing handle. Useful for uniquely identifying a unique

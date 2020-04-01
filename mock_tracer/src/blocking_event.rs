@@ -1,4 +1,4 @@
-use crate::mock_tracer::Shared;
+use crate::program::Shared;
 use std::marker::PhantomData;
 
 #[derive(Clone)]
@@ -40,7 +40,7 @@ impl BlockingHandle<BlockedEnd> {
 impl BlockingHandle<BlockingEnd> {
     /// Only BlockingEnd handles may convey when they're done blocking.
     /// Next time the BlockedEnd pair call `.is_blocked()` it will be false.
-    pub fn consume(&self) {
+    pub fn unblock_blocked_end(&self) {
         *self.live_syscalls.borrow_mut().
             get_mut(self.index).expect("Expected entry to be here.") = false;
     }

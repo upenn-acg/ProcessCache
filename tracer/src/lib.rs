@@ -1,7 +1,7 @@
-//! Defines the Tracer trait and wrapper around libc::user_regs_struct Regs.
+//! Defines the Tracer trait and regs::Regs, awrapper around libc::user_regs_struct .
 ///
 pub mod regs;
 mod tracer;
 
-pub use tracer::TraceEvent;
-pub use tracer::Tracer;
+pub use crate::tracer::TraceEvent;
+pub use crate::tracer::Tracer;

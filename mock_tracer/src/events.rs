@@ -33,32 +33,32 @@ impl Events<Ready> {
 }
 
 impl Events<AddingEvents> {
-    fn new() -> Events<AddingEvents> {
+    pub fn new() -> Events<AddingEvents> {
         Events { events: VecDeque::new(), _state: PhantomData }
     }
 
-    fn add_blocking(mut self, s: BlockingSyscall) -> Events<AddingEvents> {
+    pub fn add_blocking(mut self, s: BlockingSyscall) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::BlockingSyscall(s));
         Events { events: self.events, _state: PhantomData }
     }
 
-    fn add_blocked(mut self, s: BlockedSyscall) -> Events<AddingEvents> {
+    pub fn add_blocked(mut self, s: BlockedSyscall) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::BlockedSyscall(s));
         Events { events: self.events, _state: PhantomData }
     }
 
-    fn add_process(mut self, events: Events<Ready>) -> Events<AddingEvents> {
+    pub fn add_process(mut self, events: Events<Ready>) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::Fork(ForkData::EventStream(events)));
         Events { events: self.events, _state: PhantomData }
     }
 
-    fn add_syscall(mut self, s: impl Syscall + 'static) -> Events<AddingEvents> {
+    pub fn add_syscall(mut self, s: impl Syscall + 'static) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::Syscall(Box::new(s)));
         Events { events: self.events, _state: PhantomData }
     }
 
     /// Adds ending Prehook and ProcessExited events to event sequence.
-    fn finished(mut self) -> Events<Ready> {
+    pub fn finished(mut self) -> Events<Ready> {
         self.events.push_back(MockedTraceEvent::PreExit);
         self.events.push_back(MockedTraceEvent::ProcessExited);
         Events { events: self.events, _state: PhantomData }
