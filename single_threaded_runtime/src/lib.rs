@@ -48,7 +48,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
     }
 
     pub fn add_future(&self, mut task: Task) {
-        info!("Adding new future through handle.");
+        info!("Adding new future through handle...");
         let waker = task.wait_waker();
 
         match task.future.as_mut().poll(&mut Context::from_waker(&waker)) {

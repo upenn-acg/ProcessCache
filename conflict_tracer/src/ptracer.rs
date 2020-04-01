@@ -13,17 +13,23 @@ use nix::sys::signal::Signal;
 use std::ptr;
 
 use byteorder::WriteBytesExt;
-use std::marker::PhantomData;
 
 use crate::execution;
-use crate::regs::Modified;
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
-
 use crate::seccomp;
-use crate::Command;
+use tracer::regs::Modified;
+use tracer::regs::Regs;
+use tracer::regs::Unmodified;
+use tracer::TraceEvent;
+use tracer::Tracer;
+
+#[derive(Clone)]
+pub struct Command(String, Vec<String>);
+
+impl Command {
+    pub fn new(exe: String, args: Vec<String>) -> Self {
+        Command(exe, args)
+    }
+}
 
 use async_trait::async_trait;
 use tracing::{debug, error, info, trace};
@@ -60,7 +66,7 @@ impl Ptracer {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Tracer for Ptracer {
     type Reactor = PtraceReactor;
 
@@ -72,7 +78,7 @@ impl Tracer for Ptracer {
         ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
     }
 
-    async fn posthook(&self) -> Regs<Unmodified> {
+    async fn posthook(&mut self) -> Regs<Unmodified> {
         use crate::ptracer::ContinueEvent;
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 
@@ -164,7 +170,7 @@ impl Tracer for Ptracer {
         unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }
     }
 
-    async fn get_next_event(&self) -> TraceEvent {
+    async fn get_next_event(&mut self) -> TraceEvent {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
         // info!("Waiting for next ptrace event.");
 
@@ -201,10 +207,7 @@ impl Tracer for Ptracer {
             match res {
                 Ok(_) => {
                     let regs = regs.assume_init();
-                    Regs {
-                        regs,
-                        _type: PhantomData,
-                    }
+                    Regs::new(regs)
                 }
                 Err(e) => {
                     error!(
@@ -255,6 +258,7 @@ impl Ptracer {
     /// uses execve to call the tracee program and have it ready to be ptraced.
     fn run_tracee(command: Command) -> nix::Result<()> {
         use nix::sys::signal::raise;
+        use std::ffi::CStr;
 
         // New ptracee and set ourselves to be traced.
         ptrace::traceme()?;
@@ -276,7 +280,9 @@ impl Ptracer {
             .collect();
         args.insert(0, exe.clone());
 
-        if let Err(e) = execvp(&exe, &args) {
+        let args_cstr: Vec<&CStr> = (&args).iter().map(|s: &CString| s.as_c_str()).collect();
+
+        if let Err(e) = execvp(&exe, args_cstr.as_slice()) {
             error!(
                 "Error executing execve for your program {:?}. Reason {}",
                 args, e

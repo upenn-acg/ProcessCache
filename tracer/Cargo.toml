@@ -1,5 +1,5 @@
 [package]
-name = "single_threaded_runtime"
+name = "tracer"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 edition = "2018"
@@ -7,7 +7,5 @@ edition = "2018"
 [dependencies]
 nix = "0.17"
 libc = "0.2"
-log = "0.4"
-
-# [profile.release]
-# debug = true
+async-trait = "0.1.21"
+single_threaded_runtime = { path = "../single_threaded_runtime/"}

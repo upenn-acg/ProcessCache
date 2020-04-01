@@ -1,0 +1,13 @@
+[package]
+name = "mock_tracer"
+version = "0.1.0"
+authors = ["gatowololo <gatowololo@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+nix = "0.17"
+libc = "0.2"
+async-trait = "0.1.21"
+tracer = { path = "../tracer"}
+single_threaded_runtime = { path = "../single_threaded_runtime" }
+tracing = "0.1.10"

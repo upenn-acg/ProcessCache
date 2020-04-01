@@ -10,9 +10,18 @@ pub enum Modified {}
 pub enum Flushed {}
 
 pub struct Regs<T> {
-    pub regs: user_regs_struct,
+    regs: user_regs_struct,
     // TODO should not expose this.
-    pub _type: PhantomData<T>,
+    _type: PhantomData<T>,
+}
+
+impl Regs<Unmodified> {
+    pub fn new(regs: user_regs_struct) -> Regs<Unmodified> {
+        Regs {
+            regs,
+            _type: PhantomData,
+        }
+    }
 }
 
 /// Create function with named $fname which returns register contents in $reg:
@@ -81,4 +90,40 @@ impl Regs<Modified> {
     write_regs_function!(write_rax, rax);
     write_regs_function!(write_retval, rax);
     write_regs_function!(write_syscall_number, orig_rax);
+
+    pub fn make_unmodified(self) -> Regs<Unmodified> {
+        Regs::<Unmodified>::new(self.regs)
+    }
+}
+
+pub fn empty_regs() -> user_regs_struct {
+    user_regs_struct {
+        r15: 0,
+        r14: 0,
+        r13: 0,
+        r12: 0,
+        rbp: 0,
+        rbx: 0,
+        r11: 0,
+        r10: 0,
+        r9: 0,
+        r8: 0,
+        rax: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        orig_rax: 0,
+        rip: 0,
+        cs: 0,
+        eflags: 0,
+        rsp: 0,
+        ss: 0,
+        fs_base: 0,
+        gs_base: 0,
+        ds: 0,
+        es: 0,
+        fs: 0,
+        gs: 0,
+    }
 }

@@ -1,9 +1,5 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use single_threaded_runtime::Reactor;
@@ -11,6 +7,10 @@ use single_threaded_runtime::SingleThreadedRuntime;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tracer::regs::Regs;
+use tracer::regs::Unmodified;
+use tracer::TraceEvent;
+use tracer::Tracer;
 
 use crate::clocks::ProcessClock;
 
@@ -49,14 +49,14 @@ thread_local! {
 pub async fn run_process<T, R>(
     pid: Pid,
     executor: Rc<SingleThreadedRuntime<R>>,
-    tracer: T,
+    mut tracer: T,
     mut current_clock: ProcessClock,
 ) where
     R: Reactor + 'static,
     T: Tracer + 'static,
 {
     let proc_span = span!(Level::INFO, "proc", ?pid);
-    let _enter = proc_span.enter();
+    let _proc_span_enter = proc_span.enter();
 
     current_clock.add_new_process(pid);
     let mut process_clock = current_clock;
@@ -67,6 +67,7 @@ pub async fn run_process<T, R>(
                 debug!("Saw exec event for pid {}", pid);
             }
             TraceEvent::PreExit(_pid) => {
+                debug!("Saw preexit event.");
                 break;
             }
             TraceEvent::Prehook(pid) => {
@@ -99,6 +100,7 @@ pub async fn run_process<T, R>(
 
                 let regs: Regs<Unmodified> = tracer.posthook().await;
 
+                debug!("in posthook");
                 // In posthook.
                 let retval = regs.retval() as i32;
                 let posthook_span = span!(Level::INFO, "posthook", retval);
@@ -115,10 +117,9 @@ pub async fn run_process<T, R>(
                 }
             }
 
-            TraceEvent::Fork(pid) | TraceEvent::VFork(pid) | TraceEvent::Clone(pid) => {
-                debug!("Fork Event from pid {}!", pid);
+            TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
-
+                debug!("Fork Event. Creating task for new child: {:?}", child);
                 // Recursively call run process to handle the new child process!
                 wrapper(
                     child,
@@ -174,7 +175,10 @@ pub async fn run_process<T, R>(
         TraceEvent::ProcessExited(pid) => {
             debug!("Saw actual exit event for pid {}", pid);
         }
-        _ => panic!("Saw other event when expecting ProcessExited event"),
+        e => panic!(
+            "Saw other event when expecting ProcessExited event: {:?}",
+            e
+        ),
     }
 }
 

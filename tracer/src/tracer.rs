@@ -1,3 +1,6 @@
+//! Abstraction layer so tracer implementation can be decoupled from interface.
+//! Allows us to have ProcessCache work with different tracer implementations,
+//! currently: MockTracer and Ptracer.
 use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -9,7 +12,7 @@ use nix::unistd::Pid;
 use single_threaded_runtime::Reactor;
 use std::os::raw::c_char;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TraceEvent {
     Exec(Pid),
     /// This is the stop before the final, from here we know we will receive an
@@ -18,6 +21,7 @@ pub enum TraceEvent {
     /// This is really a seccomp event, but with our setup, it represents a
     /// prehook event.
     Prehook(Pid),
+    /// This is the parent's PID, not the child.
     Fork(Pid),
     Clone(Pid),
     VFork(Pid),
@@ -52,7 +56,7 @@ impl From<WaitStatus> for TraceEvent {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Tracer {
     type Reactor: Reactor;
 
@@ -74,7 +78,7 @@ pub trait Tracer {
 
     fn set_regs(&self, regs: &mut Regs<Modified>);
 
-    async fn posthook(&self) -> Regs<Unmodified>;
+    async fn posthook(&mut self) -> Regs<Unmodified>;
     // TODO Result<TraceEvent, ?> ?
-    async fn get_next_event(&self) -> TraceEvent;
+    async fn get_next_event(&mut self) -> TraceEvent;
 }
