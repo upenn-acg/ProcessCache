@@ -1,6 +1,6 @@
-use tracing::{event, span, Level, debug, info, trace};
-use tracer::regs::{Regs, Unmodified, empty_regs};
-use crate::blocking_event::{BlockingHandle, BlockedEnd, BlockingEnd};
+use crate::blocking_event::{BlockedEnd, BlockingEnd, BlockingHandle};
+use tracer::regs::{empty_regs, Regs, Unmodified};
+use tracing::{debug, event, info, span, trace, Level};
 
 /// Allows us to use and store different types of system calls using
 /// a dynamic trait object.
@@ -89,9 +89,7 @@ impl BlockingSyscall {
         self.handle.get_index()
     }
 
-
-    pub fn new(handle: BlockingHandle<BlockingEnd>, syscall: BoxedSyscall)
-           -> BlockingSyscall {
+    pub fn new(handle: BlockingHandle<BlockingEnd>, syscall: BoxedSyscall) -> BlockingSyscall {
         BlockingSyscall { handle, syscall }
     }
 }
@@ -112,8 +110,7 @@ impl BlockedSyscall {
         self.handle.is_blocked()
     }
 
-    pub fn new(handle: BlockingHandle<BlockedEnd>, syscall: BoxedSyscall)
-           -> BlockedSyscall {
+    pub fn new(handle: BlockingHandle<BlockedEnd>, syscall: BoxedSyscall) -> BlockedSyscall {
         BlockedSyscall { handle, syscall }
     }
 

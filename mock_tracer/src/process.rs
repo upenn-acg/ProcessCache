@@ -1,25 +1,27 @@
 use async_trait::async_trait;
-use std::collections::{HashSet, HashMap, BTreeSet};
-use std::cell::RefCell;
-use single_threaded_runtime::Reactor;
 use nix::unistd::Pid;
-use std::os::raw::c_long;
+use single_threaded_runtime::Reactor;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::os::raw::c_char;
-use tracer::regs::{Regs,Unmodified, Modified};
+use std::os::raw::c_long;
+use tracer::regs::{Modified, Regs, Unmodified};
 use tracer::TraceEvent;
 use tracer::Tracer;
 
-use std::rc::Rc;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
-use tracing::{event, span, Level, debug, info, trace};
+use tracing::{debug, event, info, span, trace, Level};
 
 use crate::blocking_event::BlockingHandle;
-use crate::system_call::{BlockingSyscall, BlockedSyscall, Syscall};
+use crate::system_call::{BlockedSyscall, BlockingSyscall, Syscall};
 
-use crate::events::{Events, Ready, {MockedTraceEvent, ForkData, MockedAsyncEvent}};
-use crate::program::Shared;
+use crate::events::{
+    Events, Ready, {ForkData, MockedAsyncEvent, MockedTraceEvent},
+};
 use crate::program::Program;
+use crate::program::Shared;
 
 pub struct Process {
     pid: Pid,
@@ -41,7 +43,7 @@ impl Process {
             pid,
             upcoming_events: events,
             current_event: None,
-            program
+            program,
         }
     }
 
@@ -64,12 +66,13 @@ impl Tracer for Process {
 
     fn get_event_message(&self) -> c_long {
         // fetch child PID
-        let event = self.current_event.as_ref().expect("get_event_message: No current_event");
+        let event = self
+            .current_event
+            .as_ref()
+            .expect("get_event_message: No current_event");
 
         match event {
-            MockedTraceEvent::Fork(ForkData::ChildPid(child_pid)) => {
-                child_pid.as_raw().into()
-            }
+            MockedTraceEvent::Fork(ForkData::ChildPid(child_pid)) => child_pid.as_raw().into(),
             MockedTraceEvent::Fork(ForkData::EventStream(_)) => {
                 panic!("We should not get here with EventStream.");
             }
@@ -101,7 +104,10 @@ impl Tracer for Process {
     /// Return the current register state for the current event for the `pid`.
     /// Notice setting the register state is the responsibility of the MockedTraceEvent.
     fn get_registers(&self) -> Regs<Unmodified> {
-        self.current_event.as_ref().expect("Missing event").get_prehook_regs()
+        self.current_event
+            .as_ref()
+            .expect("Missing event")
+            .get_prehook_regs()
     }
 
     /// Set registers will be as fancy as we want it to be. We could use the information
@@ -119,24 +125,23 @@ impl Tracer for Process {
         // No other task should try to access this same event, so it is safe
         // to remove. If a task accidentally double calls "posthook" this could
         // fail, but that's kinda what we want?
-        let event = self.
-            current_event.
-            take().
-            expect("Event missing");
+        let event = self.current_event.take().expect("Event missing");
 
         match event {
-            MockedTraceEvent::BlockingSyscall(blocking_syscall) => {
-                self.program.borrow_mut().handle_blocking_event(blocking_syscall)
-            }
+            MockedTraceEvent::BlockingSyscall(blocking_syscall) => self
+                .program
+                .borrow_mut()
+                .handle_blocking_event(blocking_syscall),
             MockedTraceEvent::BlockedSyscall(syscall) => {
                 if !syscall.is_blocked() {
                     trace!("BlockedSyscall is not blocked anymore!");
                     syscall.syscall.get_posthook_regs()
                 } else {
                     trace!("System call is blocked!");
-                    self.program.
-                        borrow_mut().
-                        handle_blocked_event(self.pid(), syscall).await
+                    self.program
+                        .borrow_mut()
+                        .handle_blocked_event(self.pid(), syscall)
+                        .await
                 }
             }
             MockedTraceEvent::Syscall(syscall) => {
@@ -160,11 +165,10 @@ impl Tracer for Process {
     async fn get_next_event(&mut self) -> TraceEvent {
         trace!("Program::get_next_event(pid: {:?})", self.pid());
 
-        let event = self.
-            upcoming_events.
-            pop_next_event().
-            expect("Reached end of event stream. \
-                   You have asked for a trace event from an already exited process.");
+        let event = self.upcoming_events.pop_next_event().expect(
+            "Reached end of event stream. \
+                   You have asked for a trace event from an already exited process.",
+        );
 
         if let MockedTraceEvent::Fork(ForkData::ChildPid(_)) = event {
             // This is an internal enum used by us, the user shouldn't be able to ask for
@@ -179,33 +183,25 @@ impl Tracer for Process {
             self.program.borrow_mut().insert_running_proc(child_pid);
 
             let child_proc = Process::new(child_pid, self.program.clone(), child_events);
-            self.program.borrow().add_awaiting_process(child_pid, child_proc);
+            self.program
+                .borrow()
+                .add_awaiting_process(child_pid, child_proc);
             self.current_event = Some(MockedTraceEvent::Fork(ForkData::ChildPid(child_pid)));
             return TraceEvent::Fork(self.pid());
         }
 
         // We cannot "merge" branches here, as all the _syscall_ have different
         // types.
-        let trace_event = match & event {
-            MockedTraceEvent::Syscall(_)  => {
-                TraceEvent::Prehook(self.pid())
-            }
-            MockedTraceEvent::BlockedSyscall(_)  => {
-                TraceEvent::Prehook(self.pid())
-            }
-            MockedTraceEvent::BlockingSyscall(_) => {
-                TraceEvent::Prehook(self.pid())
-            }
+        let trace_event = match &event {
+            MockedTraceEvent::Syscall(_) => TraceEvent::Prehook(self.pid()),
+            MockedTraceEvent::BlockedSyscall(_) => TraceEvent::Prehook(self.pid()),
+            MockedTraceEvent::BlockingSyscall(_) => TraceEvent::Prehook(self.pid()),
 
             MockedTraceEvent::Fork(_) => {
                 panic!("This case handled above ^");
             }
-            MockedTraceEvent::PreExit => {
-                TraceEvent::PreExit(self.pid())
-            }
-            MockedTraceEvent::ProcessExited => {
-                TraceEvent::ProcessExited(self.pid())
-            }
+            MockedTraceEvent::PreExit => TraceEvent::PreExit(self.pid()),
+            MockedTraceEvent::ProcessExited => TraceEvent::ProcessExited(self.pid()),
         };
 
         self.current_event = Some(event);

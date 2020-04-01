@@ -1,10 +1,10 @@
 use conflict_tracer;
-use tracing_subscriber;
-use nix::unistd::Pid;
-use mock_tracer::program::Program;
 use mock_tracer::events::Events;
-use mock_tracer::system_call::{WriteSyscall, ReadSyscall};
 use mock_tracer::process::Process;
+use mock_tracer::program::Program;
+use mock_tracer::system_call::{ReadSyscall, WriteSyscall};
+use nix::unistd::Pid;
+use tracing_subscriber;
 use tracing_subscriber::EnvFilter;
 
 use conflict_tracer::run_program;
@@ -20,22 +20,21 @@ fn blocking_syscall_test() {
     let starting_pid = Pid::from_raw(1);
     let mut program = Program::new(starting_pid);
 
-    let (write, read) = program.borrow_mut().new_blocking_pair(WriteSyscall{}, ReadSyscall{});
+    let (write, read) = program
+        .borrow_mut()
+        .new_blocking_pair(WriteSyscall {}, ReadSyscall {});
 
-    let child_events =
-        Events::new().
-        add_blocking(write).
-        finished();
+    let child_events = Events::new().add_blocking(write).finished();
 
-    let events = Events::new().
-        add_syscall(ReadSyscall {}).
-        add_process(child_events).
-        add_blocked(read).finished();
+    let events = Events::new()
+        .add_syscall(ReadSyscall {})
+        .add_process(child_events)
+        .add_blocked(read)
+        .finished();
 
     let starting_process = Process::new(starting_pid, program.clone(), events);
     run_program(starting_process);
 }
-
 
 // #[test]
 // fn couple_syscalls_test() {

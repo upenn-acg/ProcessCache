@@ -16,12 +16,16 @@ pub struct BlockingHandle<T> {
     live_syscalls: Shared<Vec<bool>>,
     /// Only element BlockingHandle should be accessing.
     index: usize,
-    phantom: PhantomData<T>
+    phantom: PhantomData<T>,
 }
 
 impl<T> BlockingHandle<T> {
     pub fn new(handle: Shared<Vec<bool>>, index: usize) -> BlockingHandle<T> {
-        BlockingHandle{ live_syscalls: handle, index, phantom: PhantomData }
+        BlockingHandle {
+            live_syscalls: handle,
+            index,
+            phantom: PhantomData,
+        }
     }
 
     pub fn get_index(&self) -> usize {
@@ -32,8 +36,11 @@ impl<T> BlockingHandle<T> {
 impl BlockingHandle<BlockedEnd> {
     /// Only BlockedEnd handles may check if they're still blocked.
     pub fn is_blocked(&self) -> bool {
-        *self.live_syscalls.borrow_mut().get(self.index).
-            expect("Expected entry to be here.")
+        *self
+            .live_syscalls
+            .borrow_mut()
+            .get(self.index)
+            .expect("Expected entry to be here.")
     }
 }
 
@@ -41,7 +48,10 @@ impl BlockingHandle<BlockingEnd> {
     /// Only BlockingEnd handles may convey when they're done blocking.
     /// Next time the BlockedEnd pair call `.is_blocked()` it will be false.
     pub fn unblock_blocked_end(&self) {
-        *self.live_syscalls.borrow_mut().
-            get_mut(self.index).expect("Expected entry to be here.") = false;
+        *self
+            .live_syscalls
+            .borrow_mut()
+            .get_mut(self.index)
+            .expect("Expected entry to be here.") = false;
     }
 }

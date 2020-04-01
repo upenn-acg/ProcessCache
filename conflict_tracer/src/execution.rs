@@ -1,17 +1,16 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
-
-use std::rc::Rc;
-use std::cell::RefCell;
-use tracer::regs::Regs;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
-use tracer::TraceEvent;
-use tracer::regs::Unmodified;
-use tracer::Tracer;
 use single_threaded_runtime::Reactor;
 use single_threaded_runtime::SingleThreadedRuntime;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+use tracer::regs::Regs;
+use tracer::regs::Unmodified;
+use tracer::TraceEvent;
+use tracer::Tracer;
 
 use crate::clocks::ProcessClock;
 
@@ -176,7 +175,10 @@ pub async fn run_process<T, R>(
         TraceEvent::ProcessExited(pid) => {
             debug!("Saw actual exit event for pid {}", pid);
         }
-        e => panic!("Saw other event when expecting ProcessExited event: {:?}", e),
+        e => panic!(
+            "Saw other event when expecting ProcessExited event: {:?}",
+            e
+        ),
     }
 }
 

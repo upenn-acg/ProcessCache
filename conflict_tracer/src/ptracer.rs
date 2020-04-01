@@ -14,13 +14,13 @@ use std::ptr;
 
 use byteorder::WriteBytesExt;
 
-use tracer::TraceEvent;
-use tracer::Tracer;
-use tracer::regs::Regs;
-use tracer::regs::Unmodified;
-use tracer::regs::Modified;
 use crate::execution;
 use crate::seccomp;
+use tracer::regs::Modified;
+use tracer::regs::Regs;
+use tracer::regs::Unmodified;
+use tracer::TraceEvent;
+use tracer::Tracer;
 
 #[derive(Clone)]
 pub struct Command(String, Vec<String>);
@@ -280,10 +280,7 @@ impl Ptracer {
             .collect();
         args.insert(0, exe.clone());
 
-        let args_cstr: Vec<&CStr> = (&args).
-            iter().
-            map(|s: &CString| s.as_c_str()).
-            collect();
+        let args_cstr: Vec<&CStr> = (&args).iter().map(|s: &CString| s.as_c_str()).collect();
 
         if let Err(e) = execvp(&exe, args_cstr.as_slice()) {
             error!(

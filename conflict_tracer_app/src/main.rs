@@ -1,7 +1,6 @@
-
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
-use conflict_tracer::{Ptracer, Command};
 use conflict_tracer;
+use conflict_tracer::{Command, Ptracer};
+use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use structopt::StructOpt;
 
@@ -17,7 +16,6 @@ pub struct Opt {
     pub exe: String,
     pub args: Vec<String>,
 }
-
 
 /// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {

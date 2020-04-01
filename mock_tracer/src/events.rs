@@ -1,18 +1,18 @@
-use tracing::{event, span, Level, debug, info, trace};
+use crate::system_call::BlockedSyscall;
+use crate::system_call::BlockingSyscall;
+use crate::system_call::BoxedSyscall;
+use crate::system_call::Syscall;
+use nix::unistd::Pid;
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use std::marker::PhantomData;
-use crate::system_call::BlockingSyscall;
-use crate::system_call::BlockedSyscall;
-use crate::system_call::Syscall;
-use nix::unistd::Pid;
-use crate::system_call::BoxedSyscall;
 use tracer::regs::{Regs, Unmodified};
 use tracer::TraceEvent;
+use tracing::{debug, event, info, span, trace, Level};
 
-use crate::blocking_event::{BlockingHandle, BlockedEnd};
+use crate::blocking_event::{BlockedEnd, BlockingHandle};
 use std::future::Future;
 
 /// State for Events. Still adding new events.
@@ -34,34 +34,54 @@ impl Events<Ready> {
 
 impl Events<AddingEvents> {
     pub fn new() -> Events<AddingEvents> {
-        Events { events: VecDeque::new(), _state: PhantomData }
+        Events {
+            events: VecDeque::new(),
+            _state: PhantomData,
+        }
     }
 
     pub fn add_blocking(mut self, s: BlockingSyscall) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::BlockingSyscall(s));
-        Events { events: self.events, _state: PhantomData }
+        Events {
+            events: self.events,
+            _state: PhantomData,
+        }
     }
 
     pub fn add_blocked(mut self, s: BlockedSyscall) -> Events<AddingEvents> {
         self.events.push_back(MockedTraceEvent::BlockedSyscall(s));
-        Events { events: self.events, _state: PhantomData }
+        Events {
+            events: self.events,
+            _state: PhantomData,
+        }
     }
 
     pub fn add_process(mut self, events: Events<Ready>) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::Fork(ForkData::EventStream(events)));
-        Events { events: self.events, _state: PhantomData }
+        self.events
+            .push_back(MockedTraceEvent::Fork(ForkData::EventStream(events)));
+        Events {
+            events: self.events,
+            _state: PhantomData,
+        }
     }
 
     pub fn add_syscall(mut self, s: impl Syscall + 'static) -> Events<AddingEvents> {
-        self.events.push_back(MockedTraceEvent::Syscall(Box::new(s)));
-        Events { events: self.events, _state: PhantomData }
+        self.events
+            .push_back(MockedTraceEvent::Syscall(Box::new(s)));
+        Events {
+            events: self.events,
+            _state: PhantomData,
+        }
     }
 
     /// Adds ending Prehook and ProcessExited events to event sequence.
     pub fn finished(mut self) -> Events<Ready> {
         self.events.push_back(MockedTraceEvent::PreExit);
         self.events.push_back(MockedTraceEvent::ProcessExited);
-        Events { events: self.events, _state: PhantomData }
+        Events {
+            events: self.events,
+            _state: PhantomData,
+        }
     }
 }
 
@@ -100,22 +120,12 @@ impl MockedTraceEvent {
     pub fn get_prehook_regs(&self) -> Regs<Unmodified> {
         use MockedTraceEvent::*;
         match self {
-            BlockingSyscall(blocking_syscall) => {
-                blocking_syscall.syscall.get_prehook_regs()
-            }
-            BlockedSyscall(blocked_syscall) => {
-                blocked_syscall.syscall.get_prehook_regs()
-            }
-            Syscall(syscall) => {
-                syscall.get_prehook_regs()
-            }
-            Fork(_) => {
-                unimplemented!()
-            }
-            ProcessExited =>
-                panic!("get_prehook_regs(): ProcessExited has no registers."),
-            PreExit =>
-                panic!("get_prehook_regs(): PreExit has no registers."),
+            BlockingSyscall(blocking_syscall) => blocking_syscall.syscall.get_prehook_regs(),
+            BlockedSyscall(blocked_syscall) => blocked_syscall.syscall.get_prehook_regs(),
+            Syscall(syscall) => syscall.get_prehook_regs(),
+            Fork(_) => unimplemented!(),
+            ProcessExited => panic!("get_prehook_regs(): ProcessExited has no registers."),
+            PreExit => panic!("get_prehook_regs(): PreExit has no registers."),
         }
     }
 }
@@ -130,14 +140,21 @@ pub struct MockedAsyncEvent {
     /// Check that our reactor is behaving accordingly by only ever having poll called twice:
     /// once the very first time this future is polled (where it should return Pending).
     /// And once more when it is rescheduled only when the event is ready (is_blocked() will return true).
-    polled_once: bool
+    polled_once: bool,
 }
 
 impl MockedAsyncEvent {
-    pub fn new(pid: nix::unistd::Pid,
-               trace_event: TraceEvent,
-               handle: BlockingHandle<BlockedEnd>) -> MockedAsyncEvent {
-        MockedAsyncEvent {pid , trace_event, handle, polled_once: false }
+    pub fn new(
+        pid: nix::unistd::Pid,
+        trace_event: TraceEvent,
+        handle: BlockingHandle<BlockedEnd>,
+    ) -> MockedAsyncEvent {
+        MockedAsyncEvent {
+            pid,
+            trace_event,
+            handle,
+            polled_once: false,
+        }
     }
 }
 

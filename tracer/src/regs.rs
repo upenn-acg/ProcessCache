@@ -18,7 +18,8 @@ pub struct Regs<T> {
 impl Regs<Unmodified> {
     pub fn new(regs: user_regs_struct) -> Regs<Unmodified> {
         Regs {
-            regs, _type: PhantomData,
+            regs,
+            _type: PhantomData,
         }
     }
 }
@@ -34,7 +35,7 @@ macro_rules! read_regs_function {
         pub fn $fname(&self) -> u64 {
             self.regs.$reg
         }
-    }
+    };
 }
 
 impl Regs<Unmodified> {
@@ -49,7 +50,6 @@ impl Regs<Unmodified> {
     read_regs_function!(rax, rax);
     read_regs_function!(retval, rax);
     read_regs_function!(syscall_number, orig_rax);
-
 
     /// Nothing has been changed. Mark as flushed but do no not call set_regs.
     pub fn same(self) -> Regs<Flushed> {
@@ -75,7 +75,7 @@ macro_rules! write_regs_function {
         pub fn $fname(&mut self, value: u64) {
             self.regs.$reg = value;
         }
-    }
+    };
 }
 
 impl Regs<Modified> {
