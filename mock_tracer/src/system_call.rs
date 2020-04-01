@@ -30,18 +30,18 @@ impl Syscall for ReadSyscall {
     }
 
     fn get_prehook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).to_modified();
+        let mut regs = Regs::new(empty_regs()).make_modified();
 
         regs.write_syscall_number(libc::SYS_read as u64);
-        regs.to_unmodified()
+        regs.make_unmodified()
     }
 
     fn get_posthook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).to_modified();
+        let mut regs = Regs::new(empty_regs()).make_modified();
 
         regs.write_syscall_number(libc::SYS_read as u64);
         regs.write_retval(1000 /*arbitrary bytes*/);
-        regs.to_unmodified()
+        regs.make_unmodified()
     }
 }
 
@@ -56,18 +56,18 @@ impl Syscall for WriteSyscall {
     }
 
     fn get_prehook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).to_modified();
+        let mut regs = Regs::new(empty_regs()).make_modified();
 
         regs.write_syscall_number(libc::SYS_write as u64);
-        regs.to_unmodified()
+        regs.make_unmodified()
     }
 
     fn get_posthook_regs(&self) -> Regs<Unmodified> {
-        let mut regs = Regs::new(empty_regs()).to_modified();
+        let mut regs = Regs::new(empty_regs()).make_modified();
 
         regs.write_syscall_number(libc::SYS_write as u64);
         regs.write_retval(1000 /*arbitrary bytes*/);
-        regs.to_unmodified()
+        regs.make_unmodified()
     }
 }
 

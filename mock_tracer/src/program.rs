@@ -4,11 +4,8 @@ use nix::unistd::Pid;
 use single_threaded_runtime::Reactor;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::os::raw::c_char;
-use std::os::raw::c_long;
-use tracer::regs::{Modified, Regs, Unmodified};
+use tracer::regs::{Regs, Unmodified};
 use tracer::TraceEvent;
-use tracer::Tracer;
 
 use std::cmp::Ordering;
 use std::rc::Rc;

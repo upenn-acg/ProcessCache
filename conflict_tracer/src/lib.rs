@@ -1,6 +1,6 @@
 mod execution;
 mod ptracer;
-mod seccomp;
+pub mod seccomp;
 mod clocks;
 mod system_call_names;
 

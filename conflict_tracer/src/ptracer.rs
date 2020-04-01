@@ -281,7 +281,7 @@ impl Ptracer {
         args.insert(0, exe.clone());
 
         let args_cstr: Vec<&CStr> = (&args).
-            into_iter().
+            iter().
             map(|s: &CString| s.as_c_str()).
             collect();
 

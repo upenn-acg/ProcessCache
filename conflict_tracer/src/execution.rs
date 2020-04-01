@@ -4,7 +4,6 @@ use crate::system_call_names::SYSTEM_CALL_NAMES;
 use std::rc::Rc;
 use std::cell::RefCell;
 use tracer::regs::Regs;
-use nix;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use tracer::TraceEvent;
@@ -119,7 +118,7 @@ pub async fn run_process<T, R>(
                 }
             }
 
-            TraceEvent::Fork(pid) | TraceEvent::VFork(pid) | TraceEvent::Clone(pid) => {
+            TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
                 debug!("Fork Event. Creating task for new child: {:?}", child);
                 // Recursively call run process to handle the new child process!
