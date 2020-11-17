@@ -10,7 +10,6 @@ use std::process::exit;
 
 use byteorder::LittleEndian;
 use nix::sys::signal::Signal;
-use std::ptr;
 
 use byteorder::WriteBytesExt;
 

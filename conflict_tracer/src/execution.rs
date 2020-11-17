@@ -87,7 +87,6 @@ pub async fn run_process<T, R>(
                     continue;
                 }
 
-
                 match name {
                     "openat" => {
                         debug!("Openat event");
