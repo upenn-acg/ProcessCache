@@ -1,11 +1,10 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
+use libc::{c_char, O_CREAT};
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use single_threaded_runtime::Reactor;
 use single_threaded_runtime::SingleThreadedRuntime;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use tracer::regs::Regs;
 use tracer::regs::Unmodified;
@@ -15,11 +14,6 @@ use tracer::Tracer;
 use crate::clocks::ProcessClock;
 
 use tracing::{debug, info, span, Level};
-
-thread_local! {
-    pub static EXITED_CLOCKS: RefCell<HashMap<Pid, ProcessClock>> =
-        RefCell::new(HashMap::new());
-}
 
 // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
 //     // This is a regular signal, inject it to the process.
@@ -83,17 +77,42 @@ pub async fn run_process<T, R>(
                 // an execve event or a posthook if execve returns failure. We don't
                 // bother handling it, let the main loop take care of it.
                 // TODO: Handle them properly...
-                if name == "execve" || name == "exit_group" || name == "clone" {
+                if name == "exit_group" || name == "clone" {
                     debug!("continuing to next event..");
                     continue;
                 }
 
+                if name == "execve" {
+                    debug!("Execve event");
+                    continue;
+                }
+
+
                 match name {
-                    "write" => {
-                        handle_write_syscall(pid, regs, &process_clock);
+                    "openat" => {
+                        debug!("Openat event");
+                        let flag = regs.arg3() as i32;
+
+                        if flag & O_CREAT != 0 {
+                            // File is being created.
+                            let cpath = regs.arg2() as *const c_char;
+                            let path = tracer.read_cstring(cpath, pid);
+                            let fd = regs.arg1() as i32;
+                            debug!("File create event (openat)");
+                            debug!("Creator pid: {}, fd: {}, path: {}", pid, fd, path);
+                        }
                     }
                     "read" => {
-                        handle_read_syscall();
+                        debug!("Read event");
+
+                        let fd = regs.arg1() as i32;
+                        debug!("Reader pid: {}, fd: {}", pid, fd);
+                    }
+                    "write" => {
+                        debug!("Write event");
+
+                        let fd = regs.arg1() as i32;
+                        debug!("Writer pid: {}, fd: {}", pid, fd);
                     }
                     _ => (),
                 }
@@ -105,21 +124,13 @@ pub async fn run_process<T, R>(
                 let retval = regs.retval() as i32;
                 let posthook_span = span!(Level::INFO, "posthook", retval);
                 let _penter = posthook_span.enter();
-                let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
-
-                debug!("in posthook");
-                #[allow(clippy::single_match)]
-                match name {
-                    "wait4" => {
-                        handle_wait4_syscall(&regs, &mut process_clock);
-                    }
-                    _ => (),
-                }
+                //let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
             }
 
             TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
                 debug!("Fork Event. Creating task for new child: {:?}", child);
+                debug!("Parent pid is: {}", pid);
                 // Recursively call run process to handle the new child process!
                 wrapper(
                     child,
@@ -153,23 +164,6 @@ pub async fn run_process<T, R>(
             }
         }
     }
-
-    // We only get here via a PreExit where we break out of the loop.
-    // TODO should probably break on some signal events as well.
-
-    // Put this process's logical clock in the global map of
-    // process clocks. This child won't need its clock no 'mo.
-    EXITED_CLOCKS.with(|exited_clocks| {
-        if exited_clocks
-            .borrow_mut()
-            .insert(pid, process_clock)
-            .is_some()
-        {
-            // This should never happen.
-            panic!("EXITED_CLOCKS already had an entry for this PID");
-        }
-    });
-
     // Saw pre-exit event, wait for final exit event.
     match tracer.get_next_event().await {
         TraceEvent::ProcessExited(pid) => {
@@ -264,103 +258,4 @@ fn wrapper<R>(
 {
     let f = run_process(pid, executor.clone(), tracer, current_clock);
     executor.add_future(Task::new(f, pid));
-}
-
-fn handle_write_syscall(
-    pid: Pid,
-    regs: Regs<Unmodified>,
-    process_clock: &ProcessClock,
-    /*resource_clock: &ResourceClock*/
-) {
-    let span = span!(Level::INFO, "handle_write_syscall()");
-    let _enter = span.enter();
-
-    let fd = regs.arg1() as u64;
-    if fd != 1 {
-        let _time = process_clock.get_current_time(pid);
-
-        // let rc: ResourceClock = ResourceClock {
-        //     read_clock: HashMap::new(),
-        //     write_clock: (pid, *time),
-        // };
-        // let mut rcs_borrow = resource_clocks.borrow_mut();
-
-        // if rcs_borrow.contains_key(&fd) {
-        //     println!("Updating write clock for fd: {}", fd);
-        //     println!("Write clock --> Pid: {}, Time: {:?}", pid, time);
-        // } else {
-        //     println!("Adding write clock for fd: {}", fd);
-        //     println!("Write clock --> Pid: {} , Time: {:?}", pid, time);
-        // }
-
-        // let clock = rcs_borrow.entry(fd).or_insert(rc);
-        // let ResourceClock {
-        //     read_clock: _read_c,
-        //     write_clock: write_c,
-        // } = clock;
-        // let (p, t) = write_c;
-        // *p = pid;
-        // *t = *time;
-    }
-}
-
-fn handle_read_syscall() {
-    // let fd = regs.arg1() as u64;
-    // if fd != 1 {
-    //     let pcs_borrow = process_clocks.borrow();
-    //     let time = pcs_borrow.get(&pid).unwrap().get(&pid).unwrap();
-
-    //     let mut new_read_clock: HashMap<Pid, _> = HashMap::new();
-    //     new_read_clock.insert(pid, *time);
-    //     // If we are making a new clock, because this is the first
-    //     // time the resource is being accessed, just a dummy write clock.
-    //     let new_write_clock = (Pid::from_raw(0 as i32), LogicalTime::new());
-    //     let rc: ResourceClock = ResourceClock {
-    //         read_clock: new_read_clock,
-    //         write_clock: new_write_clock,
-    //     };
-    //     let mut rc_borrow = resource_clocks.borrow_mut();
-    //     let clock = rc_borrow.entry(fd).or_insert(rc);
-    //     let ResourceClock {
-    //         read_clock: read_c,
-    //         write_clock: _write_c,
-    //     } = clock;
-    //     read_c.insert(pid, *time);
-
-    //     if rc_borrow.contains_key(&fd) {
-    //         println!("Updating read clock for fd: {}", fd);
-    //         println!("Read clock --> Pid: {}, Time: {:?}", pid, time);
-    //     } else {
-    //         println!("Adding read clock for fd: {}", fd);
-    //         println!("Read clock --> Pid: {}, Time: {:?}", pid, *time);
-    //     }
-    // }
-}
-
-fn handle_wait4_syscall(regs: &Regs<Unmodified>, process_clock: &mut ProcessClock) {
-    let p = regs.retval() as i32;
-    if p != -1 {
-        let child: Pid = Pid::from_raw(p);
-        // This might happen because of a data race?
-        let child_clock = EXITED_CLOCKS.with(|exited_clock| {
-            exited_clock.borrow_mut().remove(&child).expect(
-                "Child was reported as exited, \
-                        but no entry for it found in EXITED_CLOCKS.",
-            )
-        });
-
-        // Update our times based on any newer times that our child might have.
-        for (process, other_time) in child_clock {
-            match process_clock.get_current_time(process) {
-                Some(our_time) => {
-                    if other_time > our_time {
-                        process_clock.update_entry(process, other_time);
-                    }
-                }
-                None => {
-                    process_clock.update_entry(process, other_time);
-                }
-            }
-        }
-    }
 }

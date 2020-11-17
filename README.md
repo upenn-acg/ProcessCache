@@ -1,11 +1,9 @@
-# ProcessCache
+# IOTracker
 
-[![Build Status](https://dev.azure.com/upenn-acg/ProcessCache/_apis/build/status/upenn-acg.ProcessCache?branchName=master)](https://dev.azure.com/upenn-acg/ProcessCache/_build/latest?definitionId=3&branchName=master)
-
-This is the implementation of ProcessCache: a system that provides automatic caching of computation at the process level.
+This is the implementation of IOTracker: a system that tracks the inputs and outputs of programs at the exec level.
 
 ## Installation
-Given a proper cargo set up. `cargo build` works using rustc 1.42. It should work for any newer version though.
+Given a proper cargo set up. `cargo build` works using rustc 1.47.0. It should work for any newer version though.
 
 ## Usage
 Currently simple programs work:

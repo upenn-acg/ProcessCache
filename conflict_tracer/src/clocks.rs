@@ -21,9 +21,9 @@ pub struct ProcessClock {
 }
 
 impl ProcessClock {
-    pub fn get_current_time(&self, pid: Pid) -> Option<LogicalTime> {
-        self.clock.get(&pid).cloned()
-    }
+    // pub fn get_current_time(&self, pid: Pid) -> Option<LogicalTime> {
+    //     self.clock.get(&pid).cloned()
+    // }
 
     pub fn add_new_process(&mut self, pid: Pid) {
         self.clock.insert(pid, LogicalTime::new());
@@ -36,9 +36,9 @@ impl ProcessClock {
         }
     }
 
-    pub fn update_entry(&mut self, pid: Pid, new_time: LogicalTime) {
-        self.clock.insert(pid, new_time);
-    }
+    // pub fn update_entry(&mut self, pid: Pid, new_time: LogicalTime) {
+    //     self.clock.insert(pid, new_time);
+    // }
 
     pub fn increment_time(&mut self, pid: Pid) {
         let time = self

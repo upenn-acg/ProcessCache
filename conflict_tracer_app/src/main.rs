@@ -1,6 +1,6 @@
 use conflict_tracer;
 use conflict_tracer::{Command, Ptracer};
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+use tracing_subscriber::filter::EnvFilter;
 
 use structopt::StructOpt;
 

@@ -121,15 +121,19 @@ impl Tracer for Ptracer {
 
         'done: loop {
             let mut bytes: Vec<u8> = vec![];
+            // let res = unsafe {
+            //     #[allow(deprecated)]
+            //     ptrace::ptrace(
+            //         Request::PTRACE_PEEKDATA,
+            //         pid,
+            //         address.offset(count),
+            //         ptr::null_mut(),
+            //     )
+            //     .expect("Failed to ptrace peek data")
+            // };
+
             let res = unsafe {
-                #[allow(deprecated)]
-                ptrace::ptrace(
-                    Request::PTRACE_PEEKDATA,
-                    pid,
-                    address.offset(count),
-                    ptr::null_mut(),
-                )
-                .expect("Failed to ptrace peek data")
+                ptrace::read(pid, address.offset(count)).expect("failed to ptrace read data")
             };
 
             bytes.write_i64::<LittleEndian>(res).unwrap();
