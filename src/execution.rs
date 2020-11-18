@@ -3,18 +3,16 @@ use crate::system_call_names::SYSTEM_CALL_NAMES;
 use libc::{c_char, O_CREAT};
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
-use single_threaded_runtime::Reactor;
 use single_threaded_runtime::SingleThreadedRuntime;
 use std::rc::Rc;
 
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
-use crate::tracer::Tracer;
-
-use crate::clocks::ProcessClock;
 
 use tracing::{debug, info, span, Level};
+use crate::Ptracer;
+use single_threaded_runtime::ptrace_event::PtraceReactor;
 
 // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
 //     // This is a regular signal, inject it to the process.
@@ -38,23 +36,31 @@ use tracing::{debug, info, span, Level};
 
 // }
 
-/// It would seem that &RefCell would be enough. Rc<RefCell<_>> is needed to
-/// convice Rust that the clocks will live long  enough, otherwise we run into
-/// lifetime issues.
-pub async fn run_process<T, R>(
+pub fn trace_program(first_process: Pid) -> nix::Result<()> {
+    let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
+    let ptracer = Ptracer::new(first_process);
+    debug!("Running whole program");
+
+    let f = run_process(
+        first_process,
+        // Every executing process gets its own handle into the executor.
+        executor.clone(),
+        ptracer,
+    );
+
+    executor.add_future(Task::new(f, first_process));
+    executor.run_all();
+
+    Ok(())
+}
+
+pub async fn run_process(
     pid: Pid,
-    executor: Rc<SingleThreadedRuntime<R>>,
-    mut tracer: T,
-    mut current_clock: ProcessClock,
-) where
-    R: Reactor + 'static,
-    T: Tracer + 'static,
-{
+    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
+    mut tracer: Ptracer,
+) {
     let proc_span = span!(Level::INFO, "proc", ?pid);
     let _proc_span_enter = proc_span.enter();
-
-    current_clock.add_new_process(pid);
-    let mut process_clock = current_clock;
 
     loop {
         match tracer.get_next_event().await {
@@ -131,16 +137,13 @@ pub async fn run_process<T, R>(
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
                 debug!("Fork Event. Creating task for new child: {:?}", child);
                 debug!("Parent pid is: {}", pid);
-                // Recursively call run process to handle the new child process!
-                wrapper(
-                    child,
-                    executor.clone(),
-                    tracer.clone_tracer_for_new_process(child),
-                    process_clock.clone(),
-                );
 
-                // Start of a new epoch, increment the parent's clock upon fork.
-                process_clock.increment_own_time();
+                // Recursively call run process to handle the new child process!
+                let f = run_process(pid,
+                                    executor.clone(),
+                                    tracer.clone_tracer_for_new_process(child));
+                executor.add_future(Task::new(f, pid));
+
             }
 
             TraceEvent::Posthook(pid) => {
@@ -174,27 +177,6 @@ pub async fn run_process<T, R>(
             e
         ),
     }
-}
-
-pub fn run_program<T>(tracer: T) -> nix::Result<()>
-where
-    T: Tracer + 'static,
-{
-    let executor = Rc::new(SingleThreadedRuntime::new(tracer.get_reactor()));
-    debug!("Running whole program");
-
-    let first_process = tracer.get_current_process();
-    let f = run_process(
-        first_process,
-        executor.clone(),
-        tracer,
-        ProcessClock::new(first_process),
-    );
-
-    executor.add_future(Task::new(f, first_process));
-    executor.run_all();
-
-    Ok(())
 }
 
 // async fn handle_getcwd(pid: Pid) {
@@ -237,17 +219,3 @@ where
 //         y.get_yield().unwrap()
 //     }
 // }
-
-/// We recursively call run_process from run_process. The futures state machine
-/// does not like the recursive type. We use this wrapper to break the recursion.
-fn wrapper<R>(
-    pid: Pid,
-    executor: Rc<SingleThreadedRuntime<R>>,
-    tracer: impl Tracer + 'static,
-    current_clock: ProcessClock,
-) where
-    R: Reactor + 'static,
-{
-    let f = run_process(pid, executor.clone(), tracer, current_clock);
-    executor.add_future(Task::new(f, pid));
-}

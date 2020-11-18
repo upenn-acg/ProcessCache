@@ -54,12 +54,6 @@ impl PtraceReactor {
     }
 }
 
-// Currently libc::siginfo_t does not have the si_pid field.
-// So we go to C to fetch the pid_t that was set by waitid().
-extern "C" {
-    fn getPid(infop: *mut libc::siginfo_t) -> libc::pid_t;
-}
-
 impl Reactor for PtraceReactor {
     fn wait_for_event(&mut self) -> bool {
         // Is there a way to wait on multiple FDs? I really wanna know
@@ -89,7 +83,7 @@ impl Reactor for PtraceReactor {
             }
             _ => {
                 // Some pid finished, query siginfo to see who it was.
-                let pid = unsafe { getPid(&mut siginfo as *mut libc::siginfo_t) };
+                let pid = unsafe { siginfo.si_pid() };
                 let pid = Pid::from_raw(pid);
 
                 let waker = WAKERS.with(|wakers| {

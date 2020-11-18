@@ -5,8 +5,10 @@ use std::marker::PhantomData;
 pub enum Unmodified {}
 /// Represents a register which has been changed. Data must be written to tracee
 /// for changes to take effect.
+#[allow(dead_code)]
 pub enum Modified {}
 /// Data has been written to tracee.
+#[allow(dead_code)]
 pub enum Flushed {}
 
 pub struct Regs<T> {
@@ -32,6 +34,7 @@ impl Regs<Unmodified> {
 ///     }
 macro_rules! read_regs_function {
     ($fname:ident, $reg:ident) => {
+        #[allow(dead_code)]
         pub fn $fname(&self) -> u64 {
             self.regs.$reg
         }
@@ -52,6 +55,7 @@ impl Regs<Unmodified> {
     read_regs_function!(syscall_number, orig_rax);
 
     /// Nothing has been changed. Mark as flushed but do no not call set_regs.
+    #[allow(dead_code)]
     pub fn same(self) -> Regs<Flushed> {
         Regs {
             regs: self.regs,
@@ -61,6 +65,7 @@ impl Regs<Unmodified> {
 
     /// Set registers as writeable. Changes will not be written to tracee until
     /// flush() is called.
+    #[allow(dead_code)]
     pub fn make_modified(self) -> Regs<Modified> {
         Regs {
             regs: self.regs,
@@ -72,6 +77,7 @@ impl Regs<Unmodified> {
 /// Create function with named $fname which writes to register contents in $reg.
 macro_rules! write_regs_function {
     ($fname:ident, $reg:ident) => {
+        #[allow(dead_code)]
         pub fn $fname(&mut self, value: u64) {
             self.regs.$reg = value;
         }
@@ -91,11 +97,13 @@ impl Regs<Modified> {
     write_regs_function!(write_retval, rax);
     write_regs_function!(write_syscall_number, orig_rax);
 
+    #[allow(dead_code)]
     pub fn make_unmodified(self) -> Regs<Unmodified> {
         Regs::<Unmodified>::new(self.regs)
     }
 }
 
+#[allow(dead_code)]
 pub fn empty_regs() -> user_regs_struct {
     user_regs_struct {
         r15: 0,

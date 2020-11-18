@@ -1,5 +1,5 @@
 [package]
-name = "IOTracker"
+name = "io_tracker"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 edition = "2018"
