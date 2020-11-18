@@ -6,10 +6,11 @@ use single_threaded_runtime::task::Task;
 use single_threaded_runtime::Reactor;
 use single_threaded_runtime::SingleThreadedRuntime;
 use std::rc::Rc;
-use tracer::regs::Regs;
-use tracer::regs::Unmodified;
-use tracer::TraceEvent;
-use tracer::Tracer;
+
+use crate::regs::Regs;
+use crate::regs::Unmodified;
+use crate::tracer::TraceEvent;
+use crate::tracer::Tracer;
 
 use crate::clocks::ProcessClock;
 
@@ -181,6 +182,7 @@ where
 {
     let executor = Rc::new(SingleThreadedRuntime::new(tracer.get_reactor()));
     debug!("Running whole program");
+
     let first_process = tracer.get_current_process();
     let f = run_process(
         first_process,
@@ -191,15 +193,6 @@ where
 
     executor.add_future(Task::new(f, first_process));
     executor.run_all();
-
-    // Not really useful to output the process clocks in their
-    // final state.
-    // for (pid, clock) in process_clocks.borrow().iter() {
-    //     println!("Process clock for: {}", pid);
-    //     for (p, t) in clock {
-    //         println!("Pid: {}, Time: {:?}", p, t);
-    //     }
-    // }
 
     Ok(())
 }

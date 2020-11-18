@@ -1,6 +1,7 @@
 //! Abstraction layer so tracer implementation can be decoupled from interface.
 //! Allows us to have ProcessCache work with different tracer implementations,
 //! currently: MockTracer and Ptracer.
+//!
 use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;

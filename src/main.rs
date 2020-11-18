@@ -1,6 +1,16 @@
-use conflict_tracer;
-use conflict_tracer::{Command, Ptracer};
 use tracing_subscriber::filter::EnvFilter;
+
+mod clocks;
+mod execution;
+mod ptracer;
+mod tracer;
+mod regs;
+mod seccomp;
+mod system_call_names;
+
+pub use crate::execution::run_program;
+pub use crate::ptracer::Command;
+pub use crate::ptracer::Ptracer;
 
 use structopt::StructOpt;
 
@@ -10,14 +20,13 @@ use structopt::StructOpt;
 #[derive(StructOpt, Debug)]
 #[structopt(
     name = "dettracer",
-    about = "A parallel dynamic determinism enforcement program written in Rust"
+    about = "A parallel dsynamic determinism enforcement program written in Rust"
 )]
 pub struct Opt {
     pub exe: String,
     pub args: Vec<String>,
 }
 
-/// Dettracer program written in Rust.
 fn main() -> nix::Result<()> {
     tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(EnvFilter::from_default_env())

@@ -15,11 +15,11 @@ use byteorder::WriteBytesExt;
 
 use crate::execution;
 use crate::seccomp;
-use tracer::regs::Modified;
-use tracer::regs::Regs;
-use tracer::regs::Unmodified;
-use tracer::TraceEvent;
-use tracer::Tracer;
+use crate::regs::Modified;
+use crate::regs::Regs;
+use crate::regs::Unmodified;
+use crate::tracer::TraceEvent;
+use crate::tracer::Tracer;
 
 #[derive(Clone)]
 pub struct Command(String, Vec<String>);
