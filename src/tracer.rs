@@ -1,16 +1,10 @@
 //! Abstraction layer so tracer implementation can be decoupled from interface.
 //! Allows us to have ProcessCache work with different tracer implementations,
 //! currently: MockTracer and Ptracer.
-use crate::regs::Modified;
-use crate::regs::Regs;
-use crate::regs::Unmodified;
-use async_trait::async_trait;
-use libc::c_long;
+//!
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
-use single_threaded_runtime::Reactor;
-use std::os::raw::c_char;
 
 #[derive(Debug, Clone)]
 pub enum TraceEvent {
@@ -54,31 +48,4 @@ impl From<WaitStatus> for TraceEvent {
             WaitStatus::StillAlive => panic!("from(): StillAlive not supported"),
         }
     }
-}
-
-#[async_trait(?Send)]
-pub trait Tracer {
-    type Reactor: Reactor;
-
-    fn get_reactor(&self) -> Self::Reactor;
-
-    fn get_event_message(&self) -> c_long;
-
-    fn clone_tracer_for_new_process(&self, new_child: Pid) -> Self;
-
-    /// Return PID of current process represented by this tracer.
-    fn get_current_process(&self) -> Pid;
-
-    // TODO make this a Result<String, ?> one day?
-    fn read_cstring(&self, address: *const c_char, pid: Pid) -> String;
-
-    fn read_value<T>(&self, address: *const T, pid: Pid) -> T;
-
-    fn get_registers(&self) -> Regs<Unmodified>;
-
-    fn set_regs(&self, regs: &mut Regs<Modified>);
-
-    async fn posthook(&mut self) -> Regs<Unmodified>;
-    // TODO Result<TraceEvent, ?> ?
-    async fn get_next_event(&mut self) -> TraceEvent;
 }

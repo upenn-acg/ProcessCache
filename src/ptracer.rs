@@ -3,8 +3,6 @@ use libc::{c_long, c_void, PT_NULL};
 use nix::sys::ptrace;
 use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
-use single_threaded_runtime::ptrace_event::PtraceReactor;
-use std::ffi::CString;
 use std::mem;
 use std::process::exit;
 
@@ -13,24 +11,11 @@ use nix::sys::signal::Signal;
 
 use byteorder::WriteBytesExt;
 
-use crate::execution;
-use crate::seccomp;
-use tracer::regs::Modified;
-use tracer::regs::Regs;
-use tracer::regs::Unmodified;
-use tracer::TraceEvent;
-use tracer::Tracer;
+use crate::regs::Modified;
+use crate::regs::Regs;
+use crate::regs::Unmodified;
+use crate::tracer::TraceEvent;
 
-#[derive(Clone)]
-pub struct Command(String, Vec<String>);
-
-impl Command {
-    pub fn new(exe: String, args: Vec<String>) -> Self {
-        Command(exe, args)
-    }
-}
-
-use async_trait::async_trait;
 use tracing::{debug, error, info, trace};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -41,11 +26,10 @@ pub enum ContinueEvent {
 
 pub struct Ptracer {
     current_process: Pid,
-    command: Command,
 }
 
 impl Ptracer {
-    fn set_trace_options(pid: Pid) {
+    pub(crate) fn set_trace_options(pid: Pid) {
         let options = Options::PTRACE_O_EXITKILL
             | Options::PTRACE_O_TRACECLONE
             | Options::PTRACE_O_TRACEEXEC
@@ -57,28 +41,21 @@ impl Ptracer {
         ptrace::setoptions(pid, options).expect("Unable to set ptrace options");
     }
 
-    fn new(starting_process: Pid, command: Command) -> Ptracer {
+    pub(crate) fn new(starting_process: Pid) -> Ptracer {
         Ptracer {
             current_process: starting_process,
-            command,
         }
     }
 }
 
-#[async_trait(?Send)]
-impl Tracer for Ptracer {
-    type Reactor = PtraceReactor;
 
-    fn get_reactor(&self) -> Self::Reactor {
-        PtraceReactor::new()
-    }
 
-    fn get_event_message(&self) -> c_long {
+impl Ptracer {
+    pub(crate) fn get_event_message(&self) -> c_long {
         ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
     }
 
-    async fn posthook(&mut self) -> Regs<Unmodified> {
-        use crate::ptracer::ContinueEvent;
+    pub(crate) async fn posthook(&mut self) -> Regs<Unmodified> {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 
         info!("Waiting for posthook event.");
@@ -100,18 +77,18 @@ impl Tracer for Ptracer {
         }
     }
 
+    #[allow(dead_code)]
     fn get_current_process(&self) -> Pid {
         self.current_process
     }
 
-    fn clone_tracer_for_new_process(&self, new_child: Pid) -> Ptracer {
+    pub(crate) fn clone_tracer_for_new_process(&self, new_child: Pid) -> Ptracer {
         Ptracer {
             current_process: new_child,
-            command: self.command.clone(),
         }
     }
 
-    fn read_cstring(&self, address: *const c_char, pid: Pid) -> String {
+    pub(crate) fn read_cstring(&self, address: *const c_char, pid: Pid) -> String {
         let address = address as *mut c_void;
         let mut string = String::new();
         // Move 8 bytes up each time for next read.
@@ -120,17 +97,6 @@ impl Tracer for Ptracer {
 
         'done: loop {
             let mut bytes: Vec<u8> = vec![];
-            // let res = unsafe {
-            //     #[allow(deprecated)]
-            //     ptrace::ptrace(
-            //         Request::PTRACE_PEEKDATA,
-            //         pid,
-            //         address.offset(count),
-            //         ptr::null_mut(),
-            //     )
-            //     .expect("Failed to ptrace peek data")
-            // };
-
             let res = unsafe {
                 ptrace::read(pid, address.offset(count)).expect("failed to ptrace read data")
             };
@@ -150,11 +116,12 @@ impl Tracer for Ptracer {
         string
     }
 
+    #[allow(dead_code)]
     fn read_value<T>(&self, address: *const T, pid: Pid) -> T {
         use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
         use std::mem::size_of;
 
-        // Ugh rust doesn't support this type as a const so I can use a stack allocated
+        // Ugh rust doesn't support this type as a const so I can't use a stack allocated
         // array here.
         let type_size: usize = size_of::<T>();
         let remote = RemoteIoVec {
@@ -173,7 +140,7 @@ impl Tracer for Ptracer {
         unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }
     }
 
-    async fn get_next_event(&mut self) -> TraceEvent {
+    pub(crate) async fn get_next_event(&mut self) -> TraceEvent {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
         // info!("Waiting for next ptrace event.");
 
@@ -184,24 +151,23 @@ impl Tracer for Ptracer {
         //expect("ptrace continue failed.");
 
         // TODO Kelly Why are we looping here.
-        use crate::ptracer::ContinueEvent;
         while let Err(_e) = ptrace_syscall(self.current_process, ContinueEvent::Continue, None) {}
         // Wait for ptrace event from this pid here.
         AsyncPtrace {
             pid: self.current_process,
         }
-        .await
-        .into()
+            .await
+            .into()
     }
 
     /// Nix does not yet have a way to fetch registers. We use our own instead.
     /// Given the pid of a process that is currently being traced. Return the registers
     /// for that process.
-    fn get_registers(&self) -> Regs<Unmodified> {
+    pub(crate) fn get_registers(&self) -> Regs<Unmodified> {
         let mut regs = mem::MaybeUninit::uninit();
         unsafe {
             #[allow(deprecated)]
-            let res = ptrace::ptrace(
+                let res = ptrace::ptrace(
                 Request::PTRACE_GETREGS,
                 self.current_process,
                 PT_NULL as *mut c_void,
@@ -223,79 +189,18 @@ impl Tracer for Ptracer {
         }
     }
 
+    #[allow(dead_code)]
     fn set_regs(&self, regs: &mut Regs<Modified>) {
         unsafe {
             #[allow(deprecated)]
-            ptrace::ptrace(
+                ptrace::ptrace(
                 Request::PTRACE_SETREGS,
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
             )
-            .unwrap_or_else(|_| panic!("Unable to set regs for pid: {}", self.current_process));
+                .unwrap_or_else(|_| panic!("Unable to set regs for pid: {}", self.current_process));
         }
-    }
-}
-
-impl Ptracer {
-    pub fn run_tracer_and_tracee(command: Command) -> nix::Result<()> {
-        use nix::sys::wait::waitpid;
-
-        match fork()? {
-            ForkResult::Parent { child } => {
-                // Wait for program to be ready.
-                waitpid(child, None).expect("Unable to wait for child to be ready");
-
-                debug!("Child returned ready!");
-                Ptracer::set_trace_options(child);
-
-                let ptracer = Ptracer::new(child, command);
-                execution::run_program(ptracer)?;
-                Ok(())
-            }
-            ForkResult::Child => Ptracer::run_tracee(command),
-        }
-    }
-
-    /// This function should be called after a fork.
-    /// uses execve to call the tracee program and have it ready to be ptraced.
-    fn run_tracee(command: Command) -> nix::Result<()> {
-        use nix::sys::signal::raise;
-        use std::ffi::CStr;
-
-        // New ptracee and set ourselves to be traced.
-        ptrace::traceme()?;
-        // Stop ourselves until the tracer is ready. This ensures the tracer has time
-        // to get set up.
-        raise(Signal::SIGSTOP)?;
-
-        // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
-        // raise(...).
-        let loader = seccomp::RuleLoader::new();
-        loader.load_to_kernel();
-
-        // Convert arguments to correct arguments.
-        let exe = CString::new(command.0).unwrap();
-        let mut args: Vec<CString> = command
-            .1
-            .into_iter()
-            .map(|s| CString::new(s).unwrap())
-            .collect();
-        args.insert(0, exe.clone());
-
-        let args_cstr: Vec<&CStr> = (&args).iter().map(|s: &CString| s.as_c_str()).collect();
-
-        if let Err(e) = execvp(&exe, args_cstr.as_slice()) {
-            error!(
-                "Error executing execve for your program {:?}. Reason {}",
-                args, e
-            );
-            // TODO parent does not know that child exited it may report a weird abort
-            // message.
-            exit(1);
-        }
-
-        Ok(())
     }
 }
 

@@ -3,6 +3,7 @@ use seccomp_sys::*;
 use std::env;
 use std::u32;
 
+#[allow(dead_code)]
 pub enum OnDebug {
     Intercept,
     LetPass,
@@ -34,7 +35,8 @@ impl RuleLoader {
         }
     }
 
-    /// Always intecept system call.
+    /// Always intercept system call.
+    #[allow(dead_code)]
     pub fn intercept(&self, syscall: c_int) {
         unsafe {
             // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
@@ -44,10 +46,9 @@ impl RuleLoader {
         }
     }
 
-    ///
-    ///
     /// When on_debug is OnDebug::Intercept, if the debugging is on, the system call will
     /// be intercepted.
+    #[allow(dead_code)]
     pub fn let_pass(&self, syscall: c_int, on_debug: OnDebug) {
         match on_debug {
             OnDebug::Intercept if self.debug => self.intercept(syscall),
