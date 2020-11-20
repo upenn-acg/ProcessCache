@@ -148,6 +148,7 @@ dependencies = [
  "nix",
  "seccomp-sys",
  "single_threaded_runtime",
+ "stdext",
  "structopt",
  "tracing",
  "tracing-subscriber",
@@ -351,6 +352,8 @@ dependencies = [
  "libc",
  "log",
  "nix",
+ "stdext",
+ "tracing",
 ]
 
 [[package]]
@@ -358,6 +361,12 @@ name = "smallvec"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c2fb2ec9bcd216a5b0d0ccf31ab17b5ed1d627960edff65bbe95d3ce221cefc"
+
+[[package]]
+name = "stdext"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a61b4ae487cb43d0479907e74d36f8813e9940bd3b1adcbecc69fe8a0cee3ec"
 
 [[package]]
 name = "strsim"

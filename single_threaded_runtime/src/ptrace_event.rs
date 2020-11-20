@@ -1,4 +1,3 @@
-use log::trace;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 
@@ -23,9 +22,9 @@ thread_local! {
 /// Future representing calling ptrace() and waitpid() on a Pid.
 pub struct AsyncPtrace {
     pub pid: Pid,
-    // We could have a reactor handle here. But the user shouldn't have to worry
-    // about initializing a reactor.
 }
+
+use log::{debug, info, trace};
 
 impl Future for AsyncPtrace {
     type Output = WaitStatus;
@@ -36,11 +35,18 @@ impl Future for AsyncPtrace {
         match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).expect("Unable to waitpid from poll") {
             WaitStatus::StillAlive => {
                 WAKERS.with(|wakers| {
-                    wakers.borrow_mut().insert(self.pid, cx.waker().clone());
+                    trace!("Inserting waker for {:?}", self.pid);
+                    if let Some(_existing) = wakers.borrow_mut().insert(self.pid, cx.waker().clone()) {
+                        panic!("Waker already existed for {}", self.pid);
+                    }
                 });
+                trace!("pending...");
                 Poll::Pending
             }
-            w => Poll::Ready(w),
+            w => {
+                trace!("ready!");
+                Poll::Ready(w)
+            },
         }
     }
 }
@@ -81,7 +87,7 @@ impl Reactor for PtraceReactor {
                     panic!("Unexpected error reason: {}", error);
                 }
             }
-            _ => {
+            0 => {
                 // Some pid finished, query siginfo to see who it was.
                 let pid = unsafe { siginfo.si_pid() };
                 let pid = Pid::from_raw(pid);
@@ -92,11 +98,12 @@ impl Reactor for PtraceReactor {
                         .remove(&pid)
                         .expect("Expected waker to be in our set.")
                 });
-                waker.wake();
 
                 trace!("waitid() = {}", pid);
+                waker.wake();
                 false
             }
+            n => panic!("Unexpected return code from waitid: {}", n),
         }
     }
 }
