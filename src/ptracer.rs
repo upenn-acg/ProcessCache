@@ -25,7 +25,7 @@ pub enum ContinueEvent {
 }
 
 pub struct Ptracer {
-    current_process: Pid,
+    pub current_process: Pid,
 }
 
 impl Ptracer {
@@ -46,11 +46,7 @@ impl Ptracer {
             current_process: starting_process,
         }
     }
-}
 
-
-
-impl Ptracer {
     pub(crate) fn get_event_message(&self) -> c_long {
         ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
     }
@@ -80,12 +76,6 @@ impl Ptracer {
     #[allow(dead_code)]
     fn get_current_process(&self) -> Pid {
         self.current_process
-    }
-
-    pub(crate) fn clone_tracer_for_new_process(&self, new_child: Pid) -> Ptracer {
-        Ptracer {
-            current_process: new_child,
-        }
     }
 
     pub(crate) fn read_cstring(&self, address: *const c_char, pid: Pid) -> String {

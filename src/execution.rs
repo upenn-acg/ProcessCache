@@ -42,7 +42,6 @@ pub fn trace_program(first_process: Pid) -> nix::Result<()> {
     debug!("Running whole program");
 
     let f = run_process(
-        first_process,
         // Every executing process gets its own handle into the executor.
         executor.clone(),
         ptracer,
@@ -55,11 +54,10 @@ pub fn trace_program(first_process: Pid) -> nix::Result<()> {
 }
 
 pub async fn run_process(
-    pid: Pid,
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     mut tracer: Ptracer,
 ) {
-    let proc_span = span!(Level::INFO, "proc", ?pid);
+    let proc_span = span!(Level::INFO, "proc", ?tracer.current_process);
     let _proc_span_enter = proc_span.enter();
 
     loop {
@@ -132,18 +130,15 @@ pub async fn run_process(
                 let _penter = posthook_span.enter();
                 //let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
             }
-
             TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message() as i32);
                 debug!("Fork Event. Creating task for new child: {:?}", child);
-                debug!("Parent pid is: {}", pid);
+                debug!("Parent pid is: {}", tracer.current_process);
 
                 // Recursively call run process to handle the new child process!
-                let f = run_process(pid,
-                                    executor.clone(),
-                                    tracer.clone_tracer_for_new_process(child));
-                executor.add_future(Task::new(f, pid));
-
+                let f = run_process(executor.clone(),
+                                    Ptracer::new(child));
+                executor.add_future(Task::new(f, child));
             }
 
             TraceEvent::Posthook(pid) => {

@@ -1,21 +1,22 @@
 use crate::NEXT_TASK;
 use crate::WAITING_TASKS;
-use log::trace;
+
 use nix::unistd::Pid;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
 use std::task::Waker;
+use log::{trace, info, warn};
 
 const WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(Task::clone, Task::wake, Task::wake_by_ref, Task::drop);
 
-type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+type LocalBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 pub struct Task {
     pub pid: Pin<Box<Pid>>,
-    pub future: LocalBoxFuture<'static, ()>,
+    pub future: LocalBoxFuture<()>,
 }
 
 impl Task {
@@ -31,11 +32,16 @@ impl Task {
     }
 
     unsafe fn wake(data: *const ()) {
-        let pid = *(data as *const Pid);
-        trace!("Waking up: {:?}", pid);
+         let pid = *(data as *const Pid);
 
-        WAITING_TASKS.with(|tasks| {
-            let task = tasks.borrow_mut().remove(&pid);
+         WAITING_TASKS.with(|tasks| {
+            let task = tasks.
+                borrow_mut().
+                remove(&pid);
+            if task.is_none() {
+                panic!("Task {} not found in task list for waiting task.", pid);
+            }
+
             NEXT_TASK.with(|next_task| {
                 if next_task.borrow().is_some() {
                     panic!("Expected next task to be empty.");
@@ -50,10 +56,14 @@ impl Task {
     }
 
     unsafe fn wake_by_ref(_data: *const ()) {}
+
     unsafe fn drop(_data: *const ()) {}
 
-    pub fn wait_waker(&self) -> Waker {
-        let raw = RawWaker::new(&(*self.pid) as *const Pid as *const (), &WAKER_VTABLE);
+    pub fn get_waker(&self) -> Waker {
+        info!("get_waker() pid {}", self.pid);
+        let p: *const () = &(*self.pid) as *const Pid as *const ();
+
+        let raw = RawWaker::new(p, &WAKER_VTABLE);
         unsafe { Waker::from_raw(raw) }
     }
 }
