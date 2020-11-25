@@ -10,10 +10,12 @@ use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
 
-use tracing::{debug, info, span, Level};
+use tracing::{debug, info, span, Level, instrument, info_span, trace};
 use crate::Ptracer;
 use single_threaded_runtime::ptrace_event::PtraceReactor;
+use tracing_futures::Instrument;
 
+use anyhow::{Result, Error, Context, anyhow, bail};
 // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
 //     // This is a regular signal, inject it to the process.
 //     if self.live_processes.contains(& pid){
@@ -36,10 +38,10 @@ use single_threaded_runtime::ptrace_event::PtraceReactor;
 
 // }
 
-pub fn trace_program(first_process: Pid) -> nix::Result<()> {
+pub fn trace_program(first_proc: Pid) -> nix::Result<()> {
     let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
-    let ptracer = Ptracer::new(first_process);
-    debug!("Running whole program");
+    let ptracer = Ptracer::new(first_proc);
+    info!("Running whole program");
 
     let f = run_process(
         // Every executing process gets its own handle into the executor.
@@ -47,36 +49,50 @@ pub fn trace_program(first_process: Pid) -> nix::Result<()> {
         ptracer,
     );
 
-    executor.add_future(Task::new(f, first_process));
+    executor.add_future(Task::new(f, first_proc));
     executor.run_all();
 
     Ok(())
 }
 
+/// Wrapper for displaying error messages. All error messages are handled here.
 pub async fn run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     mut tracer: Ptracer,
-) {
-    let proc_span = span!(Level::INFO, "proc", ?tracer.current_process);
-    let _proc_span_enter = proc_span.enter();
+){
+    let pid = tracer.current_process;
+    let res = do_run_process(executor, tracer).
+        await.
+        with_context(|| format!("run_process({:?}) failed.", pid));
+
+    if let Err(e) = res {
+        eprintln!("{:?}", e);
+    }
+}
+
+pub async fn do_run_process(
+    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
+    mut tracer: Ptracer,
+) -> Result<()> {
+    let s = span!(Level::INFO, "run_process", pid=?tracer.current_process);
 
     loop {
         match tracer.get_next_event().await {
             TraceEvent::Exec(pid) => {
-                debug!("Saw exec event for pid {}", pid);
+                s.in_scope(|| debug!("Saw exec event for pid {}", pid));
             }
             TraceEvent::PreExit(_pid) => {
-                debug!("Saw preexit event.");
+                s.in_scope(|| debug!("Saw preexit event."));
                 break;
             }
             TraceEvent::Prehook(pid) => {
-                let regs = tracer.get_registers();
+                let e = s.enter();
+                let regs = tracer.get_registers().context("Prehook fetching registers.")?;
                 let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
-                let syscall_span = span!(Level::INFO, "syscall", name);
-                let _senter = syscall_span.enter();
-
-                info!(?pid, ?name);
+                let sys_span = span!(Level::INFO, "Syscall", name);
+                let ee = sys_span.enter();
+                info!("");
 
                 // Special cases, we won't get a posthook event. Instead we will get
                 // an execve event or a posthook if execve returns failure. We don't
@@ -88,22 +104,31 @@ pub async fn run_process(
                 }
 
                 if name == "execve" {
-                    debug!("Execve event");
+                    let regs = tracer.get_registers().context("Execve getting registers.")?;
+                    let path_name = tracer.read_c_string(regs.arg1() as *const c_char);
+                    let args = tracer.read_c_string_array(regs.arg2() as *const *const c_char).
+                        context("Reading arguments to execve")?;
+                    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
+
+                    debug!("execve(\"{:?}\", {:?})", path_name, args);
+                    trace!("envp={:?}", envp);
+
                     continue;
                 }
 
                 match name {
                     "openat" => {
-                        debug!("Openat event");
                         let flag = regs.arg3() as i32;
 
                         if flag & O_CREAT != 0 {
                             // File is being created.
                             let cpath = regs.arg2() as *const c_char;
-                            let path = tracer.read_cstring(cpath, pid);
+                            let path = tracer.read_c_string(cpath);
                             let fd = regs.arg1() as i32;
-                            debug!("File create event (openat)");
-                            debug!("Creator pid: {}, fd: {}, path: {}", pid, fd, path);
+                            sys_span.in_scope(|| {
+                                debug!("File create event");
+                                debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, path);
+                            });
                         }
                     }
                     "read" => {
@@ -120,41 +145,42 @@ pub async fn run_process(
                     }
                     _ => (),
                 }
-
-                let regs: Regs<Unmodified> = tracer.posthook().await;
-
-                debug!("in posthook");
+                trace!("Waiting for posthook event...");
+                drop(e);
+                drop(ee);
+                let regs: Regs<Unmodified> = tracer.posthook().await?;
+                trace!("Waiting for posthook event...");
                 // In posthook.
+                let e = s.enter();
+                let ee = sys_span.enter();
                 let retval = regs.retval() as i32;
-                let posthook_span = span!(Level::INFO, "posthook", retval);
-                let _penter = posthook_span.enter();
-                //let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+
+                span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
             }
             TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
-                let child = Pid::from_raw(tracer.get_event_message() as i32);
-                debug!("Fork Event. Creating task for new child: {:?}", child);
-                debug!("Parent pid is: {}", tracer.current_process);
+                let child = Pid::from_raw(tracer.get_event_message()? as i32);
+                s.in_scope(|| {
+                    debug!("Fork Event. Creating task for new child: {:?}", child);
+                    debug!("Parent pid is: {}", tracer.current_process);
+                });
 
-                // Recursively call run process to handle the new child process!
-                let f = run_process(executor.clone(),
-                                    Ptracer::new(child));
+                let f = run_process(executor.clone(), Ptracer::new(child));
                 executor.add_future(Task::new(f, child));
             }
 
             TraceEvent::Posthook(pid) => {
-                debug!("Saw post hook event from pid {}", pid);
                 // The posthooks should be handled internally by the system
                 // call handler functions.
-                panic!("We should not see posthook events.");
+                anyhow!("We should not see posthook events.");
             }
 
             // Received a signal event.
             TraceEvent::ReceivedSignal(pid, signal) => {
-                debug!(?signal, "pid {} received signal {:?}", pid, signal);
+                s.in_scope(|| debug!(?signal, "pid {} received signal {:?}", pid, signal));
             }
 
             TraceEvent::KilledBySignal(pid, signal) => {
-                debug!(?signal, "Process {} killed by signal {:?}", pid, signal);
+                s.in_scope(|| debug!(?signal, "Process {} killed by signal {:?}", pid, signal));
             }
             TraceEvent::ProcessExited(_pid) => {
                 // No idea how this could happen.
@@ -162,18 +188,17 @@ pub async fn run_process(
             }
         }
     }
+
     // Saw pre-exit event, wait for final exit event.
     match tracer.get_next_event().await {
         TraceEvent::ProcessExited(pid) => {
-            debug!("Saw actual exit event for pid {}", pid);
+            s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
         }
-        e => panic!(
-            "Saw other event when expecting ProcessExited event: {:?}",
-            e
-        ),
+        other => bail!("Saw other event when expecting ProcessExited event: {:?}", other),
     }
-}
 
+    Ok(())
+}
 // async fn handle_getcwd(pid: Pid) {
 //     // Pre-hook
 

@@ -14,6 +14,8 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use tracing::{span, Level, event};
+
 thread_local! {
     pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
         RefCell::new(HashMap::new());
@@ -30,7 +32,9 @@ impl Future for AsyncPtrace {
     type Output = WaitStatus;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<WaitStatus> {
-        trace!("AsyncPtrace polling once for: {}", self.pid);
+        let s = span!(Level::TRACE, "AsyncPtrace::poll()");
+        let _e = s.enter();
+        event!(Level::TRACE, ?self.pid, "Polling Once for");
 
         match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)).expect("Unable to waitpid from poll") {
             WaitStatus::StillAlive => {
@@ -62,6 +66,10 @@ impl PtraceReactor {
 
 impl Reactor for PtraceReactor {
     fn wait_for_event(&mut self) -> bool {
+        let s = span!(Level::TRACE, "wait_for_event()");
+        let _e = s.enter();
+
+        trace!("Waiting for next ptrace event...");
         // Is there a way to wait on multiple FDs? I really wanna know
         // _all_ that are ready.
         let mut siginfo: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -82,6 +90,7 @@ impl Reactor for PtraceReactor {
                 // Child finished it is done running.
                 if let Sys(Errno::ECHILD) = error {
                     trace!("done!");
+                    panic!("Does this ever happen?");
                     true
                 } else {
                     panic!("Unexpected error reason: {}", error);
@@ -91,6 +100,7 @@ impl Reactor for PtraceReactor {
                 // Some pid finished, query siginfo to see who it was.
                 let pid = unsafe { siginfo.si_pid() };
                 let pid = Pid::from_raw(pid);
+                trace!("... Next ptrace event arrived for Pid {}", pid);
 
                 let waker = WAKERS.with(|wakers| {
                     wakers
@@ -98,8 +108,6 @@ impl Reactor for PtraceReactor {
                         .remove(&pid)
                         .expect("Expected waker to be in our set.")
                 });
-
-                trace!("waitid() = {}", pid);
                 waker.wake();
                 false
             }
