@@ -15,8 +15,10 @@ use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
+use anyhow::{bail, anyhow, Context, ensure};
 
-use tracing::{debug, error, info, trace};
+use tracing::{warn, debug, error, info, trace};
+use std::ptr::null;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {
@@ -29,7 +31,7 @@ pub struct Ptracer {
 }
 
 impl Ptracer {
-    pub(crate) fn set_trace_options(pid: Pid) {
+    pub(crate) fn set_trace_options(pid: Pid) -> anyhow::Result<()>{
         let options = Options::PTRACE_O_EXITKILL
             | Options::PTRACE_O_TRACECLONE
             | Options::PTRACE_O_TRACEEXEC
@@ -38,7 +40,8 @@ impl Ptracer {
             | Options::PTRACE_O_TRACEEXIT
             | Options::PTRACE_O_TRACESYSGOOD
             | Options::PTRACE_O_TRACESECCOMP;
-        ptrace::setoptions(pid, options).expect("Unable to set ptrace options");
+        ptrace::setoptions(pid, options).context("Setting ptrace options.")?;
+        Ok(())
     }
 
     pub(crate) fn new(starting_process: Pid) -> Ptracer {
@@ -47,29 +50,29 @@ impl Ptracer {
         }
     }
 
-    pub(crate) fn get_event_message(&self) -> c_long {
-        ptrace::getevent(self.current_process).expect("Unable to call geteventmsg.")
+    pub(crate) fn get_event_message(&self) -> anyhow::Result<c_long> {
+        ptrace::getevent(self.current_process).context("Unable to get event message")
     }
 
-    pub(crate) async fn posthook(&mut self) -> Regs<Unmodified> {
+    pub(crate) async fn posthook(&mut self) -> anyhow::Result<Regs<Unmodified>> {
         use single_threaded_runtime::ptrace_event::AsyncPtrace;
 
-        info!("Waiting for posthook event.");
         let event = AsyncPtrace {
             pid: self.current_process,
         };
 
         // Might want to switch this to return the error instead of failing.
         ptrace_syscall(self.current_process, ContinueEvent::SystemCall, None)
-            .expect("ptrace syscall failed.");
+            .context("ptrace_syscall failed.")?;
 
         match event.await.into() {
             TraceEvent::Posthook(_) => {
-                debug!("got posthook event");
+                trace!("got posthook event");
+                let regs = self.get_registers().context("Fetching post-hook registers.")?;
                 // refetch regs.
-                self.get_registers()
+                Ok(regs)
             }
-            e => panic!(format!("Unexpected {:?} event, expected posthook!", e)),
+            e => bail!("Unexpected {:?} event, expected posthook!", e),
         }
     }
 
@@ -78,7 +81,7 @@ impl Ptracer {
         self.current_process
     }
 
-    pub(crate) fn read_cstring(&self, address: *const c_char, pid: Pid) -> String {
+    pub(crate) fn read_c_string(&self, address: *const c_char) -> nix::Result<String> {
         let address = address as *mut c_void;
         let mut string = String::new();
         // Move 8 bytes up each time for next read.
@@ -87,9 +90,8 @@ impl Ptracer {
 
         'done: loop {
             let mut bytes: Vec<u8> = vec![];
-            let res = unsafe {
-                ptrace::read(pid, address.offset(count)).expect("failed to ptrace read data")
-            };
+            let res = ptrace::read(self.current_process, unsafe {address.offset(count)})?;
+
 
             bytes.write_i64::<LittleEndian>(res).unwrap();
             for b in bytes {
@@ -103,11 +105,10 @@ impl Ptracer {
         }
 
         trace!(read_string = ?string);
-        string
+        Ok(string)
     }
 
-    #[allow(dead_code)]
-    fn read_value<T>(&self, address: *const T, pid: Pid) -> T {
+    fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
         use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
         use std::mem::size_of;
 
@@ -123,11 +124,11 @@ impl Ptracer {
         // Local mutable burrow, buffer needs to by borrowed again later.
         {
             let local = IoVec::from_mut_slice(&mut buffer);
-            process_vm_readv(pid, &[local], &[remote])
-                .expect("process_vm_readv: Unable to read memory: ");
+            process_vm_readv(self.current_process, &[local], &[remote])
+                .context("process_vm_readv() failed.")?;
         }
-
-        unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) }
+        let res: T = unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) };
+        Ok(res)
     }
 
     pub(crate) async fn get_next_event(&mut self) -> TraceEvent {
@@ -137,8 +138,6 @@ impl Ptracer {
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
         //ptrace_syscall(pid, ContinueEvent::Continue, None).
-        // Might want to switch this to return the error instead of failing.
-        //expect("ptrace continue failed.");
 
         // TODO Kelly Why are we looping here.
         while let Err(_e) = ptrace_syscall(self.current_process, ContinueEvent::Continue, None) {}
@@ -153,34 +152,24 @@ impl Ptracer {
     /// Nix does not yet have a way to fetch registers. We use our own instead.
     /// Given the pid of a process that is currently being traced. Return the registers
     /// for that process.
-    pub(crate) fn get_registers(&self) -> Regs<Unmodified> {
+    pub(crate) fn get_registers(&self) -> anyhow::Result<Regs<Unmodified>> {
         let mut regs = mem::MaybeUninit::uninit();
-        unsafe {
+        let regs = unsafe {
             #[allow(deprecated)]
                 let res = ptrace::ptrace(
                 Request::PTRACE_GETREGS,
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs.as_mut_ptr() as *mut c_void,
-            );
-            match res {
-                Ok(_) => {
-                    let regs = regs.assume_init();
-                    Regs::new(regs)
-                }
-                Err(e) => {
-                    error!(
-                        "[{}] Unable to fetch registers: {:?}",
-                        self.current_process, e
-                    );
-                    exit(1);
-                }
-            }
-        }
+            ).context("Unable to fetch registers")?;
+            regs.assume_init()
+        };
+
+        Ok(Regs::new(regs))
     }
 
     #[allow(dead_code)]
-    fn set_regs(&self, regs: &mut Regs<Modified>) {
+    fn set_regs(&self, regs: &mut Regs<Modified>) -> anyhow::Result<()> {
         unsafe {
             #[allow(deprecated)]
                 ptrace::ptrace(
@@ -188,9 +177,34 @@ impl Ptracer {
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
-            )
-                .unwrap_or_else(|_| panic!("Unable to set regs for pid: {}", self.current_process));
+            ).map(|_| ()).
+                with_context(|| format!("Unable to set regs for pid: {}", self.current_process))
         }
+    }
+
+    /// Read values of the type char** or char* name[] from a tracee.
+    pub fn read_c_string_array
+    (&self, address: *const *const c_char) -> anyhow::Result<Vec<String>> {
+        ensure!(address != null(), "address is null.");
+
+        let mut i = 0;
+        let mut vec = Vec::new();
+        loop {
+            let elem_addr = unsafe { address.offset(i) };
+            let c_str_starting_addr: *const c_char = self.read_value(elem_addr).
+                context("Reading tracee bytes...")?;
+
+            // Always check if we hit the end of the array.
+            if c_str_starting_addr == null() {
+                break;
+            } else {
+                let elem = self.read_c_string(c_str_starting_addr)?;
+                vec.push(elem);
+            }
+
+            i += 1;
+        }
+        Ok(vec)
     }
 }
 
@@ -213,7 +227,7 @@ pub fn ptrace_syscall(
     unsafe {
         #[allow(deprecated)]
         // Omit integer, not interesting.
-        let ret: nix::Result<c_long> = ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal);
-        ret
+        ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
     }
 }
+

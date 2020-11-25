@@ -18,6 +18,8 @@ use nix::sys::signal::Signal;
 use std::ffi::CString;
 use std::process::exit;
 
+use anyhow::{Result, Context};
+
 #[derive(Clone)]
 pub struct Command(String, Vec<String>);
 
@@ -40,7 +42,7 @@ pub struct Opt {
     pub args: Vec<String>,
 }
 
-fn main() -> nix::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(EnvFilter::from_default_env())
         .with_target(false)
@@ -54,16 +56,16 @@ fn main() -> nix::Result<()> {
     Ok(())
 }
 
-fn run_tracer_and_tracee(command: Command) -> nix::Result<()> {
+fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
         ForkResult::Parent { child: tracee_pid } => {
             // Wait for program to be ready.
-            waitpid(tracee_pid, None).expect("Unable to wait for child to be ready");
+            waitpid(tracee_pid, None).context("Unable to wait for child to be ready")?;
 
             debug!("Child returned ready!");
-            Ptracer::set_trace_options(tracee_pid);
+            Ptracer::set_trace_options(tracee_pid)?;
 
             execution::trace_program(tracee_pid)?;
             Ok(())
@@ -74,7 +76,7 @@ fn run_tracer_and_tracee(command: Command) -> nix::Result<()> {
 
 /// This function should be called after a fork.
 /// uses execve to call the tracee program and have it ready to be ptraced.
-pub(crate) fn run_tracee(command: Command) -> nix::Result<()> {
+pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     use nix::sys::signal::raise;
     use std::ffi::CStr;
 

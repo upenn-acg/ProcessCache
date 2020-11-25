@@ -10,6 +10,7 @@ use crate::task::Task;
 use std::task::Context;
 use std::task::Poll;
 
+use std::error::Error;
 use stdext::function_name;
 
 thread_local! {
@@ -54,18 +55,19 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
 
     /// Add future to our executor and poll once to start running it.
     pub fn add_future(&self, mut task: Task) {
-        event!(Level::INFO, function = function_name!(), ?task.pid, "Adding new task to executor");
+        let s = span!(Level::INFO, "add_future()");
+        s.in_scope(|| event!(Level::INFO, ?task.pid, "Adding new task to executor"));
+
         // Guard against the user passing the same PID for an existing task.
         if ! self.task_pids.borrow_mut().insert(*task.pid) {
             panic!("Pid {} already existed for another Task. This is a duplicate", task.pid);
         }
 
-        info!("Adding new future for Task {} through handle...", task.pid);
         let waker = task.get_waker();
 
         match task.future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Pending => {
-                trace!("Polled once, still executing...");
+                s.in_scope(|| trace!("Still executing..."));
 
                 WAITING_TASKS.with(|ht| {
                     if let Some(existing) = ht.borrow_mut().insert(*task.pid, task) {
@@ -81,35 +83,21 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
     }
 
     pub fn run_all(&self) {
-        info!("Running all futures.");
+        trace!("Running all futures.");
+
         // The future may have polled and finished in the add_future method.
         // Let program continue running (no more tasks for us to execute).
         let no_waiting_tasks = WAITING_TASKS.with(|tb| tb.borrow().is_empty());
         if no_waiting_tasks {
-            debug!("All done!");
+            info!("No waiting tasks. All done!");
             return;
         }
 
         let mut all_done = false;
-
         while !all_done {
-
-            WAITING_TASKS.with(|wt|{
-                let mut v = vec![];
-                for (k, task) in wt.borrow().iter() {
-                    v.push(*task.pid);
-                }
-                trace!("Waiting Tasks: {:?}", v);
-            });
-
             // Block here for actual events to come.
             // After this line, NEXT_TASK should contain the next task :b
-            let span = span!(Level::TRACE, "Reactor Waiting");
-            let e = span.enter();
-            trace!("Waiting for next event...");
             self.reactor.borrow_mut().wait_for_event();
-            trace!("Next even arrived!");
-            drop(e);
 
             NEXT_TASK.with(|nt| {
                 let mut task = nt
@@ -122,7 +110,6 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                 let poll = task.future.as_mut().poll(&mut Context::from_waker(&waker));
 
                 WAITING_TASKS.with(|tasks| {
-
                     match poll {
                         // Move task back to waiting tasks.
                         Poll::Pending => {
@@ -134,7 +121,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                         // Event for this task has arrived.
                         Poll::Ready(_) => {
                             if tasks.borrow().is_empty() {
-                                debug!("All tasks finished!");
+                                info!("All tasks finished!");
                                 all_done = true;
                             }
 
@@ -142,7 +129,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                             if ! self.task_pids.borrow_mut().remove(&task.pid) {
                                 panic!("Pid {} not found in our active Pid list.");
                             }
-                            trace!("Task {} done!", task.pid);
+                            debug!("Task {} done!", task.pid);
                         }
                     }
                 });
