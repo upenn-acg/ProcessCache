@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use tracing::{span, Level, event};
+use tracing::{event, span, Level};
 
 thread_local! {
     pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
@@ -26,6 +26,7 @@ pub struct AsyncPtrace {
     pub pid: Pid,
 }
 
+#[allow(unused_imports)]
 use log::{debug, info, trace};
 
 impl Future for AsyncPtrace {
@@ -40,7 +41,9 @@ impl Future for AsyncPtrace {
             WaitStatus::StillAlive => {
                 WAKERS.with(|wakers| {
                     trace!("Inserting waker for {:?}", self.pid);
-                    if let Some(_existing) = wakers.borrow_mut().insert(self.pid, cx.waker().clone()) {
+                    if let Some(_existing) =
+                        wakers.borrow_mut().insert(self.pid, cx.waker().clone())
+                    {
                         panic!("Waker already existed for {}", self.pid);
                     }
                 });
@@ -50,7 +53,7 @@ impl Future for AsyncPtrace {
             w => {
                 trace!("ready!");
                 Poll::Ready(w)
-            },
+            }
         }
     }
 }
@@ -91,7 +94,7 @@ impl Reactor for PtraceReactor {
                 if let Sys(Errno::ECHILD) = error {
                     trace!("done!");
                     panic!("Does this ever happen?");
-                    true
+                // true
                 } else {
                     panic!("Unexpected error reason: {}", error);
                 }

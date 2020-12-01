@@ -1,20 +1,18 @@
 use crate::NEXT_TASK;
 use crate::WAITING_TASKS;
 
+#[allow(unused_imports)]
+use log::{info, trace, warn};
+
 use nix::unistd::Pid;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
 use std::task::Waker;
-use log::{trace, info, warn};
-use std::error::Error;
 
 const WAKER_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(Task::clone,
-                        Task::wake,
-                        Task::wake_by_ref,
-                        Task::drop);
+    RawWakerVTable::new(Task::clone, Task::wake, Task::wake_by_ref, Task::drop);
 
 type LocalBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -36,13 +34,11 @@ impl Task {
     }
 
     unsafe fn wake(data: *const ()) {
-         let pid = *(data as *const Pid);
-         trace!("Waking up task: {}", pid);
+        let pid = *(data as *const Pid);
+        trace!("Waking up task: {}", pid);
 
-         WAITING_TASKS.with(|tasks| {
-            let task = tasks.
-                borrow_mut().
-                remove(&pid);
+        WAITING_TASKS.with(|tasks| {
+            let task = tasks.borrow_mut().remove(&pid);
             if task.is_none() {
                 panic!("Task {} not found in task list for waiting task.", pid);
             }

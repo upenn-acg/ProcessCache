@@ -1,17 +1,14 @@
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 pub mod ptrace_event;
 pub mod task;
-use tracing::{span, Level, event};
 use crate::task::Task;
 use std::task::Context;
 use std::task::Poll;
-
-use std::error::Error;
-use stdext::function_name;
+use tracing::{event, span, Level};
 
 thread_local! {
     pub static WAITING_TASKS: RefCell<HashMap<Pid, Task>> =
@@ -59,8 +56,11 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         s.in_scope(|| event!(Level::INFO, ?task.pid, "Adding new task to executor"));
 
         // Guard against the user passing the same PID for an existing task.
-        if ! self.task_pids.borrow_mut().insert(*task.pid) {
-            panic!("Pid {} already existed for another Task. This is a duplicate", task.pid);
+        if !self.task_pids.borrow_mut().insert(*task.pid) {
+            panic!(
+                "Pid {} already existed for another Task. This is a duplicate",
+                task.pid
+            );
         }
 
         let waker = task.get_waker();
@@ -113,7 +113,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                     match poll {
                         // Move task back to waiting tasks.
                         Poll::Pending => {
-                            if let Some(_) = tasks.borrow_mut().insert(*task.pid, task) {
+                            if tasks.borrow_mut().insert(*task.pid, task).is_some() {
                                 // Somehow the task was already in there...
                                 panic!("Task already existed in tasks. This is a duplicate.");
                             }
@@ -126,8 +126,8 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                             }
 
                             // This task is forever done. Remove from our active Pid set.
-                            if ! self.task_pids.borrow_mut().remove(&task.pid) {
-                                panic!("Pid {} not found in our active Pid list.");
+                            if !self.task_pids.borrow_mut().remove(&task.pid) {
+                                panic!("Pid {} not found in our active Pid list.", task.pid);
                             }
                             debug!("Task {} done!", task.pid);
                         }

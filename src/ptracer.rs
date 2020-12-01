@@ -4,7 +4,6 @@ use nix::sys::ptrace;
 use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
 use std::mem;
-use std::process::exit;
 
 use byteorder::LittleEndian;
 use nix::sys::signal::Signal;
@@ -15,10 +14,11 @@ use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
-use anyhow::{bail, anyhow, Context, ensure};
+#[allow(unused_imports)]
+use anyhow::{anyhow, bail, ensure, Context};
 
-use tracing::{warn, debug, error, info, trace};
-use std::ptr::null;
+#[allow(unused_imports)]
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ContinueEvent {
@@ -31,7 +31,7 @@ pub struct Ptracer {
 }
 
 impl Ptracer {
-    pub(crate) fn set_trace_options(pid: Pid) -> anyhow::Result<()>{
+    pub(crate) fn set_trace_options(pid: Pid) -> anyhow::Result<()> {
         let options = Options::PTRACE_O_EXITKILL
             | Options::PTRACE_O_TRACECLONE
             | Options::PTRACE_O_TRACEEXEC
@@ -68,7 +68,9 @@ impl Ptracer {
         match event.await.into() {
             TraceEvent::Posthook(_) => {
                 trace!("got posthook event");
-                let regs = self.get_registers().context("Fetching post-hook registers.")?;
+                let regs = self
+                    .get_registers()
+                    .context("Fetching post-hook registers.")?;
                 // refetch regs.
                 Ok(regs)
             }
@@ -90,8 +92,7 @@ impl Ptracer {
 
         'done: loop {
             let mut bytes: Vec<u8> = vec![];
-            let res = ptrace::read(self.current_process, unsafe {address.offset(count)})?;
-
+            let res = ptrace::read(self.current_process, unsafe { address.offset(count) })?;
 
             bytes.write_i64::<LittleEndian>(res).unwrap();
             for b in bytes {
@@ -145,8 +146,8 @@ impl Ptracer {
         AsyncPtrace {
             pid: self.current_process,
         }
-            .await
-            .into()
+        .await
+        .into()
     }
 
     /// Nix does not yet have a way to fetch registers. We use our own instead.
@@ -156,12 +157,13 @@ impl Ptracer {
         let mut regs = mem::MaybeUninit::uninit();
         let regs = unsafe {
             #[allow(deprecated)]
-                let res = ptrace::ptrace(
+            ptrace::ptrace(
                 Request::PTRACE_GETREGS,
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs.as_mut_ptr() as *mut c_void,
-            ).context("Unable to fetch registers")?;
+            )
+            .context("Unable to fetch registers")?;
             regs.assume_init()
         };
 
@@ -172,30 +174,37 @@ impl Ptracer {
     fn set_regs(&self, regs: &mut Regs<Modified>) -> anyhow::Result<()> {
         unsafe {
             #[allow(deprecated)]
-                ptrace::ptrace(
+            ptrace::ptrace(
                 Request::PTRACE_SETREGS,
                 self.current_process,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
-            ).map(|_| ()).
-                with_context(|| format!("Unable to set regs for pid: {}", self.current_process))
+            )
+            .map(|_| ())
+            .with_context(|| format!("Unable to set regs for pid: {}", self.current_process))
         }
     }
 
     /// Read values of the type char** or char* name[] from a tracee.
-    pub fn read_c_string_array
-    (&self, address: *const *const c_char) -> anyhow::Result<Vec<String>> {
-        ensure!(address != null(), "address is null.");
+    /// # Safety
+    ///
+    /// A valid tracee pointer must be passed or garbage will be read.
+    pub unsafe fn read_c_string_array(
+        &self,
+        address: *const *const c_char,
+    ) -> anyhow::Result<Vec<String>> {
+        ensure!(!address.is_null(), "address is null.");
 
         let mut i = 0;
         let mut vec = Vec::new();
         loop {
-            let elem_addr = unsafe { address.offset(i) };
-            let c_str_starting_addr: *const c_char = self.read_value(elem_addr).
-                context("Reading tracee bytes...")?;
+            let elem_addr = address.offset(i);
+            let c_str_starting_addr: *const c_char = self
+                .read_value(elem_addr)
+                .context("Reading tracee bytes...")?;
 
             // Always check if we hit the end of the array.
-            if c_str_starting_addr == null() {
+            if c_str_starting_addr.is_null() {
                 break;
             } else {
                 let elem = self.read_c_string(c_str_starting_addr)?;
@@ -230,4 +239,3 @@ pub fn ptrace_syscall(
         ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
     }
 }
-

@@ -71,10 +71,7 @@ impl RuleLoader {
             panic!("Unable to init seccomp filter.");
         }
 
-        let debug = match env::var_os("RUST_LOG") {
-            None => false,
-            _ => true,
-        };
+        let debug = !matches!(env::var_os("RUST_LOG"), None);
         RuleLoader { debug, ctx }
     }
 }

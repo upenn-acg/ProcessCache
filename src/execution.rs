@@ -10,12 +10,11 @@ use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
 
-use tracing::{debug, info, span, Level, instrument, info_span, trace};
 use crate::Ptracer;
 use single_threaded_runtime::ptrace_event::PtraceReactor;
-use tracing_futures::Instrument;
+use tracing::{debug, info, span, trace, Level};
 
-use anyhow::{Result, Error, Context, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
 //     // This is a regular signal, inject it to the process.
 //     if self.live_processes.contains(& pid){
@@ -56,14 +55,11 @@ pub fn trace_program(first_proc: Pid) -> nix::Result<()> {
 }
 
 /// Wrapper for displaying error messages. All error messages are handled here.
-pub async fn run_process(
-    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
-    mut tracer: Ptracer,
-){
+pub async fn run_process(executor: Rc<SingleThreadedRuntime<PtraceReactor>>, tracer: Ptracer) {
     let pid = tracer.current_process;
-    let res = do_run_process(executor, tracer).
-        await.
-        with_context(|| format!("run_process({:?}) failed.", pid));
+    let res = do_run_process(executor, tracer)
+        .await
+        .with_context(|| format!("run_process({:?}) failed.", pid));
 
     if let Err(e) = res {
         eprintln!("{:?}", e);
@@ -87,7 +83,9 @@ pub async fn do_run_process(
             }
             TraceEvent::Prehook(pid) => {
                 let e = s.enter();
-                let regs = tracer.get_registers().context("Prehook fetching registers.")?;
+                let regs = tracer
+                    .get_registers()
+                    .context("Prehook fetching registers.")?;
                 let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
 
                 let sys_span = span!(Level::INFO, "Syscall", name);
@@ -104,11 +102,15 @@ pub async fn do_run_process(
                 }
 
                 if name == "execve" {
-                    let regs = tracer.get_registers().context("Execve getting registers.")?;
+                    let regs = tracer
+                        .get_registers()
+                        .context("Execve getting registers.")?;
                     let path_name = tracer.read_c_string(regs.arg1() as *const c_char);
-                    let args = tracer.read_c_string_array(regs.arg2() as *const *const c_char).
-                        context("Reading arguments to execve")?;
-                    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
+                    let args =
+                        unsafe { tracer.read_c_string_array(regs.arg2() as *const *const c_char) }
+                            .context("Reading arguments to execve")?;
+                    let envp =
+                        unsafe { tracer.read_c_string_array(regs.arg3() as *const *const c_char)? };
 
                     debug!("execve(\"{:?}\", {:?})", path_name, args);
                     trace!("envp={:?}", envp);
@@ -151,8 +153,8 @@ pub async fn do_run_process(
                 let regs: Regs<Unmodified> = tracer.posthook().await?;
                 trace!("Waiting for posthook event...");
                 // In posthook.
-                let e = s.enter();
-                let ee = sys_span.enter();
+                let _e = s.enter();
+                let _ee = sys_span.enter();
                 let retval = regs.retval() as i32;
 
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
@@ -168,7 +170,7 @@ pub async fn do_run_process(
                 executor.add_future(Task::new(f, child));
             }
 
-            TraceEvent::Posthook(pid) => {
+            TraceEvent::Posthook(_) => {
                 // The posthooks should be handled internally by the system
                 // call handler functions.
                 anyhow!("We should not see posthook events.");
@@ -194,7 +196,10 @@ pub async fn do_run_process(
         TraceEvent::ProcessExited(pid) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
         }
-        other => bail!("Saw other event when expecting ProcessExited event: {:?}", other),
+        other => bail!(
+            "Saw other event when expecting ProcessExited event: {:?}",
+            other
+        ),
     }
 
     Ok(())

@@ -2,23 +2,24 @@ use tracing_subscriber::filter::EnvFilter;
 
 mod execution;
 mod ptracer;
-mod tracer;
 mod regs;
 mod seccomp;
 mod system_call_names;
+mod tracer;
 
 pub use crate::execution::trace_program;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
 
-use structopt::StructOpt;
-use nix::unistd::{fork, ForkResult, execvp};
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
+use nix::unistd::{execvp, fork, ForkResult};
 use std::ffi::CString;
 use std::process::exit;
+use structopt::StructOpt;
 
-use anyhow::{Result, Context};
+#[allow(unused_imports)]
+use anyhow::{Context, Result};
 
 #[derive(Clone)]
 pub struct Command(String, Vec<String>);
