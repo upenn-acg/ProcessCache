@@ -95,14 +95,6 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
 
         let mut all_done = false;
         while !all_done {
-            WAITING_TASKS.with(|wt|{
-                let mut v = vec![];
-                for (_, task) in wt.borrow().iter() {
-                    v.push(*task.pid);
-                }
-                trace!("Waiting Tasks: {:?}", v);
-            });
-
             // Block here for actual events to come.
             // After this line, NEXT_TASK should contain the next task :b
             self.reactor.borrow_mut().wait_for_event();
