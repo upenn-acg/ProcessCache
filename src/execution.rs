@@ -4,6 +4,10 @@ use libc::{c_char, O_CREAT};
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use single_threaded_runtime::SingleThreadedRuntime;
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 use std::rc::Rc;
 
 use crate::regs::Regs;
@@ -15,6 +19,29 @@ use single_threaded_runtime::ptrace_event::PtraceReactor;
 use tracing::{debug, info, span, trace, Level};
 
 use anyhow::{anyhow, bail, Context, Result};
+
+#[derive(Clone)]
+pub struct LogWriter {
+    log: Rc<RefCell<BufWriter<File>>>,
+}
+
+impl LogWriter {
+    pub fn new(file_name: &str) -> LogWriter {
+        LogWriter {
+            log: Rc::new(RefCell::new(BufWriter::new(
+                File::create(file_name).unwrap(),
+            ))),
+        }
+    }
+
+    pub fn write(&self, buf: &[u8]) {
+        self.log.borrow_mut().write_all(buf).unwrap();
+    }
+
+    pub fn flush(&self) {
+        self.log.borrow_mut().flush().unwrap();
+    }
+}
 // fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
 //     // This is a regular signal, inject it to the process.
 //     if self.live_processes.contains(& pid){
@@ -42,22 +69,30 @@ pub fn trace_program(first_proc: Pid) -> nix::Result<()> {
     let ptracer = Ptracer::new(first_proc);
     info!("Running whole program");
 
+    let log_writer = LogWriter::new("output.txt");
+
     let f = run_process(
         // Every executing process gets its own handle into the executor.
         executor.clone(),
         ptracer,
+        log_writer.clone(),
     );
 
     executor.add_future(Task::new(f, first_proc));
     executor.run_all();
 
+    log_writer.flush();
     Ok(())
 }
 
 /// Wrapper for displaying error messages. All error messages are handled here.
-pub async fn run_process(executor: Rc<SingleThreadedRuntime<PtraceReactor>>, tracer: Ptracer) {
+pub async fn run_process(
+    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
+    tracer: Ptracer,
+    log_writer: LogWriter,
+) {
     let pid = tracer.current_process;
-    let res = do_run_process(executor, tracer)
+    let res = do_run_process(executor, tracer, log_writer.clone())
         .await
         .with_context(|| format!("run_process({:?}) failed.", pid));
 
@@ -69,6 +104,7 @@ pub async fn run_process(executor: Rc<SingleThreadedRuntime<PtraceReactor>>, tra
 pub async fn do_run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     mut tracer: Ptracer,
+    log_writer: LogWriter,
 ) -> Result<()> {
     let s = span!(Level::INFO, "run_process", pid=?tracer.current_process);
 
@@ -115,6 +151,8 @@ pub async fn do_run_process(
                     debug!("execve(\"{:?}\", {:?})", path_name, args);
                     trace!("envp={:?}", envp);
 
+                    let exec_string = b"Execve event\n";
+                    log_writer.write(exec_string);
                     continue;
                 }
 
@@ -125,25 +163,40 @@ pub async fn do_run_process(
                         if flag & O_CREAT != 0 {
                             // File is being created.
                             let cpath = regs.arg2() as *const c_char;
-                            let path = tracer.read_c_string(cpath);
+                            let path = tracer
+                                .read_c_string(cpath)
+                                .expect("Failed to read string from tracee");
                             let fd = regs.arg1() as i32;
                             sys_span.in_scope(|| {
                                 debug!("File create event");
                                 debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, path);
                             });
+
+                            let create_info_string = format!(
+                                "File create event (openat). Creator pid: {}, fd: {}, path: {}\n",
+                                pid, fd, path
+                            );
+                            let create_info_bytes = create_info_string.as_bytes();
+                            log_writer.write(create_info_bytes);
                         }
                     }
                     "read" => {
                         debug!("Read event");
 
                         let fd = regs.arg1() as i32;
-                        debug!("Reader pid: {}, fd: {}", pid, fd);
+                        // Writing to the log for this read event.
+                        let read_info_string = format!("Reader pid: {}, fd: {}\n", pid, fd);
+                        let read_info_bytes = read_info_string.as_bytes();
+                        log_writer.write(read_info_bytes);
                     }
                     "write" => {
                         debug!("Write event");
 
                         let fd = regs.arg1() as i32;
-                        debug!("Writer pid: {}, fd: {}", pid, fd);
+                        // Writing to the log for this write event.
+                        let write_info_string = format!("Writer pid: {}, fd: {}\n", pid, fd);
+                        let write_info_bytes = write_info_string.as_bytes();
+                        log_writer.write(write_info_bytes);
                     }
                     _ => (),
                 }
@@ -152,9 +205,10 @@ pub async fn do_run_process(
                 drop(ee);
                 let regs: Regs<Unmodified> = tracer.posthook().await?;
                 trace!("Waiting for posthook event...");
+
                 // In posthook.
-                let _e = s.enter();
-                let _ee = sys_span.enter();
+                let _ = s.enter();
+                let _ = sys_span.enter();
                 let retval = regs.retval() as i32;
 
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
@@ -166,7 +220,15 @@ pub async fn do_run_process(
                     debug!("Parent pid is: {}", tracer.current_process);
                 });
 
-                let f = run_process(executor.clone(), Ptracer::new(child));
+                let fork_string = format!(
+                    "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
+                    child, tracer.current_process
+                );
+                let fork_bytes = fork_string.as_bytes();
+                log_writer.write(fork_bytes);
+
+                // Recursively call run process to handle the new child process!
+                let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
                 executor.add_future(Task::new(f, child));
             }
 
