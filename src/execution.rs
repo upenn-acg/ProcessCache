@@ -142,7 +142,7 @@ pub async fn do_run_process(
                     let regs = tracer
                         .get_registers()
                         .context("Execve getting registers.")?;
-                    let path_name = tracer.read_c_string(regs.arg1() as *const c_char);
+                    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
                     let args =
                         unsafe { tracer.read_c_string_array(regs.arg2() as *const *const c_char) }
                             .context("Reading arguments to execve")?;
@@ -153,6 +153,7 @@ pub async fn do_run_process(
                     trace!("envp={:?}", envp);
 
                     log_writer.write("Execve event\n");
+                    log_writer.write(&format!("execve({:?}, {:?})\n", path_name, args));
                     continue;
                 }
 
