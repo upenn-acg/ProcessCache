@@ -34,7 +34,8 @@ impl LogWriter {
         }
     }
 
-    pub fn write(&self, buf: &[u8]) {
+    pub fn write(&self, text: &str) {
+        let buf = text.as_bytes();
         self.log.borrow_mut().write_all(buf).unwrap();
     }
 
@@ -151,8 +152,7 @@ pub async fn do_run_process(
                     debug!("execve(\"{:?}\", {:?})", path_name, args);
                     trace!("envp={:?}", envp);
 
-                    let exec_string = b"Execve event\n";
-                    log_writer.write(exec_string);
+                    log_writer.write("Execve event\n");
                     continue;
                 }
 
@@ -172,12 +172,10 @@ pub async fn do_run_process(
                                 debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, path);
                             });
 
-                            let create_info_string = format!(
+                            log_writer.write(&format!(
                                 "File create event (openat). Creator pid: {}, fd: {}, path: {}\n",
                                 pid, fd, path
-                            );
-                            let create_info_bytes = create_info_string.as_bytes();
-                            log_writer.write(create_info_bytes);
+                            ));
                         }
                     }
                     "read" => {
@@ -185,18 +183,14 @@ pub async fn do_run_process(
 
                         let fd = regs.arg1() as i32;
                         // Writing to the log for this read event.
-                        let read_info_string = format!("Reader pid: {}, fd: {}\n", pid, fd);
-                        let read_info_bytes = read_info_string.as_bytes();
-                        log_writer.write(read_info_bytes);
+                        log_writer.write(&format!("Reader pid: {}, fd: {}\n", pid, fd));
                     }
                     "write" => {
                         debug!("Write event");
 
                         let fd = regs.arg1() as i32;
                         // Writing to the log for this write event.
-                        let write_info_string = format!("Writer pid: {}, fd: {}\n", pid, fd);
-                        let write_info_bytes = write_info_string.as_bytes();
-                        log_writer.write(write_info_bytes);
+                        log_writer.write(&format!("Writer pid: {}, fd: {}\n", pid, fd));
                     }
                     _ => (),
                 }
@@ -220,12 +214,10 @@ pub async fn do_run_process(
                     debug!("Parent pid is: {}", tracer.current_process);
                 });
 
-                let fork_string = format!(
+                log_writer.write(&format!(
                     "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
                     child, tracer.current_process
-                );
-                let fork_bytes = fork_string.as_bytes();
-                log_writer.write(fork_bytes);
+                ));
 
                 // Recursively call run process to handle the new child process!
                 let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
