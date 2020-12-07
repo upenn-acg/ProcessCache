@@ -89,8 +89,21 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
 
     // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
     // raise(...).
-    let loader = seccomp::RuleLoader::new();
-    loader.load_to_kernel();
+    let mut loader = seccomp::RuleLoader::new()?;
+
+    loader.intercept(libc::SYS_fork)?;
+    loader.intercept(libc::SYS_execve)?;
+    loader.intercept(libc::SYS_execveat)?;
+    loader.intercept(libc::SYS_exit)?;
+    loader.intercept(libc::SYS_exit_group)?;
+    loader.intercept(libc::SYS_clone)?;
+    loader.intercept(libc::SYS_clone3)?;
+    loader.intercept(libc::SYS_open)?;
+    loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_read)?;
+    loader.intercept(libc::SYS_write)?;
+    loader.intercept(libc::SYS_vfork)?;
+    loader.load_to_kernel()?;
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
