@@ -1,6 +1,8 @@
-use libc::c_int;
+use crate::system_call_names::SYSTEM_CALL_NAMES;
+use anyhow::{bail, ensure, Context, Result};
 use seccomp_sys::*;
 use std::env;
+use std::os::raw::c_long;
 use std::u32;
 
 #[allow(dead_code)]
@@ -9,69 +11,73 @@ pub enum OnDebug {
     LetPass,
 }
 
-impl Default for RuleLoader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 pub struct RuleLoader {
+    // Flag specifying if we're running with RUST_LOG on.
     debug: bool,
     ctx: *mut scmp_filter_ctx,
 }
 
-impl Drop for RuleLoader {
-    fn drop(&mut self) {
-        unsafe { seccomp_release(self.ctx) };
-    }
-}
-
 impl RuleLoader {
-    pub fn load_to_kernel(self) {
+    /// Loads rules to kernel and releases all memory uses "filtering context", that is, the memory
+    /// taken by the libseccomp filtering structure. (Once memory is loaded into kernel we no longer
+    /// need it in userspace.
+    /// Note: This API does not allow for additional loads or changes to the seccomp filter created
+    /// this is fine for now.
+    pub fn load_to_kernel(self) -> Result<()> {
         unsafe {
-            if seccomp_load(self.ctx) < 0 {
-                panic!("Unable to load seccomp filter context to kernel.");
-            }
+            ensure!(
+                seccomp_load(self.ctx) >= 0,
+                "Unable to load seccomp filter context to kernel."
+            );
+            seccomp_release(self.ctx);
+            Ok(())
         }
     }
 
-    /// Always intercept system call.
-    #[allow(dead_code)]
-    pub fn intercept(&self, syscall: c_int) {
+    /// System call to intercept on execution.
+    pub fn intercept(&mut self, syscall: c_long) -> Result<()> {
         unsafe {
-            // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
-            if seccomp_rule_add(self.ctx, SCMP_ACT_TRACE(syscall as u32), syscall, 0) < 0 {
-                panic!("unnable to add intercept rule for {}", syscall);
+            // Include system call number with data, this may save us some calls to
+            // ptrace(GET_REGS).
+            if seccomp_rule_add(self.ctx, SCMP_ACT_TRACE(syscall as u32), syscall as i32, 0) < 0 {
+                bail!("Unable to add intercept rule for {}", syscall);
             }
+            Ok(())
         }
     }
 
     /// When on_debug is OnDebug::Intercept, if the debugging is on, the system call will
     /// be intercepted.
+    /// TODO: Currently we allow a conditional debug-based flag. Is this useful?
     #[allow(dead_code)]
-    pub fn let_pass(&self, syscall: c_int, on_debug: OnDebug) {
+    pub fn let_pass(&mut self, syscall: c_long, on_debug: OnDebug) -> Result<()> {
         match on_debug {
             OnDebug::Intercept if self.debug => self.intercept(syscall),
             _ => unsafe {
                 // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
-                if seccomp_rule_add(self.ctx, SCMP_ACT_ALLOW, syscall, 0) < 0 {
-                    panic!("unnable to add rule for {}", syscall);
+                if seccomp_rule_add(self.ctx, SCMP_ACT_ALLOW, syscall as i32, 0) < 0 {
+                    let syscall = SYSTEM_CALL_NAMES
+                        .get(syscall as usize)
+                        .with_context(|| format!("System call {} does not exist", syscall))?;
+                    bail!("Unable to add rule for \"{}\"", syscall);
                 }
+                Ok(())
             },
         }
     }
 
     /// Create a new RuleLoader to pass rules to.
-    pub fn new() -> RuleLoader {
-        // Current default. Intercept and return u32::MAX this should be an error,
-        // as it means there is no explicit rule for this syscall.
-        let scmp = SCMP_ACT_TRACE(u32::MAX);
-        let ctx = unsafe { seccomp_init(scmp) };
-        if ctx.is_null() {
-            panic!("Unable to init seccomp filter.");
-        }
+    pub fn new() -> Result<RuleLoader> {
+        // Current default: Allow all system calls through:
+        let ctx = unsafe {
+            let res = seccomp_init(SCMP_ACT_ALLOW);
+            if res.is_null() {
+                bail!("Unable to seccomp_init");
+            }
+            res
+        };
 
         let debug = !matches!(env::var_os("RUST_LOG"), None);
-        RuleLoader { debug, ctx }
+        Ok(RuleLoader { debug, ctx })
     }
 }

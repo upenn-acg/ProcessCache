@@ -9,8 +9,8 @@ use nix::unistd::Pid;
 #[derive(Debug, Clone)]
 pub enum TraceEvent {
     Exec(Pid),
-    /// This is the stop before the final, from here we know we will receive an
-    /// actual exit.
+    /// This is a stop before the actual program exit, this is our last chance to ptrace-queries
+    /// on the tracee. From here, we expect to receive a real program exit.
     PreExit(Pid),
     /// This is really a seccomp event, but with our setup, it represents a
     /// prehook event.
