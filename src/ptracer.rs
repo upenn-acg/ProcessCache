@@ -17,6 +17,7 @@ use crate::tracer::TraceEvent;
 #[allow(unused_imports)]
 use anyhow::{anyhow, bail, ensure, Context};
 
+use single_threaded_runtime::ptrace_event::AsyncPtrace;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -27,7 +28,7 @@ pub enum ContinueEvent {
 }
 
 pub struct Ptracer {
-    pub current_process: Pid,
+    pub curr_proc: Pid,
 }
 
 impl Ptracer {
@@ -46,23 +47,20 @@ impl Ptracer {
 
     pub(crate) fn new(starting_process: Pid) -> Ptracer {
         Ptracer {
-            current_process: starting_process,
+            curr_proc: starting_process,
         }
     }
 
     pub(crate) fn get_event_message(&self) -> anyhow::Result<c_long> {
-        ptrace::getevent(self.current_process).context("Unable to get event message")
+        ptrace::getevent(self.curr_proc).context("Unable to get event message")
     }
 
     pub(crate) async fn posthook(&mut self) -> anyhow::Result<Regs<Unmodified>> {
-        use single_threaded_runtime::ptrace_event::AsyncPtrace;
-
         let event = AsyncPtrace {
-            pid: self.current_process,
+            pid: self.curr_proc,
         };
 
-        // Might want to switch this to return the error instead of failing.
-        ptrace_syscall(self.current_process, ContinueEvent::SystemCall, None)
+        ptrace_syscall(self.curr_proc, ContinueEvent::SystemCall, None)
             .context("ptrace_syscall failed.")?;
 
         match event.await.into() {
@@ -71,16 +69,20 @@ impl Ptracer {
                 let regs = self
                     .get_registers()
                     .context("Fetching post-hook registers.")?;
-                // refetch regs.
+                // refetched regs.
                 Ok(regs)
             }
-            e => bail!("Unexpected {:?} event, expected posthook!", e),
+            e => bail!(
+                "Unexpected {:?} event, expected {:?}!",
+                e,
+                TraceEvent::Posthook(self.curr_proc)
+            ),
         }
     }
 
     #[allow(dead_code)]
     fn get_current_process(&self) -> Pid {
-        self.current_process
+        self.curr_proc
     }
 
     pub(crate) fn read_c_string(&self, address: *const c_char) -> nix::Result<String> {
@@ -92,7 +94,7 @@ impl Ptracer {
 
         'done: loop {
             let mut bytes: Vec<u8> = vec![];
-            let res = ptrace::read(self.current_process, unsafe { address.offset(count) })?;
+            let res = ptrace::read(self.curr_proc, unsafe { address.offset(count) })?;
 
             bytes.write_i64::<LittleEndian>(res).unwrap();
             for b in bytes {
@@ -125,7 +127,7 @@ impl Ptracer {
         // Local mutable burrow, buffer needs to by borrowed again later.
         {
             let local = IoVec::from_mut_slice(&mut buffer);
-            process_vm_readv(self.current_process, &[local], &[remote])
+            process_vm_readv(self.curr_proc, &[local], &[remote])
                 .context("process_vm_readv() failed.")?;
         }
         let res: T = unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) };
@@ -141,10 +143,10 @@ impl Ptracer {
         //ptrace_syscall(pid, ContinueEvent::Continue, None).
 
         // TODO Kelly Why are we looping here.
-        while let Err(_e) = ptrace_syscall(self.current_process, ContinueEvent::Continue, None) {}
+        while let Err(_e) = ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None) {}
         // Wait for ptrace event from this pid here.
         AsyncPtrace {
-            pid: self.current_process,
+            pid: self.curr_proc,
         }
         .await
         .into()
@@ -159,7 +161,7 @@ impl Ptracer {
             #[allow(deprecated)]
             ptrace::ptrace(
                 Request::PTRACE_GETREGS,
-                self.current_process,
+                self.curr_proc,
                 PT_NULL as *mut c_void,
                 regs.as_mut_ptr() as *mut c_void,
             )
@@ -176,12 +178,12 @@ impl Ptracer {
             #[allow(deprecated)]
             ptrace::ptrace(
                 Request::PTRACE_SETREGS,
-                self.current_process,
+                self.curr_proc,
                 PT_NULL as *mut c_void,
                 regs as *mut _ as *mut c_void,
             )
             .map(|_| ())
-            .with_context(|| format!("Unable to set regs for pid: {}", self.current_process))
+            .with_context(|| format!("Unable to set regs for pid: {}", self.curr_proc))
         }
     }
 
