@@ -34,10 +34,7 @@ impl Command {
 // it is based on alphabetical order...
 // This is even after using the correct flag through clap.
 #[derive(StructOpt, Debug)]
-#[structopt(
-    name = "dettracer",
-    about = "A parallel dsynamic determinism enforcement program written in Rust"
-)]
+#[structopt(name = "trackerIO", about = "TrackerIO: Program IO Tracking.")]
 pub struct Opt {
     pub exe: String,
     pub args: Vec<String>,

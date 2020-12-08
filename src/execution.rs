@@ -92,7 +92,7 @@ pub async fn run_process(
     tracer: Ptracer,
     log_writer: LogWriter,
 ) {
-    let pid = tracer.current_process;
+    let pid = tracer.curr_proc;
     let res = do_run_process(executor, tracer, log_writer.clone())
         .await
         .with_context(|| format!("run_process({:?}) failed.", pid));
@@ -107,7 +107,7 @@ pub async fn do_run_process(
     mut tracer: Ptracer,
     log_writer: LogWriter,
 ) -> Result<()> {
-    let s = span!(Level::INFO, "run_process", pid=?tracer.current_process);
+    let s = span!(Level::INFO, "run_process", pid=?tracer.curr_proc);
 
     loop {
         match tracer.get_next_event().await {
@@ -133,9 +133,12 @@ pub async fn do_run_process(
                 // an execve event or a posthook if execve returns failure. We don't
                 // bother handling it, let the main loop take care of it.
                 // TODO: Handle them properly...
-                if name == "exit_group" || name == "clone" {
-                    debug!("continuing to next event..");
-                    continue;
+                match name {
+                    "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
+                        debug!("Special event. Do not go to posthook.");
+                        continue;
+                    }
+                    _ => {}
                 }
 
                 if name == "execve" {
@@ -212,12 +215,12 @@ pub async fn do_run_process(
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);
-                    debug!("Parent pid is: {}", tracer.current_process);
+                    debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
                 log_writer.write(&format!(
                     "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
-                    child, tracer.current_process
+                    child, tracer.curr_proc
                 ));
 
                 // Recursively call run process to handle the new child process!
