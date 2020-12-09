@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use tracing::{event, span, Level};
+use tracing::{error, event, span, Level};
 
 thread_local! {
     pub static WAKERS: RefCell<HashMap<Pid, Waker>> =
@@ -28,6 +28,9 @@ pub struct AsyncPtrace {
 
 #[allow(unused_imports)]
 use log::{debug, info, trace};
+use nix::sys::signal::Signal;
+use nix::Error;
+use std::collections::HashSet;
 
 impl Future for AsyncPtrace {
     type Output = WaitStatus;
@@ -68,8 +71,8 @@ impl PtraceReactor {
 }
 
 impl Reactor for PtraceReactor {
-    fn wait_for_event(&mut self) -> bool {
-        let s = span!(Level::TRACE, "wait_for_event()");
+    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> bool {
+        let s = span!(Level::INFO, "wait_for_event()");
         let _e = s.enter();
 
         trace!("Waiting for next ptrace event...");
@@ -101,9 +104,12 @@ impl Reactor for PtraceReactor {
             }
             0 => {
                 // Some pid finished, query siginfo to see who it was.
-                let pid = unsafe { siginfo.si_pid() };
-                let pid = Pid::from_raw(pid);
+                let pid = Pid::from_raw(unsafe { siginfo.si_pid() });
                 trace!("... Next ptrace event arrived for Pid {}", pid);
+
+                if !live_procs.contains(&pid) {
+                    return self.handle_signal_fork_race(live_procs, &mut siginfo, pid);
+                }
 
                 let waker = WAKERS.with(|wakers| {
                     wakers
@@ -111,10 +117,59 @@ impl Reactor for PtraceReactor {
                         .remove(&pid)
                         .expect("Expected waker to be in our set.")
                 });
+
                 waker.wake();
                 false
             }
             n => panic!("Unexpected return code from waitid: {}", n),
+        }
+    }
+}
+
+impl PtraceReactor {
+    /// When a new child is spawned ptrace tries to unhelpfully trap it and sends the
+    /// event over to us. But there is no ordering guarantees between
+    /// `ptrace::ForkEvent`s and this trap event. Sometimes the fork event comes first,
+    /// we register this child with our executor and later ignore the trap, great! But
+    /// sometimes the trap comes first and the reactor sees a PID it has no information
+    /// about! Here we hackishly handle this special case by ignoring this SIGTRAP.
+    fn handle_signal_fork_race(
+        &mut self,
+        live_procs: &HashSet<Pid>,
+        siginfo: &mut libc::siginfo_t,
+        pid: Pid,
+    ) -> bool {
+        match siginfo.si_code {
+            libc::CLD_TRAPPED => {
+                info!(
+                    "Unknown PID {:?} encountered by reactor. Probably a SIGTRAP that \
+                                   arrived before the fork_event. This is okay.",
+                    pid
+                );
+                // Take this event off the internal wait* event queue, we want to read the
+                // next event! Notice there is no need to ptrace(continue) this newly
+                // spawned process. When its `run_process()` function runs, it will
+                // do the ptrace(cont) for us. See `run_process()` docs for more info.
+                match waitpid(pid, None) {
+                    Ok(w) => {
+                        // Paranoia.
+                        assert!(
+                            matches!(w, WaitStatus::Stopped(_, _)),
+                            "waitpid returned different WaitStatus than \
+                                 expected when handling signal/fork race."
+                        );
+                        // We need to re-do this function again. Recurse is the easiest way?
+                        // :grimace-emoji:
+                        return self.wait_for_event(live_procs);
+                    }
+                    Err(e) => {
+                        panic!("Unable to take event off event queue: {:?}", e);
+                    }
+                }
+            }
+            c => {
+                panic!("Unknown PID encountered by reactor. Siginfo.si_code {}", c);
+            }
         }
     }
 }

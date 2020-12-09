@@ -107,7 +107,7 @@ impl Ptracer {
             count += word_size;
         }
 
-        trace!(read_string = ?string);
+        // trace!(read_string = ?string);
         Ok(string)
     }
 
@@ -135,7 +135,6 @@ impl Ptracer {
     }
 
     pub(crate) async fn get_next_event(&mut self) -> TraceEvent {
-        use single_threaded_runtime::ptrace_event::AsyncPtrace;
         // info!("Waiting for next ptrace event.");
 
         // This cannot be a posthook event. Those are explicitly caught in the

@@ -1,7 +1,3 @@
-//! Abstraction layer so tracer implementation can be decoupled from interface.
-//! Allows us to have ProcessCache work with different tracer implementations,
-//! currently: MockTracer and Ptracer.
-//!
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
