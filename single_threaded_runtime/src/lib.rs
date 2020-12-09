@@ -24,7 +24,7 @@ thread_local! {
 /// support multiple ready tasks after `wait_for_event`.
 pub trait Reactor {
     /// Return value indicates when all processes have finished running?
-    fn wait_for_event(&mut self) -> bool;
+    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> bool;
 }
 
 /// This is our futures runtime. It is responsible for accepting futures to run,
@@ -97,7 +97,10 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         while !all_done {
             // Block here for actual events to come.
             // After this line, NEXT_TASK should contain the next task :b
-            self.reactor.borrow_mut().wait_for_event();
+
+            self.reactor
+                .borrow_mut()
+                .wait_for_event(&*self.task_pids.borrow());
 
             NEXT_TASK.with(|nt| {
                 let mut task = nt

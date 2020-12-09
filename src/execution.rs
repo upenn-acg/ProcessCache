@@ -1,6 +1,7 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
 use libc::{c_char, O_CREAT};
+use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use single_threaded_runtime::SingleThreadedRuntime;
@@ -15,7 +16,7 @@ use crate::regs::Unmodified;
 use crate::tracer::TraceEvent;
 
 use crate::Ptracer;
-use single_threaded_runtime::ptrace_event::PtraceReactor;
+use single_threaded_runtime::ptrace_event::{AsyncPtrace, PtraceReactor};
 use tracing::{debug, info, span, trace, Level};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -87,6 +88,15 @@ pub fn trace_program(first_proc: Pid) -> nix::Result<()> {
 }
 
 /// Wrapper for displaying error messages. All error messages are handled here.
+/// NOTE: The process should start in a STOPPED state. Ptrace does this by default so it should just
+/// work.
+/// For all child processes (assuming we're are ptracing a process tree) technically there is a
+/// ptrace::STOPPED event on the wait-event queue, but it seems calling ptrace(continue) will get
+/// rid of this event (this is the first thing that `get_next_event()` does in `do_run_process()`.
+/// So we actually can just ignore this event. This is actually what we want and how we handle the
+/// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. See
+/// `handle_signal_fork_race()` in ptrace_event.rs for more info. Also relevant:
+/// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
 pub async fn run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     tracer: Ptracer,
