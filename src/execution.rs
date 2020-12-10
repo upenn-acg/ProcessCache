@@ -1,6 +1,8 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
-use libc::{c_char, O_CREAT};
+use libc::{c_char, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
+use nix::fcntl::readlink;
+use nix::sys::stat::stat;
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
@@ -170,44 +172,6 @@ pub async fn do_run_process(
                     continue;
                 }
 
-                match name {
-                    "openat" => {
-                        let flag = regs.arg3() as i32;
-
-                        if flag & O_CREAT != 0 {
-                            // File is being created.
-                            let cpath = regs.arg2() as *const c_char;
-                            let path = tracer
-                                .read_c_string(cpath)
-                                .expect("Failed to read string from tracee");
-                            let fd = regs.arg1() as i32;
-                            sys_span.in_scope(|| {
-                                debug!("File create event");
-                                debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, path);
-                            });
-
-                            log_writer.write(&format!(
-                                "File create event (openat). Creator pid: {}, fd: {}, path: {}\n",
-                                pid, fd, path
-                            ));
-                        }
-                    }
-                    "read" => {
-                        debug!("Read event");
-
-                        let fd = regs.arg1() as i32;
-                        // Writing to the log for this read event.
-                        log_writer.write(&format!("Reader pid: {}, fd: {}\n", pid, fd));
-                    }
-                    "write" => {
-                        debug!("Write event");
-
-                        let fd = regs.arg1() as i32;
-                        // Writing to the log for this write event.
-                        log_writer.write(&format!("Writer pid: {}, fd: {}\n", pid, fd));
-                    }
-                    _ => (),
-                }
                 trace!("Waiting for posthook event...");
                 drop(e);
                 drop(ee);
@@ -220,6 +184,11 @@ pub async fn do_run_process(
                 let retval = regs.retval() as i32;
 
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
+
+                // Successful open
+                if name == "openat" && retval > 0 {
+                    handle_openat(regs, tracer.clone(), log_writer.clone(), pid);
+                }
             }
             TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
@@ -271,6 +240,71 @@ pub async fn do_run_process(
     }
 
     Ok(())
+}
+
+fn handle_openat(regs: Regs<Unmodified>, tracer: Ptracer, log_writer: LogWriter, pid: Pid) {
+    let sys_span = span!(Level::INFO, "handle_openat", pid=?tracer.curr_proc);
+
+    let flag = regs.arg3() as i32;
+    let fd = regs.retval() as i32;
+    let full_path = format!("/proc/{}/fd/{}", pid, fd);
+    let full = readlink(full_path.as_str()).expect("Failed to readlink for openat syscall");
+    let inode = stat(full.to_str().expect("path to string failed"))
+        .expect("stat failed")
+        .st_ino;
+    // let cpath = regs.arg2() as *const c_char;
+    // let path = tracer
+    //     .read_c_string(cpath)
+    //     .expect("Failed to read string from tracee");
+
+    if (flag & O_ACCMODE) == O_RDONLY {
+        log_writer.write(&format!(
+            "File opened for reading. Pid: {}, fd: {}, inode: {}, path: {}\n",
+            pid,
+            fd,
+            inode,
+            full.to_str().expect("path to string failed")
+        ));
+    } else if (flag & O_ACCMODE) == O_WRONLY {
+        log_writer.write(&format!(
+            "File opened for writing. Pid: {}, fd: {}, inode: {}, path: {}\n",
+            pid,
+            fd,
+            inode,
+            full.to_str().expect("path to string failed")
+        ));
+        if flag & O_CREAT != 0 {
+            // File is being created.
+            sys_span.in_scope(|| {
+                debug!("File create event");
+                debug!(
+                    "Creator pid: {:?}, fd: {:?}, , inode: {:?}, path: {:?}",
+                    pid,
+                    fd,
+                    inode,
+                    full.to_str().expect("path to string failed")
+                );
+            });
+
+            log_writer.write(&format!(
+                "File create event (openat). Creator pid: {}, fd: {}, inode: {}, path: {}\n",
+                pid,
+                fd,
+                inode,
+                full.to_str().expect("path to string failed")
+            ));
+        }
+    } else if (flag & O_ACCMODE) == O_RDWR {
+        log_writer.write(&format!(
+            "File opened for read/write. Pid: {}, fd: {}, inode: {}, path: {}\n",
+            pid,
+            fd,
+            inode,
+            full.to_str().expect("path to string failed")
+        ));
+    } else {
+        anyhow!("Open syscall MUST have a mode");
+    }
 }
 // async fn handle_getcwd(pid: Pid) {
 //     // Pre-hook
