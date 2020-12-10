@@ -97,8 +97,6 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     loader.intercept(libc::SYS_clone3)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
-    loader.intercept(libc::SYS_read)?;
-    loader.intercept(libc::SYS_write)?;
     loader.intercept(libc::SYS_vfork)?;
     loader.load_to_kernel()?;
 

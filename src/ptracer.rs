@@ -27,6 +27,7 @@ pub enum ContinueEvent {
     SystemCall,
 }
 
+#[derive(Clone)]
 pub struct Ptracer {
     pub curr_proc: Pid,
 }
