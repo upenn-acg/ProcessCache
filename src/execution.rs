@@ -164,11 +164,19 @@ pub async fn do_run_process(
                     let envp =
                         unsafe { tracer.read_c_string_array(regs.arg3() as *const *const c_char)? };
 
-                    debug!("execve(\"{:?}\", {:?})", path_name, args);
-                    trace!("envp={:?}", envp);
+                    if tracer.posthook().await.is_err() {
+                        // Execve doesn't return when it succeeds.
+                        // If we get Ok, it failed.
+                        // If we get Err, it succeeded.
+                        // And yes I realize that is confusing.
 
-                    log_writer.write("Execve event\n");
-                    log_writer.write(&format!("execve({:?}, {:?})\n", path_name, args));
+                        // Ha! I wrote this and still did it wrong the first time.
+                        // SMDH
+                        debug!("execve(\"{:?}\", {:?})", path_name, args);
+                        trace!("envp={:?}", envp);
+
+                        log_writer.write(&format!("Execve event: {:?}, {:?}\n", path_name, args));
+                    }
                     continue;
                 }
 
