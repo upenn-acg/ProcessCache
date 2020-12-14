@@ -46,27 +46,6 @@ impl LogWriter {
         self.log.borrow_mut().flush().unwrap();
     }
 }
-// fn signal_event_handler(&mut self, signal: Signal, pid: Pid) -> Option<Signal> {
-//     // This is a regular signal, inject it to the process.
-//     if self.live_processes.contains(& pid){
-//         return Some(signal);
-//     }
-
-//     // This is a new child spawned by a fork event! This is the first time we're
-//     // seeing it as a STOPPED event. Add it to our records.
-//     if signal == Signal::SIGSTOP {
-//         info!("New child is registered and it's STOPPED signal captured.");
-//         self.live_processes.insert(pid);
-//         self.proc_continue_event.insert(pid, ContinueEvent::Continue);
-
-//         // NOTE: We want to ignore this signal! This is not something that should
-//         // be propegated down to the process, it is only for US (the tracer).
-//         return None;
-//     }
-
-//     panic!("Uknown signal {:?} for uknown process {:?}", signal, pid);
-
-// }
 
 pub fn trace_program(first_proc: Pid) -> nix::Result<()> {
     let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
@@ -157,26 +136,10 @@ pub async fn do_run_process(
                     let regs = tracer
                         .get_registers()
                         .context("Execve getting registers.")?;
-                    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
-                    let args =
-                        unsafe { tracer.read_c_string_array(regs.arg2() as *const *const c_char) }
-                            .context("Reading arguments to execve")?;
-                    let envp =
-                        unsafe { tracer.read_c_string_array(regs.arg3() as *const *const c_char)? };
 
-                    if tracer.posthook().await.is_err() {
-                        // Execve doesn't return when it succeeds.
-                        // If we get Ok, it failed.
-                        // If we get Err, it succeeded.
-                        // And yes I realize that is confusing.
-
-                        // Ha! I wrote this and still did it wrong the first time.
-                        // SMDH
-                        debug!("execve(\"{:?}\", {:?})", path_name, args);
-                        trace!("envp={:?}", envp);
-
-                        log_writer.write(&format!("Execve event: {:?}, {:?}\n", path_name, args));
-                    }
+                    let res = handle_execve(regs, tracer.clone(), pid, log_writer.clone())
+                        .await
+                        .with_context(|| format!("handle_execve({:?}) failed", pid));
                     continue;
                 }
 
@@ -314,43 +277,27 @@ fn handle_openat(regs: Regs<Unmodified>, tracer: Ptracer, log_writer: LogWriter,
         anyhow!("Open syscall MUST have a mode");
     }
 }
-// async fn handle_getcwd(pid: Pid) {
-//     // Pre-hook
 
-//     let regs = posthook(pid).await;
+async fn handle_execve(
+    regs: Regs<Unmodified>,
+    mut tracer: Ptracer,
+    pid: Pid,
+    log_writer: LogWriter,
+) -> Result<()> {
+    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
+    let args = unsafe { tracer.read_c_string_array(regs.arg2() as *const *const c_char) }
+        .context("Reading arguments to execve")?;
+    let envp = unsafe { tracer.read_c_string_array(regs.arg3() as *const *const c_char)? };
 
-//     // Post-hook
-//     let buf = regs.arg1() as *const c_char;
-//     let length = regs.arg1() as isize;
-//     let cwd = read_string(buf, pid);
-//     info!("cwd({}, {})", cwd, length);
-// }
+    // Execve doesn't return when it succeeds.
+    // If we get Ok, it failed.
+    // If we get Err, it succeeded.
+    // And yes I realize that is confusing.
+    if tracer.posthook().await.is_err() {
+        debug!("execve(\"{:?}\", {:?})", path_name, args);
+        trace!("envp={:?}", envp);
+        log_writer.write(&format!("Execve event: {:?}, {:?}\n", path_name, args));
+    }
 
-// Convert to new implementaiton.
-// pub fn handle_execve(regs: Regs<Unmodified>, pid: Pid, mut y: Yielder) {
-//     let arg1 = regs.arg1() as *const c_char;
-//     let exe = read_string(arg1, pid);
-//     debug!("[{}] executable: {}", pid, exe);
-
-//     let argv = regs.arg2() as *const *const c_char;
-
-//     // Read all of argv
-//     for i in 0.. {
-//         let p = read_value(unsafe { argv.offset(i) }, pid);
-//         if p == null() { break; }
-
-//         let arg = read_string(p, pid);
-//         debug!("[{}] arg{}: {}", pid, i, arg);
-//     }
-
-//     let res = await_execve(y);
-//     debug!("await_execve results: {:?}", res);
-
-//     fn await_execve(mut y: Yielder) -> Action {
-//         // Wait for either postHook of execve (in case of failure),
-//         // Or execve event on succ
-//         let actions = new_actions(& [Action::PostHook, Action::Execve]);
-//         y.yield_with(actions);
-//         y.get_yield().unwrap()
-//     }
-// }
+    Ok(())
+}
