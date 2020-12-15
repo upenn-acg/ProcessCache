@@ -88,13 +88,15 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     // raise(...).
     let mut loader = seccomp::RuleLoader::new()?;
 
+    loader.intercept(libc::SYS_creat)?;
+    loader.intercept(libc::SYS_clone)?;
+    loader.intercept(libc::SYS_clone3)?;
     loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_execve)?;
     loader.intercept(libc::SYS_execveat)?;
     loader.intercept(libc::SYS_exit)?;
     loader.intercept(libc::SYS_exit_group)?;
-    loader.intercept(libc::SYS_clone)?;
-    loader.intercept(libc::SYS_clone3)?;
+    loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
     loader.intercept(libc::SYS_vfork)?;
