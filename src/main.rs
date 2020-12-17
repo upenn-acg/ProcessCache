@@ -41,6 +41,10 @@ pub struct Opt {
     /// Print system calls when they return -1, off by default.
     #[structopt(short, long)]
     pub all_syscalls: bool,
+    /// Write IOTracking info to this file, if it is specified.
+    /// If not specified, it'll write to "output.txt"
+    #[structopt(short, long)]
+    pub output_file: Option<String>,
     /// Arguments to executable.
     pub args: Vec<String>,
 }
@@ -54,13 +58,19 @@ fn main() -> anyhow::Result<()> {
 
     let opt = Opt::from_args();
     let all_syscalls = opt.all_syscalls;
+    let output_file_name = opt.output_file;
+
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command, all_syscalls)?;
+    run_tracer_and_tracee(command, all_syscalls, output_file_name)?;
     Ok(())
 }
 
-fn run_tracer_and_tracee(command: Command, all_syscalls: bool) -> anyhow::Result<()> {
+fn run_tracer_and_tracee(
+    command: Command,
+    all_syscalls: bool,
+    output_file_name: Option<String>,
+) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -71,7 +81,7 @@ fn run_tracer_and_tracee(command: Command, all_syscalls: bool) -> anyhow::Result
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
 
-            execution::trace_program(tracee_pid, all_syscalls)?;
+            execution::trace_program(tracee_pid, all_syscalls, output_file_name)?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),
