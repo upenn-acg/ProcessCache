@@ -14,6 +14,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+#[allow(unused_imports)]
 use tracing::{error, event, span, Level};
 
 thread_local! {
@@ -28,8 +29,6 @@ pub struct AsyncPtrace {
 
 #[allow(unused_imports)]
 use log::{debug, info, trace};
-use nix::sys::signal::Signal;
-use nix::Error;
 use std::collections::HashSet;
 
 impl Future for AsyncPtrace {
