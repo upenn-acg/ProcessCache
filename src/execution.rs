@@ -302,36 +302,40 @@ fn resolve_log_string(
                 debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, rel_path);
             });
             Some(format!(
-                "File create event (creat): opened for writing. Pid: {} fd: {}",
+                "File create event (creat): opened for writing. Pid: {} fd: {} ",
                 pid, fd
             ))
         }
         "open" | "openat" => {
             let f = flags.unwrap();
+            let mut log_string = String::new();
+            if f & O_CREAT != 0 {
+                sys_span.in_scope(|| {
+                    debug!("File create event ({})", syscall_name);
+                    debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, rel_path);
+                });
+
+                let create_str = format!(
+                    "File create event ({}): opened for writing. Pid: {}, fd: {} ",
+                    syscall_name, pid, fd
+                );
+
+                log_string.push_str(&create_str);
+            }
 
             if (f & O_ACCMODE) == O_RDONLY {
-                Some(format!("File opened for reading. Pid: {}, fd: {}", pid, fd))
+                log_string.push_str(&format!("File opened for reading. Pid: {}, fd: {}", pid, fd));
+                Some(log_string)
             } else if (f & O_ACCMODE) == O_WRONLY {
-                if f & O_CREAT != 0 {
-                    sys_span.in_scope(|| {
-                        debug!("File create event ({})", syscall_name);
-                        debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, rel_path);
-                    });
-                    Some(format!(
-                        "File create event ({}): opened for writing. Pid: {}, fd: {}",
-                        syscall_name, pid, fd
-                    ))
-                } else {
-                    Some(format!(
-                        "File opened for writing. Pid: {}, fd: {}\n",
-                        pid, fd
-                    ))
-                }
+                log_string.push_str(&format!("File opened for writing. Pid: {}, fd: {}\n",
+                pid, fd));
+                Some(log_string)
             } else if (f & O_ACCMODE) == O_RDWR {
-                Some(format!(
+                log_string.push_str(&format!(
                     "File opened for reading/writing. Pid: {}, fd: {}",
                     pid, fd
-                ))
+                ));
+                Some(log_string)
             } else {
                 None
             }
