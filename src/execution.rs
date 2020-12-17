@@ -48,12 +48,20 @@ impl LogWriter {
     }
 }
 
-pub fn trace_program(first_proc: Pid, all_syscalls: bool) -> nix::Result<()> {
+pub fn trace_program(
+    first_proc: Pid,
+    all_syscalls: bool,
+    output_file_name: Option<String>,
+) -> nix::Result<()> {
     let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
     let ptracer = Ptracer::new(first_proc);
     info!("Running whole program");
 
-    let log_writer = LogWriter::new("output.txt");
+    let log_writer = if let Some(name) = output_file_name {
+        LogWriter::new(&name)
+    } else {
+        LogWriter::new("output.txt")
+    };
 
     let f = run_process(
         // Every executing process gets its own handle into the executor.
@@ -324,11 +332,16 @@ fn resolve_log_string(
             }
 
             if (f & O_ACCMODE) == O_RDONLY {
-                log_string.push_str(&format!("File opened for reading. Pid: {}, fd: {}", pid, fd));
+                log_string.push_str(&format!(
+                    "File opened for reading. Pid: {}, fd: {}",
+                    pid, fd
+                ));
                 Some(log_string)
             } else if (f & O_ACCMODE) == O_WRONLY {
-                log_string.push_str(&format!("File opened for writing. Pid: {}, fd: {}\n",
-                pid, fd));
+                log_string.push_str(&format!(
+                    "File opened for writing. Pid: {}, fd: {}\n",
+                    pid, fd
+                ));
                 Some(log_string)
             } else if (f & O_ACCMODE) == O_RDWR {
                 log_string.push_str(&format!(
