@@ -36,7 +36,12 @@ impl Command {
 #[derive(StructOpt, Debug)]
 #[structopt(name = "trackerIO", about = "TrackerIO: Program IO Tracking.")]
 pub struct Opt {
+    /// Executable to run. Will use $PATH.
     pub exe: String,
+    /// Print system calls when they return -1, off by default.
+    #[structopt(short, long)]
+    pub all_syscalls: bool,
+    /// Arguments to executable.
     pub args: Vec<String>,
 }
 
@@ -48,13 +53,14 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let opt = Opt::from_args();
+    let all_syscalls = opt.all_syscalls;
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command)?;
+    run_tracer_and_tracee(command, all_syscalls)?;
     Ok(())
 }
 
-fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
+fn run_tracer_and_tracee(command: Command, all_syscalls: bool) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -65,7 +71,7 @@ fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
 
-            execution::trace_program(tracee_pid)?;
+            execution::trace_program(tracee_pid, all_syscalls)?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),
