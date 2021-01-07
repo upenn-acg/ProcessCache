@@ -1,13 +1,17 @@
 use crate::system_call_names::SYSTEM_CALL_NAMES;
 
+use fmt::Display;
 #[allow(unused_imports)]
 use libc::{c_char, syscall, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
-use nix::fcntl::readlink;
+#[allow(unused_imports)]
+use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
 use nix::unistd::Pid;
 use single_threaded_runtime::task::Task;
 use single_threaded_runtime::SingleThreadedRuntime;
+//use core::num::flt2dec::strategy::dragon::format_exact;
 use std::cell::RefCell;
+use std::fmt;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
@@ -24,51 +28,157 @@ use tracing::{debug, info, span, trace, Level};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-#[derive(Clone)]
-pub struct LogWriter {
-    log: Rc<RefCell<BufWriter<File>>>,
+enum Mode {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
 }
 
-impl LogWriter {
-    pub fn new(file_name: &str) -> LogWriter {
-        LogWriter {
-            log: Rc::new(RefCell::new(BufWriter::new(
-                File::create(file_name).unwrap(),
-            ))),
+pub struct ExecveEvent {
+    path_name: String,
+    args: Vec<String>,
+}
+
+impl fmt::Display for ExecveEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut log_string = String::new();
+
+        log_string.push_str(&format!(
+            "Execve event: {:?}, {:?}\n",
+            self.path_name, self.args
+        ));
+
+        write!(f, "{}", log_string)
+    }
+}
+pub struct ForkEvent {
+    current_pid: Pid,
+    child_pid: Pid,
+}
+
+impl fmt::Display for ForkEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut log_string = String::new();
+
+        log_string.push_str(&format!(
+            "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
+            self.child_pid, self.current_pid
+        ));
+
+        write!(f, "{}", log_string)
+    }
+}
+
+pub struct OpenEvent {
+    syscall_name: String,
+    is_create: bool,
+    // Full path if possible, else relative path.
+    path: String,
+    inode: Option<u64>,
+    mode: Mode,
+    fd: i32,
+    pid: Pid,
+}
+
+impl fmt::Display for OpenEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut log_string = String::new();
+        if self.is_create {
+            log_string.push_str(&format!(
+                "File create event ({}): opened for writing. ",
+                self.syscall_name
+            ));
+        } else {
+            log_string.push_str(&format!("File open event ({}): ", self.syscall_name));
+        }
+
+        match self.mode {
+            Mode::ReadOnly => log_string.push_str("File opened for reading. "),
+            Mode::WriteOnly => log_string.push_str("File opened for writing. "),
+            Mode::ReadWrite => log_string.push_str("File open for reading/writing. "),
+        }
+
+        log_string.push_str(&format!(
+            "Pid: {}, Fd: {}, Path: {}, ",
+            self.pid, self.fd, self.path
+        ));
+
+        if let Some(ino) = self.inode {
+            log_string.push_str(&format!("Inode: {} \n", ino));
+        } else {
+            log_string.push('\n');
+        }
+
+        write!(f, "{}", log_string)
+    }
+}
+pub struct Log {
+    log: BufWriter<File>,
+    print_all_syscalls: bool,
+    output_file_name: String,
+}
+
+impl Log {
+    pub fn new(output_file_name: &str, print_all_syscalls: bool) -> Log {
+        Log {
+            log: BufWriter::new(File::create(output_file_name).unwrap()),
+            print_all_syscalls,
+            output_file_name: String::from(output_file_name),
         }
     }
 
-    pub fn write(&self, text: &str) {
-        let buf = text.as_bytes();
-        self.log.borrow_mut().write_all(buf).unwrap();
+    pub fn add_event(&mut self, event: &impl fmt::Display) -> Result<()> {
+        let str = format!("{}", event);
+        let bytes = str.as_bytes();
+        self.log.write_all(bytes)?;
+
+        Ok(())
     }
 
-    pub fn flush(&self) {
-        self.log.borrow_mut().flush().unwrap();
+    pub fn flush(&mut self) {
+        self.log.flush().unwrap();
+    }
+
+    pub fn print_all_syscalls(&self) -> bool {
+        self.print_all_syscalls
     }
 }
 
-pub fn trace_program(
-    first_proc: Pid,
-    all_syscalls: bool,
-    output_file_name: Option<String>,
-) -> nix::Result<()> {
+#[derive(Clone)]
+pub struct LogWriter {
+    log: Rc<RefCell<Log>>,
+}
+
+impl LogWriter {
+    pub fn new(output_file_name: &str, print_all_syscalls: bool) -> LogWriter {
+        LogWriter {
+            log: Rc::new(RefCell::new(Log::new(output_file_name, print_all_syscalls))),
+        }
+    }
+
+    pub fn add_event(&self, event: &impl Display) -> Result<()> {
+        self.log.borrow_mut().add_event(event)
+    }
+
+    pub fn flush(&self) {
+        self.log.borrow_mut().flush();
+    }
+
+    pub fn print_all_syscalls(&self) -> bool {
+        self.log.borrow().print_all_syscalls()
+    }
+}
+
+pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> nix::Result<()> {
     let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
     let ptracer = Ptracer::new(first_proc);
     info!("Running whole program");
-
-    let log_writer = if let Some(name) = output_file_name {
-        LogWriter::new(&name)
-    } else {
-        LogWriter::new("output.txt")
-    };
 
     let f = run_process(
         // Every executing process gets its own handle into the executor.
         executor.clone(),
         ptracer,
         log_writer.clone(),
-        all_syscalls,
     );
 
     executor.add_future(Task::new(f, first_proc));
@@ -92,10 +202,9 @@ pub async fn run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     tracer: Ptracer,
     log_writer: LogWriter,
-    all_syscalls: bool,
 ) {
     let pid = tracer.curr_proc;
-    let res = do_run_process(executor, tracer, log_writer.clone(), all_syscalls)
+    let res = do_run_process(executor, tracer, log_writer.clone())
         .await
         .with_context(|| format!("run_process({:?}) failed.", pid));
 
@@ -108,9 +217,8 @@ pub async fn do_run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     mut tracer: Ptracer,
     log_writer: LogWriter,
-    all_syscalls: bool,
 ) -> Result<()> {
-    let s = span!(Level::INFO, "run_process", pid=?tracer.curr_proc);
+    let s = span!(Level::INFO, "do_run_process", pid=?tracer.curr_proc);
 
     loop {
         match tracer.get_next_event().await {
@@ -146,10 +254,9 @@ pub async fn do_run_process(
                             .get_registers()
                             .context("Execve getting registers.")?;
 
-                        let _res =
-                            handle_execve(regs, tracer.clone(), log_writer.clone(), all_syscalls)
-                                .await
-                                .with_context(|| format!("handle_execve({:?}) failed", pid));
+                        let _res = handle_execve(regs, tracer.clone(), log_writer.clone())
+                            .await
+                            .with_context(|| format!("handle_execve({:?}) failed", pid));
 
                         continue;
                     }
@@ -170,17 +277,10 @@ pub async fn do_run_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "openat" | "open" | "creat" => {
-                        handle_open(
-                            regs,
-                            tracer.clone(),
-                            log_writer.clone(),
-                            pid,
-                            name,
-                            all_syscalls,
-                        );
+                    "creat" | "openat" | "open" => {
+                        handle_open(regs, tracer.clone(), log_writer.clone(), name)?
                     }
-                    _ => (),
+                    _ => {}
                 }
             }
             TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
@@ -190,18 +290,14 @@ pub async fn do_run_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                log_writer.write(&format!(
-                    "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
-                    child, tracer.curr_proc
-                ));
+                let fork_event = ForkEvent {
+                    child_pid: child,
+                    current_pid: tracer.curr_proc,
+                };
+                log_writer.add_event(&fork_event)?;
 
                 // Recursively call run process to handle the new child process!
-                let f = run_process(
-                    executor.clone(),
-                    Ptracer::new(child),
-                    log_writer.clone(),
-                    all_syscalls,
-                );
+                let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
                 executor.add_future(Task::new(f, child));
             }
 
@@ -244,138 +340,96 @@ fn handle_open(
     regs: Regs<Unmodified>,
     tracer: Ptracer,
     log_writer: LogWriter,
-    pid: Pid,
     syscall_name: &str,
-    all_syscalls: bool,
-) {
-    let flags = match syscall_name {
-        "open" => Some(regs.arg2() as i32),
-        "openat" => Some(regs.arg3() as i32),
-        _ => None,
-    };
+) -> Result<()> {
     let fd = regs.retval() as i32;
-    let rel_path = match syscall_name {
-        "openat" => tracer
-            .read_c_string(regs.arg2() as *const c_char)
-            .expect("failed to read c string"),
-        _ => tracer
-            .read_c_string(regs.arg1() as *const c_char)
-            .expect("failed to read c string"),
-    };
-
-    let basic_log_str = resolve_log_string(syscall_name, flags, fd, pid, rel_path, tracer).unwrap();
-
-    if fd > 0 {
-        // IF SUCCESSFUL: report full path and inode
-        let proc_path = format!("/proc/{}/fd/{}", pid, fd);
-        let full = readlink(proc_path.as_str()).expect("Failed to readlink");
-        let inode = stat(full.to_str().expect("path to string failed"))
-            .expect("stat failed")
-            .st_ino;
-        let full_log_msg = format!(
-            "{} inode: {}, full path: {}\n",
-            basic_log_str,
-            inode,
-            full.to_str().expect("path to string failed")
-        );
-        log_writer.write(&full_log_msg);
-    } else {
-        // IF FAILED: report relative path
-        if all_syscalls {
-            let full_log_msg = format!("{}\n", basic_log_str);
-            log_writer.write(&full_log_msg)
-        }
-    }
-}
-
-fn resolve_log_string(
-    syscall_name: &str,
-    flags: Option<i32>,
-    fd: i32,
-    pid: Pid,
-    rel_path: String,
-    tracer: Ptracer,
-) -> Option<String> {
-    // Also write to our logging.
-    let sys_span = span!(Level::INFO, "resolve_log_string", pid=?tracer.curr_proc);
+    let pid = tracer.curr_proc;
+    let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
-        debug!("File open event ({})", syscall_name);
-        debug!("Pid: {:?}, fd: {:?}, rel path: {:?}", pid, fd, rel_path);
+        debug!("File open event: ({})", syscall_name);
     });
 
-    match syscall_name {
-        "creat" => {
-            sys_span.in_scope(|| {
-                debug!("File create event ({})", syscall_name);
-                debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, rel_path);
-            });
-            Some(format!(
-                "File create event (creat): opened for writing. Pid: {} fd: {} ",
-                pid, fd
-            ))
-        }
-        "open" | "openat" => {
-            let f = flags.unwrap();
-            let mut log_string = String::new();
-            if f & O_CREAT != 0 {
-                sys_span.in_scope(|| {
-                    debug!("File create event ({})", syscall_name);
-                    debug!("Creator pid: {:?}, fd: {:?}, path: {:?}", pid, fd, rel_path);
-                });
-
-                let create_str = format!(
-                    "File create event ({}): opened for writing. Pid: {}, fd: {} ",
-                    syscall_name, pid, fd
-                );
-
-                log_string.push_str(&create_str);
-            }
-
-            if (f & O_ACCMODE) == O_RDONLY {
-                log_string.push_str(&format!(
-                    "File opened for reading. Pid: {}, fd: {}",
-                    pid, fd
-                ));
-                Some(log_string)
-            } else if (f & O_ACCMODE) == O_WRONLY {
-                log_string.push_str(&format!(
-                    "File opened for writing. Pid: {}, fd: {}\n",
-                    pid, fd
-                ));
-                Some(log_string)
-            } else if (f & O_ACCMODE) == O_RDWR {
-                log_string.push_str(&format!(
-                    "File opened for reading/writing. Pid: {}, fd: {}",
-                    pid, fd
-                ));
-                Some(log_string)
+    if fd > 0 || log_writer.print_all_syscalls() {
+        let (is_create, mode) = if syscall_name == "creat" {
+            // creat() uses write only as the mode
+            (true, Mode::WriteOnly)
+        } else {
+            let flags = if syscall_name == "open" {
+                regs.arg2() as i32
             } else {
-                None
-            }
-        }
-        _ => None,
+                regs.arg3() as i32
+            };
+            let is_create = flags & O_CREAT != 0;
+            let mode = match flags & O_ACCMODE {
+                O_RDONLY => Mode::ReadOnly,
+                O_WRONLY => Mode::WriteOnly,
+                O_RDWR => Mode::ReadWrite,
+                _ => panic!("open flags do not match any mode"),
+            };
+            (is_create, mode)
+        };
+
+        let path_and_inode = if fd > 0 {
+            // Successful, get full path
+            let proc_path = format!("/proc/{}/fd/{}", pid, fd);
+            let full = readlink(proc_path.as_str()).context("Failed to readlink")?;
+            let stat_struct = stat(full.to_str().context("full path to string failed")?)?;
+            let inode = stat_struct.st_ino;
+
+            let full_path = format!("{:?}", full);
+            (full_path, Some(inode))
+        } else {
+            // Failed, report no inode and relative path.
+            let arg = if syscall_name == "openat" {
+                regs.arg2() as *const c_char
+            } else {
+                regs.arg1() as *const c_char
+            };
+            let rel_path = tracer.read_c_string(arg)?;
+
+            (rel_path, None)
+        };
+
+        let (path, inode) = path_and_inode;
+        let open_event = OpenEvent {
+            syscall_name: String::from(syscall_name),
+            is_create,
+            path,
+            inode,
+            mode,
+            fd,
+            pid,
+        };
+
+        log_writer.add_event(&open_event)?;
     }
+    Ok(())
 }
 
 async fn handle_execve(
     regs: Regs<Unmodified>,
     mut tracer: Ptracer,
     log_writer: LogWriter,
-    all_syscalls: bool,
 ) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
     let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
-    let args = unsafe { tracer.read_c_string_array(regs.arg2() as *const *const c_char) }
+    let args = tracer
+        .read_c_string_array(regs.arg2() as *const *const c_char)
         .context("Reading arguments to execve")?;
-    let envp = unsafe { tracer.read_c_string_array(regs.arg3() as *const *const c_char)? };
+    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
 
     // Execve doesn't return when it succeeds.
     // If we get Ok, it failed.
     // If we get Err, it succeeded.
     // And yes I realize that is confusing.
-    if tracer.posthook().await.is_err() || all_syscalls {
-        debug!("execve(\"{:?}\", {:?})", path_name, args);
-        trace!("envp={:?}", envp);
-        log_writer.write(&format!("Execve event: {:?}, {:?}\n", path_name, args));
+    // TODO: may not always work?
+    if tracer.posthook().await.is_err() || log_writer.print_all_syscalls() {
+        sys_span.in_scope(|| {
+            debug!("execve(\"{:?}\", {:?})", path_name, args);
+            trace!("envp={:?}", envp);
+        });
+        let execve_event = ExecveEvent { path_name, args };
+        log_writer.add_event(&execve_event)?;
     }
 
     Ok(())
