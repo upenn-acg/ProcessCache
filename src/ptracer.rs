@@ -191,7 +191,8 @@ impl Ptracer {
     /// # Safety
     ///
     /// A valid tracee pointer must be passed or garbage will be read.
-    pub unsafe fn read_c_string_array(
+    #[allow(clippy::clippy::not_unsafe_ptr_arg_deref)]
+    pub fn read_c_string_array(
         &self,
         address: *const *const c_char,
     ) -> anyhow::Result<Vec<String>> {
@@ -200,9 +201,10 @@ impl Ptracer {
         let mut i = 0;
         let mut vec = Vec::new();
         loop {
-            let elem_addr = address.offset(i);
+            //let elem_addr = address.offset(i);
             let c_str_starting_addr: *const c_char = self
-                .read_value(elem_addr)
+                //.read_value(elem_addr)
+                .read_value(unsafe { address.offset(i) })
                 .context("Reading tracee bytes...")?;
 
             // Always check if we hit the end of the array.

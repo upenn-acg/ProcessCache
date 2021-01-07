@@ -159,7 +159,7 @@ impl PtraceReactor {
                         );
                         // We need to re-do this function again. Recurse is the easiest way?
                         // :grimace-emoji:
-                        return self.wait_for_event(live_procs);
+                        self.wait_for_event(live_procs)
                     }
                     Err(e) => {
                         panic!("Unable to take event off event queue: {:?}", e);
