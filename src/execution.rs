@@ -114,6 +114,39 @@ impl fmt::Display for OpenEvent {
         write!(f, "{}", log_string)
     }
 }
+
+pub struct StatEvent {
+    syscall_name: String,
+    path: String,
+    fd: Option<i32>,
+    inode: Option<u64>,
+    pid: Pid,
+}
+
+impl fmt::Display for StatEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut log_string = String::new();
+
+        // if successful (or failure for that matter), can get some path, whatever
+        // is passed in, could be relative or absolute.
+        log_string.push_str(&format!(
+            "File stat event ({}): Pid: {}, Path: {}, ",
+            self.syscall_name, self.pid, self.path
+        ));
+
+        if let Some(file_d) = self.fd {
+            log_string.push_str(&format!("Fd: {}, ", file_d));
+        }
+
+        if let Some(ino) = self.inode {
+            log_string.push_str(&format!("Inode: {}\n", ino));
+        } else {
+            log_string.push('\n');
+        }
+
+        write!(f, "{}", log_string)
+    }
+}
 pub struct Log {
     log: BufWriter<File>,
     print_all_syscalls: bool,
@@ -304,6 +337,7 @@ pub async fn do_run_process(
                     "creat" | "openat" | "open" => {
                         handle_open(regs, tracer.clone(), log_writer.clone(), name)?
                     }
+                    "stat" => handle_stat(regs, tracer.clone(), log_writer.clone(), name)?,
                     _ => {}
                 }
             }
@@ -431,6 +465,51 @@ fn handle_open(
 
         log_writer.add_event(&open_event)?;
     }
+    Ok(())
+}
+
+// First, we will just handle SUCCESS and FAIL of STAT calls
+// SUCCESS: RET VAL = 0
+fn handle_stat(
+    regs: Regs<Unmodified>,
+    tracer: Ptracer,
+    log_writer: LogWriter,
+    syscall_name: &str,
+) -> Result<()> {
+    let ret_val = regs.retval() as i32;
+    let pid = tracer.curr_proc;
+
+    let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
+    sys_span.in_scope(|| {
+        debug!("File stat event: ({})", syscall_name);
+    });
+
+    // only stat for now
+    let arg = regs.arg1() as *const c_char;
+    let path = tracer.read_c_string(arg)?;
+
+    // If it's successful we report
+    // TODO: if that flag is passed report even if it fails! :o
+    let inode = if ret_val == 0 {
+        let stat_ptr = regs.arg2() as *const libc::stat;
+        let stat_struct = tracer.read_value(stat_ptr)?;
+        Some(stat_struct.st_ino)
+    } else {
+        None
+    };
+
+    let stat_event = StatEvent {
+        syscall_name: String::from(syscall_name),
+        path,
+        inode,
+        fd: None,
+        pid,
+    };
+
+    if log_writer.print_all_syscalls() || ret_val == 0 {
+        log_writer.add_event(&stat_event)?;
+    }
+
     Ok(())
 }
 

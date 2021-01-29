@@ -113,7 +113,7 @@ impl Ptracer {
         Ok(string)
     }
 
-    fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
+    pub fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
         use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
         use std::mem::size_of;
 
