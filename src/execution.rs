@@ -117,7 +117,7 @@ impl fmt::Display for OpenEvent {
 
 pub struct StatEvent {
     syscall_name: String,
-    path: String,
+    path: Option<String>,
     fd: Option<i32>,
     inode: Option<u64>,
     pid: Pid,
@@ -130,9 +130,13 @@ impl fmt::Display for StatEvent {
         // if successful (or failure for that matter), can get some path, whatever
         // is passed in, could be relative or absolute.
         log_string.push_str(&format!(
-            "File stat event ({}): Pid: {}, Path: {}, ",
-            self.syscall_name, self.pid, self.path
+            "File stat event ({}): Pid: {}, ",
+            self.syscall_name, self.pid
         ));
+
+        if let Some(file_name) = self.path.clone() {
+            log_string.push_str(&format!("Path: {}, ", file_name));
+        }
 
         if let Some(file_d) = self.fd {
             log_string.push_str(&format!("Fd: {}, ", file_d));
@@ -337,7 +341,7 @@ pub async fn do_run_process(
                     "creat" | "openat" | "open" => {
                         handle_open(regs, tracer.clone(), log_writer.clone(), name)?
                     }
-                    "stat" => handle_stat(regs, tracer.clone(), log_writer.clone(), name)?,
+                    "fstat" | "stat" => handle_stat(regs, tracer.clone(), log_writer.clone(), name)?,
                     _ => {}
                 }
             }
@@ -485,9 +489,21 @@ fn handle_stat(
     });
 
     // only stat for now
-    let arg = regs.arg1() as *const c_char;
-    let path = tracer.read_c_string(arg)?;
+    let path_name = match syscall_name {
+        "stat" | "lstat" => {
+            let arg = regs.arg1() as *const c_char;
+            let path = tracer.read_c_string(arg)?;
+            Some(path)
+        }
+        _ => None,
+    };
 
+    let fd = if syscall_name == "fstat" {
+        let fd = regs.arg1() as i32;
+        Some(fd)
+    } else {
+        None
+    };
     // If it's successful we report
     // TODO: if that flag is passed report even if it fails! :o
     let inode = if ret_val == 0 {
@@ -500,13 +516,14 @@ fn handle_stat(
 
     let stat_event = StatEvent {
         syscall_name: String::from(syscall_name),
-        path,
+        path: path_name,
         inode,
-        fd: None,
+        fd,
         pid,
     };
 
     if log_writer.print_all_syscalls() || ret_val == 0 {
+        debug!("about to add event");
         log_writer.add_event(&stat_event)?;
     }
 
