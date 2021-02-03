@@ -13,7 +13,7 @@ use single_threaded_runtime::SingleThreadedRuntime;
 //use core::num::flt2dec::strategy::dragon::format_exact;
 use std::cell::RefCell;
 use std::fmt;
-use std::fs::File;
+use std::fs::{read_link, File};
 use std::io::BufWriter;
 use std::io::Write;
 use std::rc::Rc;
@@ -32,13 +32,13 @@ use nix::errno::errno;
 
 enum Mode {
     ReadOnly,
-    WriteOnly,
     ReadWrite,
+    WriteOnly,
 }
 
 pub struct ExecveEvent {
-    path_name: String,
     args: Vec<String>,
+    path_name: String,
 }
 
 impl fmt::Display for ExecveEvent {
@@ -54,8 +54,8 @@ impl fmt::Display for ExecveEvent {
     }
 }
 pub struct ForkEvent {
-    current_pid: Pid,
     child_pid: Pid,
+    current_pid: Pid,
 }
 
 impl fmt::Display for ForkEvent {
@@ -72,14 +72,13 @@ impl fmt::Display for ForkEvent {
 }
 
 pub struct OpenEvent {
-    syscall_name: String,
-    is_create: bool,
-    // Full path if possible, else relative path.
-    path: String,
-    inode: Option<u64>,
-    mode: Mode,
     fd: i32,
+    inode: Option<u64>,
+    is_create: bool,
+    mode: Mode,
+    path: String, // Full path if possible, else relative path.
     pid: Pid,
+    syscall_name: String,
 }
 
 impl fmt::Display for OpenEvent {
@@ -101,8 +100,8 @@ impl fmt::Display for OpenEvent {
         }
 
         log_string.push_str(&format!(
-            "Pid: {}, Fd: {}, Path: {}, ",
-            self.pid, self.fd, self.path
+            "Fd: {}, Path: {}, Pid: {}, ",
+            self.fd, self.path, self.pid
         ));
 
         if let Some(ino) = self.inode {
@@ -116,26 +115,38 @@ impl fmt::Display for OpenEvent {
 }
 
 pub struct StatEvent {
-    syscall_name: String,
-    path: Option<String>,
     fd: Option<i32>,
     inode: Option<u64>,
+    is_symbolic_link: bool,
+    path: Option<String>,
     pid: Pid,
+    success: bool,
+    syscall_name: String,
 }
 
 impl fmt::Display for StatEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut log_string = String::new();
 
-        // if successful (or failure for that matter), can get some path, whatever
-        // is passed in, could be relative or absolute.
         log_string.push_str(&format!(
             "File stat event ({}): Pid: {}, ",
             self.syscall_name, self.pid
         ));
 
+        if self.success {
+            log_string.push_str("Success, ");
+        } else {
+            log_string.push_str("Fail, ");
+        }
+
+        if self.is_symbolic_link {
+            log_string.push_str("Symlink, ");
+        } else {
+            log_string.push_str("Hardlink, ");
+        }
+
         if let Some(file_name) = self.path.clone() {
-            log_string.push_str(&format!("Path: {}, ", file_name));
+            log_string.push_str(&format!("Path: \"{}\", ", file_name));
         }
 
         if let Some(file_d) = self.fd {
@@ -154,6 +165,7 @@ impl fmt::Display for StatEvent {
 pub struct Log {
     log: BufWriter<File>,
     print_all_syscalls: bool,
+    #[allow(dead_code)]
     output_file_name: String,
 }
 
@@ -341,7 +353,9 @@ pub async fn do_run_process(
                     "creat" | "openat" | "open" => {
                         handle_open(regs, tracer.clone(), log_writer.clone(), name)?
                     }
-                    "fstat" | "stat" => handle_stat(regs, tracer.clone(), log_writer.clone(), name)?,
+                    "fstat" | "lstat" | "stat" => {
+                        handle_stat(regs, tracer.clone(), log_writer.clone(), name)?
+                    }
                     _ => {}
                 }
             }
@@ -458,13 +472,13 @@ fn handle_open(
 
         let (path, inode) = path_and_inode;
         let open_event = OpenEvent {
-            syscall_name: String::from(syscall_name),
-            is_create,
-            path,
-            inode,
-            mode,
             fd,
+            inode,
+            is_create,
+            mode,
+            path,
             pid,
+            syscall_name: String::from(syscall_name),
         };
 
         log_writer.add_event(&open_event)?;
@@ -488,42 +502,54 @@ fn handle_stat(
         debug!("File stat event: ({})", syscall_name);
     });
 
-    // only stat for now
-    let path_name = match syscall_name {
-        "stat" | "lstat" => {
-            let arg = regs.arg1() as *const c_char;
-            let path = tracer.read_c_string(arg)?;
-            Some(path)
-        }
-        _ => None,
-    };
+    // Return value == 0 means success
+    if ret_val == 0 || log_writer.print_all_syscalls() {
+        let (path_name, is_symbolic_link) = match syscall_name {
+            "stat" | "lstat" => {
+                let arg = regs.arg1() as *const c_char;
+                let path = tracer.read_c_string(arg)?;
+                match read_link(path.clone()) {
+                    Ok(_) => (Some(path), true),
+                    Err(e) => {
+                        debug!("Failed to read link, error is: {}", e);
+                        (Some(path), false)
+                    }
+                }
+            }
+            _ => (None, false),
+        };
 
-    let fd = if syscall_name == "fstat" {
-        let fd = regs.arg1() as i32;
-        Some(fd)
-    } else {
-        None
-    };
-    // If it's successful we report
-    // TODO: if that flag is passed report even if it fails! :o
-    let inode = if ret_val == 0 {
-        let stat_ptr = regs.arg2() as *const libc::stat;
-        let stat_struct = tracer.read_value(stat_ptr)?;
-        Some(stat_struct.st_ino)
-    } else {
-        None
-    };
+        let fd = if syscall_name == "fstat" {
+            let fd = regs.arg1() as i32;
+            Some(fd)
+        } else {
+            None
+        };
 
-    let stat_event = StatEvent {
-        syscall_name: String::from(syscall_name),
-        path: path_name,
-        inode,
-        fd,
-        pid,
-    };
+        // Don't want the inode if it failed (ret_val != 0) OR
+        // if it's a lstat on a symlink (doesn't follow the link
+        // and therefore will give garbage inode value)
+        let stat_on_symlink = syscall_name == "lstat" && is_symbolic_link;
+        let success = ret_val == 0;
 
-    if log_writer.print_all_syscalls() || ret_val == 0 {
-        debug!("about to add event");
+        let inode = if !success || stat_on_symlink {
+            None
+        } else {
+            let stat_ptr = regs.arg2() as *const libc::stat;
+            let stat_struct = tracer.read_value(stat_ptr)?;
+            Some(stat_struct.st_ino)
+        };
+
+        let stat_event = StatEvent {
+            fd,
+            inode,
+            is_symbolic_link,
+            path: path_name,
+            pid,
+            success,
+            syscall_name: String::from(syscall_name),
+        };
+
         log_writer.add_event(&stat_event)?;
     }
 
@@ -552,7 +578,7 @@ async fn handle_execve(
             debug!("execve(\"{:?}\", {:?})", path_name, args);
             trace!("envp={:?}", envp);
         });
-        let execve_event = ExecveEvent { path_name, args };
+        let execve_event = ExecveEvent { args, path_name };
         log_writer.add_event(&execve_event)?;
     }
 
