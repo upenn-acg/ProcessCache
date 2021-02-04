@@ -2,6 +2,7 @@ use execution::LogWriter;
 use tracing_subscriber::filter::EnvFilter;
 
 mod execution;
+mod log;
 mod ptracer;
 mod regs;
 mod seccomp;
