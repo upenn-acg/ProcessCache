@@ -222,7 +222,7 @@ pub async fn do_run_process(
                     "creat" | "openat" | "open" => {
                         handle_open(regs, tracer.clone(), log_writer.clone(), name)?
                     }
-                    "fstat" | "lstat" | "stat" => {
+                    "fstat" | "lstat" | "newfstatat" | "stat" => {
                         handle_stat(regs, tracer.clone(), log_writer.clone(), name)?
                     }
                     _ => {}
@@ -362,6 +362,7 @@ fn handle_stat(
 ) -> Result<()> {
     let ret_val = regs.retval() as i32;
     let pid = tracer.curr_proc;
+    let success = ret_val == 0;
 
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
@@ -370,33 +371,27 @@ fn handle_stat(
 
     // Return value == 0 means success
     if ret_val == 0 || log_writer.print_all_syscalls() {
-        let (path_name, is_symbolic_link) = match syscall_name {
-            "stat" | "lstat" => {
-                let arg = regs.arg1() as *const c_char;
-                let path = tracer.read_c_string(arg)?;
-                match read_link(path.clone()) {
-                    Ok(_) => (Some(path), true),
-                    Err(e) => {
-                        debug!("Failed to read link, error is: {}", e);
-                        (Some(path), false)
-                    }
-                }
-            }
-            _ => (None, false),
-        };
-
-        let fd = if syscall_name == "fstat" {
+        let (fd, is_symlink, path) = if syscall_name == "fstat" {
             let fd = regs.arg1() as i32;
-            Some(fd)
+            (Some(fd), false, None)
         } else {
-            None
+            // lstat, newstatat, stat
+            let arg = match syscall_name {
+                "lstat" | "stat" => regs.arg1() as *const c_char,
+                // newstatat
+                _ => regs.arg2() as *const c_char,
+            };
+
+            let path = tracer.read_c_string(arg)?;
+            let is_symlink = read_link(path.clone()).is_ok();
+            (None, is_symlink, Some(path))
         };
 
         // Don't want the inode if it failed (ret_val != 0) OR
         // if it's a lstat on a symlink (doesn't follow the link
         // and therefore will give garbage inode value)
-        let stat_on_symlink = syscall_name == "lstat" && is_symbolic_link;
-        let success = ret_val == 0;
+        let stat_on_symlink =
+            (syscall_name == "lstat" || syscall_name == "newfstatat") && is_symlink;
 
         let inode = if !success || stat_on_symlink {
             None
@@ -409,8 +404,8 @@ fn handle_stat(
         let stat_event = StatEvent::new(
             fd,
             inode,
-            is_symbolic_link,
-            path_name,
+            is_symlink,
+            path,
             pid,
             success,
             String::from(syscall_name),
