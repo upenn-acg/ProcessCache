@@ -1,4 +1,5 @@
 use execution::LogWriter;
+use libc::SYS_newfstatat;
 use tracing_subscriber::filter::EnvFilter;
 
 mod execution;
@@ -110,7 +111,6 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     // raise(...).
     our_seccomp_rules()?;
 
-
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
     let mut args: Vec<CString> = command
@@ -141,14 +141,17 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_creat)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
-    loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_execve)?;
     loader.intercept(libc::SYS_execveat)?;
     loader.intercept(libc::SYS_exit)?;
     loader.intercept(libc::SYS_exit_group)?;
     loader.intercept(libc::SYS_fork)?;
+    loader.intercept(libc::SYS_fstat)?;
+    loader.intercept(libc::SYS_lstat)?;
+    loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
 
     loader.let_pass(libc::SYS_brk)?;
@@ -167,12 +170,11 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_statfs)?;
     loader.let_pass(libc::SYS_ioctl)?;
 
-    // Probably should not let pass...
+    // TODO: Probably should not let pass...
     loader.let_pass(libc::SYS_access)?;
-    loader.let_pass(libc::SYS_stat)?;
-    loader.let_pass(libc::SYS_fstat)?;
     loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
+    loader.let_pass(libc::SYS_wait4)?;
 
     loader.load_to_kernel()
 }
