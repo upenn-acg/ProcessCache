@@ -1,4 +1,5 @@
-use crate::system_call_names::SYSTEM_CALL_NAMES;
+use crate::context;
+use crate::system_call_names::get_syscall_name;
 use anyhow::{bail, ensure, Context, Result};
 use seccomp_sys::*;
 use std::env;
@@ -48,17 +49,17 @@ impl RuleLoader {
 
     /// When on_debug is OnDebug::Intercept, if the debugging is on, the system call will
     /// be intercepted.
-    /// TODO: Currently we allow a conditional debug-based flag. Is this useful?
+    /// TODO: This function is unused for now. Use `let_pass` isntead. Is this useful?
     #[allow(dead_code)]
-    pub fn let_pass(&mut self, syscall: c_long, on_debug: OnDebug) -> Result<()> {
+    pub fn let_pass_debug(&mut self, syscall: c_long, on_debug: OnDebug) -> Result<()> {
         match on_debug {
             OnDebug::Intercept if self.debug => self.intercept(syscall),
             _ => unsafe {
                 // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
                 if seccomp_rule_add(self.ctx, SCMP_ACT_ALLOW, syscall as i32, 0) < 0 {
-                    let syscall = SYSTEM_CALL_NAMES
-                        .get(syscall as usize)
-                        .with_context(|| format!("System call {} does not exist", syscall))?;
+                    let syscall = get_syscall_name(syscall as usize)
+                        .with_context(|| context!("Cannot fetch name for syscall={}", syscall))?;
+
                     bail!("Unable to add rule for \"{}\"", syscall);
                 }
                 Ok(())
@@ -66,11 +67,18 @@ impl RuleLoader {
         }
     }
 
+    pub fn let_pass(&mut self, syscall: c_long) -> Result<()> {
+        self.let_pass_debug(syscall, OnDebug::LetPass)
+    }
+
     /// Create a new RuleLoader to pass rules to.
     pub fn new() -> Result<RuleLoader> {
-        // Current default: Allow all system calls through:
+        // Current default: Report u32::MAX for unspecified system calls.
         let ctx = unsafe {
-            let res = seccomp_init(SCMP_ACT_ALLOW);
+            // SCMP_ACT_TRACE is wrong. It accepts a u32 but in reality the underlying system call
+            // can only handle u16. So values higher than that will be silently truncated. So we
+            // use a u16::MAX instead.
+            let res = seccomp_init(SCMP_ACT_TRACE(u16::MAX as u32));
             if res.is_null() {
                 bail!("Unable to seccomp_init");
             }

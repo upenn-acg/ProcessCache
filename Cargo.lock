@@ -185,7 +185,6 @@ dependencies = [
  "nix",
  "seccomp-sys",
  "single_threaded_runtime",
- "stdext",
  "structopt",
  "tracing",
  "tracing-futures",

@@ -1,4 +1,5 @@
-use crate::system_call_names::SYSTEM_CALL_NAMES;
+use crate::context;
+use crate::system_call_names::get_syscall_name;
 
 use fmt::Display;
 #[allow(unused_imports)]
@@ -24,9 +25,10 @@ use crate::tracer::TraceEvent;
 use crate::Ptracer;
 #[allow(unused_imports)]
 use single_threaded_runtime::ptrace_event::{AsyncPtrace, PtraceReactor};
-use tracing::{debug, info, span, trace, Level};
+use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{anyhow, bail, Context, Result};
+use nix::errno::errno;
 
 enum Mode {
     ReadOnly,
@@ -206,7 +208,7 @@ pub async fn run_process(
     let pid = tracer.curr_proc;
     let res = do_run_process(executor, tracer, log_writer.clone())
         .await
-        .with_context(|| format!("run_process({:?}) failed.", pid));
+        .with_context(|| context!("Process {:?} failed.", pid));
 
     if let Err(e) = res {
         eprintln!("{:?}", e);
@@ -221,7 +223,7 @@ pub async fn do_run_process(
     let s = span!(Level::INFO, "do_run_process", pid=?tracer.curr_proc);
 
     loop {
-        match tracer.get_next_event().await {
+        match tracer.get_next_event().await? {
             TraceEvent::Exec(pid) => {
                 s.in_scope(|| debug!("Saw exec event for pid {}", pid));
             }
@@ -231,13 +233,35 @@ pub async fn do_run_process(
             }
             TraceEvent::Prehook(pid) => {
                 let e = s.enter();
-                let regs = tracer
-                    .get_registers()
-                    .context("Prehook fetching registers.")?;
-                let name = SYSTEM_CALL_NAMES[regs.syscall_number() as usize];
+
+                // The default seccomp rule for unspecified system call rules is to send us
+                // a u32::MAX. If we see one, it is an unhandled system call!
+                let event_message = tracer
+                    .get_event_message()
+                    .with_context(|| context!("Cannot get event message on prehook"))?
+                    as u32;
+
+                // Why do we use u16::MAX? See `RuleLoader::new`.
+                if event_message == u16::MAX as u32 {
+                    let regs = tracer.get_registers().with_context(|| {
+                        context!("Unable to fetch regs for unspecified syscall")
+                    })?;
+
+                    let syscall = regs.syscall_number() as usize;
+                    let name = get_syscall_name(syscall)
+                        .with_context(|| context!("Unable to get syscall name for {}", syscall))?;
+                    bail!(context!("Unhandled system call {:?}", name));
+                }
+
+                // Otherwise the syscall name holds the system call number :)
+                // We do this to avoid unnecessarily fetching registers.
+                let name = get_syscall_name(event_message as usize).with_context(|| {
+                    context!("Unable to get syscall name for syscall={}.", event_message)
+                })?;
 
                 let sys_span = span!(Level::INFO, "Syscall", name);
                 let ee = sys_span.enter();
+                // Print system call event.
                 info!("");
 
                 // Special cases, we won't get a posthook event. Instead we will get
@@ -252,7 +276,7 @@ pub async fn do_run_process(
                     "execve" => {
                         let regs = tracer
                             .get_registers()
-                            .context("Execve getting registers.")?;
+                            .with_context(|| context!("Execve getting registers."))?;
 
                         let _res = handle_execve(regs, tracer.clone(), log_writer.clone())
                             .await
@@ -304,7 +328,7 @@ pub async fn do_run_process(
             TraceEvent::Posthook(_) => {
                 // The posthooks should be handled internally by the system
                 // call handler functions.
-                anyhow!("We should not see posthook events.");
+                bail!("We should not see posthook events.");
             }
 
             // Received a signal event.
@@ -323,7 +347,7 @@ pub async fn do_run_process(
     }
 
     // Saw pre-exit event, wait for final exit event.
-    match tracer.get_next_event().await {
+    match tracer.get_next_event().await? {
         TraceEvent::ProcessExited(pid) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
         }
@@ -372,8 +396,12 @@ fn handle_open(
         let path_and_inode = if fd > 0 {
             // Successful, get full path
             let proc_path = format!("/proc/{}/fd/{}", pid, fd);
-            let full = readlink(proc_path.as_str()).context("Failed to readlink")?;
-            let stat_struct = stat(full.to_str().context("full path to string failed")?)?;
+            let full =
+                readlink(proc_path.as_str()).with_context(|| context!("Failed to readlink"))?;
+            let stat_struct = stat(
+                full.to_str()
+                    .with_context(|| context!("full path to string failed"))?,
+            )?;
             let inode = stat_struct.st_ino;
 
             let full_path = format!("{:?}", full);
@@ -415,7 +443,7 @@ async fn handle_execve(
     let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
     let args = tracer
         .read_c_string_array(regs.arg2() as *const *const c_char)
-        .context("Reading arguments to execve")?;
+        .with_context(|| context!("Reading arguments to execve"))?;
     let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
 
     // Execve doesn't return when it succeeds.
