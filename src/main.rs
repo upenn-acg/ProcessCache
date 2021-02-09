@@ -110,6 +110,7 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     // raise(...).
     our_seccomp_rules()?;
 
+
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
     let mut args: Vec<CString> = command
