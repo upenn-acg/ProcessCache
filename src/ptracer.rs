@@ -10,6 +10,7 @@ use nix::sys::signal::Signal;
 
 use byteorder::WriteBytesExt;
 
+use crate::context;
 use crate::regs::Modified;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -42,7 +43,7 @@ impl Ptracer {
             | Options::PTRACE_O_TRACEEXIT
             | Options::PTRACE_O_TRACESYSGOOD
             | Options::PTRACE_O_TRACESECCOMP;
-        ptrace::setoptions(pid, options).context("Setting ptrace options.")?;
+        ptrace::setoptions(pid, options).with_context(|| context!("Setting ptrace options."))?;
         Ok(())
     }
 
@@ -53,7 +54,7 @@ impl Ptracer {
     }
 
     pub(crate) fn get_event_message(&self) -> anyhow::Result<c_long> {
-        ptrace::getevent(self.curr_proc).context("Unable to get event message")
+        ptrace::getevent(self.curr_proc).with_context(|| context!("Unable to get event message"))
     }
 
     pub(crate) async fn posthook(&mut self) -> anyhow::Result<Regs<Unmodified>> {
@@ -62,14 +63,14 @@ impl Ptracer {
         };
 
         ptrace_syscall(self.curr_proc, ContinueEvent::SystemCall, None)
-            .context("ptrace_syscall failed.")?;
+            .with_context(|| context!("ptrace_syscall failed."))?;
 
         match event.await.into() {
             TraceEvent::Posthook(_) => {
                 trace!("got posthook event");
                 let regs = self
                     .get_registers()
-                    .context("Fetching post-hook registers.")?;
+                    .with_context(|| context!("Fetching post-hook registers."))?;
                 // refetched regs.
                 Ok(regs)
             }
@@ -129,27 +130,26 @@ impl Ptracer {
         {
             let local = IoVec::from_mut_slice(&mut buffer);
             process_vm_readv(self.curr_proc, &[local], &[remote])
-                .context("process_vm_readv() failed.")?;
+                .with_context(|| context!("process_vm_readv() failed."))?;
         }
         let res: T = unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) };
         Ok(res)
     }
 
-    pub(crate) async fn get_next_event(&mut self) -> TraceEvent {
+    pub(crate) async fn get_next_event(&mut self) -> anyhow::Result<TraceEvent> {
         // info!("Waiting for next ptrace event.");
 
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
-        //ptrace_syscall(pid, ContinueEvent::Continue, None).
-
-        // TODO Kelly Why are we looping here.
-        while let Err(_e) = ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None) {}
+        ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None)
+            .with_context(|| "Could not ptrace_syscall")?;
         // Wait for ptrace event from this pid here.
-        AsyncPtrace {
+        let event = AsyncPtrace {
             pid: self.curr_proc,
         }
         .await
-        .into()
+        .into();
+        Ok(event)
     }
 
     /// Nix does not yet have a way to fetch registers. We use our own instead.
@@ -165,7 +165,7 @@ impl Ptracer {
                 PT_NULL as *mut c_void,
                 regs.as_mut_ptr() as *mut c_void,
             )
-            .context("Unable to fetch registers")?;
+            .with_context(|| context!("Unable to fetch registers"))?;
             regs.assume_init()
         };
 
@@ -205,7 +205,7 @@ impl Ptracer {
             let c_str_starting_addr: *const c_char = self
                 //.read_value(elem_addr)
                 .read_value(unsafe { address.offset(i) })
-                .context("Reading tracee bytes...")?;
+                .with_context(|| context!("Reading tracee bytes..."))?;
 
             // Always check if we hit the end of the array.
             if c_str_starting_addr.is_null() {

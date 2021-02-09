@@ -1,4 +1,15 @@
-pub static SYSTEM_CALL_NAMES: [&str; 332] = [
+use crate::context;
+use anyhow;
+use anyhow::Context;
+
+pub fn get_syscall_name(number: usize) -> anyhow::Result<&'static str> {
+    let name = SYSTEM_CALL_NAMES
+        .get(number as usize)
+        .with_context(|| context!("System call number {} out of bounds.", number))?;
+    Ok(*name)
+}
+
+static SYSTEM_CALL_NAMES: [&str; 332] = [
     "read",
     "write",
     "open",

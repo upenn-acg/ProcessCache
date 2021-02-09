@@ -7,6 +7,7 @@ mod regs;
 mod seccomp;
 mod system_call_names;
 mod tracer;
+mod utils;
 
 pub use crate::execution::trace_program;
 pub use crate::ptracer::Ptracer;
@@ -77,7 +78,8 @@ fn run_tracer_and_tracee(
     match fork()? {
         ForkResult::Parent { child: tracee_pid } => {
             // Wait for program to be ready.
-            waitpid(tracee_pid, None).context("Unable to wait for child to be ready")?;
+            waitpid(tracee_pid, None)
+                .with_context(|| context!("Unable to wait for child to be ready"))?;
 
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
@@ -105,21 +107,7 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
 
     // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
     // raise(...).
-    let mut loader = seccomp::RuleLoader::new()?;
-
-    loader.intercept(libc::SYS_creat)?;
-    loader.intercept(libc::SYS_clone)?;
-    loader.intercept(libc::SYS_clone3)?;
-    loader.intercept(libc::SYS_fork)?;
-    loader.intercept(libc::SYS_execve)?;
-    loader.intercept(libc::SYS_execveat)?;
-    loader.intercept(libc::SYS_exit)?;
-    loader.intercept(libc::SYS_exit_group)?;
-    loader.intercept(libc::SYS_fork)?;
-    loader.intercept(libc::SYS_open)?;
-    loader.intercept(libc::SYS_openat)?;
-    loader.intercept(libc::SYS_vfork)?;
-    loader.load_to_kernel()?;
+    our_seccomp_rules()?;
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
@@ -143,4 +131,46 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn our_seccomp_rules() -> anyhow::Result<()> {
+    let mut loader = seccomp::RuleLoader::new()?;
+
+    loader.intercept(libc::SYS_creat)?;
+    loader.intercept(libc::SYS_clone)?;
+    loader.intercept(libc::SYS_clone3)?;
+    loader.intercept(libc::SYS_fork)?;
+    loader.intercept(libc::SYS_execve)?;
+    loader.intercept(libc::SYS_execveat)?;
+    loader.intercept(libc::SYS_exit)?;
+    loader.intercept(libc::SYS_exit_group)?;
+    loader.intercept(libc::SYS_fork)?;
+    loader.intercept(libc::SYS_open)?;
+    loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_vfork)?;
+
+    loader.let_pass(libc::SYS_brk)?;
+    loader.let_pass(libc::SYS_arch_prctl)?;
+    loader.let_pass(libc::SYS_mmap)?;
+    loader.let_pass(libc::SYS_read)?;
+    loader.let_pass(libc::SYS_write)?;
+    loader.let_pass(libc::SYS_mprotect)?;
+    loader.let_pass(libc::SYS_pread64)?;
+    loader.let_pass(libc::SYS_munmap)?;
+    loader.let_pass(libc::SYS_set_tid_address)?;
+    loader.let_pass(libc::SYS_set_robust_list)?;
+    loader.let_pass(libc::SYS_rt_sigaction)?;
+    loader.let_pass(libc::SYS_rt_sigprocmask)?;
+    loader.let_pass(libc::SYS_prlimit64)?;
+    loader.let_pass(libc::SYS_statfs)?;
+    loader.let_pass(libc::SYS_ioctl)?;
+
+    // Probably should not let pass...
+    loader.let_pass(libc::SYS_access)?;
+    loader.let_pass(libc::SYS_stat)?;
+    loader.let_pass(libc::SYS_fstat)?;
+    loader.let_pass(libc::SYS_close)?;
+    loader.let_pass(libc::SYS_getdents64)?;
+
+    loader.load_to_kernel()
 }
