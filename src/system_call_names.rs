@@ -1,5 +1,4 @@
 use crate::context;
-use anyhow;
 use anyhow::Context;
 
 pub fn get_syscall_name(number: usize) -> anyhow::Result<&'static str> {

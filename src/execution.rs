@@ -3,7 +3,7 @@ use crate::system_call_names::get_syscall_name;
 
 use fmt::Display;
 #[allow(unused_imports)]
-use libc::{c_char, syscall, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
+use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
@@ -26,10 +26,9 @@ use crate::tracer::TraceEvent;
 use crate::Ptracer;
 #[allow(unused_imports)]
 use single_threaded_runtime::ptrace_event::{AsyncPtrace, PtraceReactor};
-use tracing::{debug, error, info, span, trace, Level};
+use tracing::{debug, info, span, trace, Level};
 
-use anyhow::{anyhow, bail, Context, Result};
-use nix::errno::errno;
+use anyhow::{bail, Context, Result};
 
 pub struct Log {
     log: BufWriter<File>,
@@ -219,11 +218,9 @@ pub async fn do_run_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "creat" | "openat" | "open" => {
-                        handle_open(regs, tracer.clone(), log_writer.clone(), name)?
-                    }
+                    "creat" | "openat" | "open" => handle_open(regs, &tracer, &log_writer, name)?,
                     "fstat" | "lstat" | "newfstatat" | "stat" => {
-                        handle_stat(regs, tracer.clone(), log_writer.clone(), name)?
+                        handle_stat(regs, &tracer, &log_writer, name)?
                     }
                     _ => {}
                 }
@@ -280,8 +277,8 @@ pub async fn do_run_process(
 
 fn handle_open(
     regs: Regs<Unmodified>,
-    tracer: Ptracer,
-    log_writer: LogWriter,
+    tracer: &Ptracer,
+    log_writer: &LogWriter,
     syscall_name: &str,
 ) -> Result<()> {
     let fd = regs.retval() as i32;
@@ -356,8 +353,8 @@ fn handle_open(
 // SUCCESS: RET VAL = 0
 fn handle_stat(
     regs: Regs<Unmodified>,
-    tracer: Ptracer,
-    log_writer: LogWriter,
+    tracer: &Ptracer,
+    log_writer: &LogWriter,
     syscall_name: &str,
 ) -> Result<()> {
     let ret_val = regs.retval() as i32;
@@ -370,7 +367,7 @@ fn handle_stat(
     });
 
     // Return value == 0 means success
-    if ret_val == 0 || log_writer.print_all_syscalls() {
+    if success || log_writer.print_all_syscalls() {
         let (fd, is_symlink, path) = if syscall_name == "fstat" {
             let fd = regs.arg1() as i32;
             (Some(fd), false, None)
@@ -379,29 +376,34 @@ fn handle_stat(
             let arg = match syscall_name {
                 "lstat" | "stat" => regs.arg1() as *const c_char,
                 // newstatat
-                _ => regs.arg2() as *const c_char,
+                "newfstatat" => regs.arg2() as *const c_char,
+                other => bail!(context!("Unhandled syscall: {}", other)),
             };
 
             let path = tracer.read_c_string(arg)?;
+
             let is_symlink = read_link(path.clone()).is_ok();
             (None, is_symlink, Some(path))
         };
 
-        // Don't want the inode if it failed (ret_val != 0) OR
-        // if it's a lstat on a symlink (doesn't follow the link
-        // and therefore will give garbage inode value)
-        let stat_on_symlink =
-            (syscall_name == "lstat" || syscall_name == "newfstatat") && is_symlink;
-
-        let inode = if !success || stat_on_symlink {
-            None
-        } else {
+        // Don't want the inode if it failed (ret_val != 0)
+        let inode = if success {
             let stat_ptr = regs.arg2() as *const libc::stat;
             let stat_struct = tracer.read_value(stat_ptr)?;
             Some(stat_struct.st_ino)
+        } else {
+            None
+        };
+
+        let at_symlink_nofollow = if syscall_name == "newfstatat" {
+            let flags = regs.arg4() as i32;
+            flags & AT_SYMLINK_NOFOLLOW != 0
+        } else {
+            false
         };
 
         let stat_event = StatEvent::new(
+            at_symlink_nofollow,
             fd,
             inode,
             is_symlink,

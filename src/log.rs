@@ -1,12 +1,14 @@
 use nix::unistd::Pid;
 use std::fmt;
 
+#[derive(Debug)]
 pub enum Mode {
     ReadOnly,
     ReadWrite,
     WriteOnly,
 }
 
+#[derive(Debug)]
 pub struct ExecveEvent {
     args: Vec<String>,
     path_name: String,
@@ -20,17 +22,11 @@ impl ExecveEvent {
 
 impl fmt::Display for ExecveEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut log_string = String::new();
-
-        log_string.push_str(&format!(
-            "Execve event: {:?}, {:?}\n",
-            self.path_name, self.args
-        ));
-
-        write!(f, "{}", log_string)
+        writeln!(f, "{:?}", self)
     }
 }
 
+#[derive(Debug)]
 pub struct ForkEvent {
     child_pid: Pid,
     current_pid: Pid,
@@ -47,23 +43,18 @@ impl ForkEvent {
 
 impl fmt::Display for ForkEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut log_string = String::new();
-
-        log_string.push_str(&format!(
-            "Fork Event. Creating task for new child: {}. Parent pid is: {}\n",
-            self.child_pid, self.current_pid
-        ));
-
-        write!(f, "{}", log_string)
+        writeln!(f, "{:?}", self)
     }
 }
 
+#[derive(Debug)]
 pub struct OpenEvent {
     fd: i32,
     inode: Option<u64>,
     is_create: bool,
     mode: Mode,
-    path: String, // Full path if possible, else relative path.
+    /// Full path if possible, else relative path.
+    path: String,
     pid: Pid,
     syscall_name: String,
 }
@@ -92,39 +83,16 @@ impl OpenEvent {
 
 impl fmt::Display for OpenEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut log_string = String::new();
-        if self.is_create {
-            log_string.push_str(&format!(
-                "File create event ({}): opened for writing. ",
-                self.syscall_name
-            ));
-        } else {
-            log_string.push_str(&format!("File open event ({}): ", self.syscall_name));
-        }
-
-        match self.mode {
-            Mode::ReadOnly => log_string.push_str("File opened for reading. "),
-            Mode::WriteOnly => log_string.push_str("File opened for writing. "),
-            Mode::ReadWrite => log_string.push_str("File open for reading/writing. "),
-        }
-
-        log_string.push_str(&format!(
-            "Fd: {}, Path: {}, Pid: {}, ",
-            self.fd, self.path, self.pid
-        ));
-
-        if let Some(ino) = self.inode {
-            log_string.push_str(&format!("Inode: {} \n", ino));
-        } else {
-            log_string.push('\n');
-        }
-
-        write!(f, "{}", log_string)
+        writeln!(f, "{:?}", self)
     }
 }
 
+#[derive(Debug)]
 pub struct StatEvent {
+    /// For newfstatat check the flags
+    at_symlink_nofollow: bool,
     fd: Option<i32>,
+    /// Only want the inode if it was a successful call.
     inode: Option<u64>,
     is_symbolic_link: bool,
     path: Option<String>,
@@ -135,6 +103,7 @@ pub struct StatEvent {
 
 impl StatEvent {
     pub fn new(
+        at_symlink_nofollow: bool,
         fd: Option<i32>,
         inode: Option<u64>,
         is_symbolic_link: bool,
@@ -144,6 +113,7 @@ impl StatEvent {
         syscall_name: String,
     ) -> StatEvent {
         StatEvent {
+            at_symlink_nofollow,
             fd,
             inode,
             is_symbolic_link,
@@ -157,39 +127,6 @@ impl StatEvent {
 
 impl fmt::Display for StatEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut log_string = String::new();
-
-        log_string.push_str(&format!(
-            "File stat event ({}): Pid: {}, ",
-            self.syscall_name, self.pid
-        ));
-
-        if self.success {
-            log_string.push_str("Success, ");
-        } else {
-            log_string.push_str("Fail, ");
-        }
-
-        if self.is_symbolic_link {
-            log_string.push_str("Symlink, ");
-        } else {
-            log_string.push_str("Hardlink, ");
-        }
-
-        if let Some(file_name) = self.path.clone() {
-            log_string.push_str(&format!("Path: \"{}\", ", file_name));
-        }
-
-        if let Some(file_d) = self.fd {
-            log_string.push_str(&format!("Fd: {}, ", file_d));
-        }
-
-        if let Some(ino) = self.inode {
-            log_string.push_str(&format!("Inode: {}\n", ino));
-        } else {
-            log_string.push('\n');
-        }
-
-        write!(f, "{}", log_string)
+        writeln!(f, "{:?}", self)
     }
 }
