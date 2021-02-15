@@ -1,5 +1,4 @@
 use execution::LogWriter;
-use libc::SYS_newfstatat;
 use tracing_subscriber::filter::EnvFilter;
 
 mod execution;
