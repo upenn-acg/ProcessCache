@@ -139,7 +139,8 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                             }
                         }
                         // Event for this task has arrived.
-                        Poll::Ready(_) => {
+                        Poll::Ready(r) => {
+                            r.with_context(|| context!("Task finished by returning error."))?;
                             if tasks.borrow().is_empty() {
                                 info!("All tasks finished!");
                                 all_done = true;

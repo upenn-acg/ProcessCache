@@ -125,15 +125,12 @@ pub async fn run_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     tracer: Ptracer,
     log_writer: LogWriter,
-) {
+) -> Result<()> {
     let pid = tracer.curr_proc;
-    let res = do_run_process(executor, tracer, log_writer.clone())
+    do_run_process(executor, tracer, log_writer.clone())
         .await
-        .with_context(|| context!("Process {:?} failed.", pid));
-
-    if let Err(e) = res {
-        eprintln!("{:?}", e);
-    }
+        .with_context(|| context!("Process {:?} failed.", pid))?;
+    Ok(())
 }
 
 pub async fn do_run_process(
@@ -236,8 +233,7 @@ pub async fn do_run_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                let fork_event = ForkEvent::new(child, tracer.curr_proc);
-                log_writer.add_event(&fork_event)?;
+                log_writer.add_event(&ForkEvent::new(child, tracer.curr_proc))?;
 
                 // Recursively call run process to handle the new child process!
                 let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
