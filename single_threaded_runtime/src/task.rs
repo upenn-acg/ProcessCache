@@ -18,13 +18,13 @@ type LocalBoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 pub struct Task {
     pub pid: Pin<Box<Pid>>,
-    pub future: LocalBoxFuture<()>,
+    pub future: LocalBoxFuture<anyhow::Result<()>>,
 }
 
 impl Task {
     pub fn new<F>(future: F, pid: Pid) -> Task
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = anyhow::Result<()>> + 'static,
     {
         // Pin it, and box it up for storing.
         Task {
