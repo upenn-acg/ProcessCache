@@ -108,7 +108,7 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
 
     // WARNING: The seccomp filter must be loaded after the call to ptraceme() and
     // raise(...).
-    our_seccomp_rules()?;
+    our_seccomp_rules().with_context(|| context!("Unable to load seccomp rules."))?;
 
     // Convert arguments to correct arguments.
     let exe = CString::new(command.0).unwrap();
@@ -168,12 +168,34 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_prlimit64)?;
     loader.let_pass(libc::SYS_statfs)?;
     loader.let_pass(libc::SYS_ioctl)?;
+    loader.let_pass(libc::SYS_futex)?;
+    loader.let_pass(libc::SYS_lseek)?;
+    loader.let_pass(libc::SYS_sched_getaffinity)?;
+    loader.let_pass(libc::SYS_sigaltstack)?;
+    loader.let_pass(libc::SYS_getgid)?;
+    loader.let_pass(libc::SYS_getuid)?;
+    loader.let_pass(libc::SYS_getpid)?;
+    loader.let_pass(libc::SYS_geteuid)?;
+    // TODO: Probably should handle later...
 
-    // TODO: Probably should not let pass...
+    loader.let_pass(libc::SYS_fadvise64)?;
+    loader.let_pass(libc::SYS_dup2)?;
+    loader.let_pass(libc::SYS_pipe)?;
+    loader.let_pass(libc::SYS_chdir)?;
+    loader.let_pass(libc::SYS_readlink)?;
+    loader.let_pass(libc::SYS_fcntl)?;
+    loader.let_pass(libc::SYS_getcwd)?;
     loader.let_pass(libc::SYS_access)?;
     loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
+    loader.let_pass(libc::SYS_lgetxattr)?;
+    loader.let_pass(libc::SYS_getxattr)?;
+    loader.let_pass(libc::SYS_statx)?;
+
+    loader.intercept(libc::SYS_socket)?;
+    loader.intercept(libc::SYS_connect)?;
+    loader.let_pass(libc::SYS_getrandom)?;
 
     loader.load_to_kernel()
 }

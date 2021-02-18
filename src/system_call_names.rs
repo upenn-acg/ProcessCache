@@ -8,7 +8,7 @@ pub fn get_syscall_name(number: usize) -> anyhow::Result<&'static str> {
     Ok(*name)
 }
 
-static SYSTEM_CALL_NAMES: [&str; 332] = [
+static SYSTEM_CALL_NAMES: [&str; 345] = [
     "read",
     "write",
     "open",
@@ -341,4 +341,17 @@ static SYSTEM_CALL_NAMES: [&str; 332] = [
     "pkey_mprotect",
     "pkey_alloc",
     "pkey_free",
+    "statx",
+    "io_pgetevents",
+    "rseq",
+    "pidfd_send_signal",
+    "io_uring_setup",
+    "io_uring_enter",
+    "io_uring_register",
+    "open_tree",
+    "move_mount",
+    "fsopen",
+    "fsconfig",
+    "fsmount",
+    "fspick",
 ];

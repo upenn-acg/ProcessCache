@@ -63,7 +63,7 @@ impl Ptracer {
         };
 
         ptrace_syscall(self.curr_proc, ContinueEvent::SystemCall, None)
-            .with_context(|| context!("ptrace_syscall failed."))?;
+            .with_context(|| context!("Unable to fetch system call posthook."))?;
 
         match event.await.into() {
             TraceEvent::Posthook(_) => {
@@ -142,7 +142,7 @@ impl Ptracer {
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
         ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None)
-            .with_context(|| "Could not ptrace_syscall")?;
+            .with_context(|| context!("Unable to get next system call event."))?;
         // Wait for ptrace event from this pid here.
         let event = AsyncPtrace {
             pid: self.curr_proc,
@@ -226,7 +226,7 @@ pub fn ptrace_syscall(
     pid: Pid,
     ce: ContinueEvent,
     signal_to_deliver: Option<Signal>,
-) -> nix::Result<c_long> {
+) -> anyhow::Result<c_long> {
     let signal = match signal_to_deliver {
         None => std::ptr::null_mut::<c_void>(),
         Some(s) => s as i64 as *mut c_void,
@@ -241,5 +241,6 @@ pub fn ptrace_syscall(
         #[allow(deprecated)]
         // Omit integer, not interesting.
         ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
+            .with_context(|| context!("Cannot call ptrace(syscall)"))
     }
 }

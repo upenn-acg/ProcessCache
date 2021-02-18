@@ -2,6 +2,7 @@ use crate::context;
 use crate::system_call_names::get_syscall_name;
 use anyhow::{bail, ensure, Context, Result};
 use seccomp_sys::*;
+use std::collections::HashSet;
 use std::env;
 use std::os::raw::c_long;
 use std::u32;
@@ -16,6 +17,8 @@ pub struct RuleLoader {
     // Flag specifying if we're running with RUST_LOG on.
     debug: bool,
     ctx: *mut scmp_filter_ctx,
+    /// Ensure system call rules only exists once per syscall.
+    rules_set: HashSet<c_long>,
 }
 
 impl RuleLoader {
@@ -37,11 +40,18 @@ impl RuleLoader {
 
     /// System call to intercept on execution.
     pub fn intercept(&mut self, syscall: c_long) -> Result<()> {
+        if !self.rules_set.insert(syscall) {
+            bail!(context!(
+                "Rule for system call already existed {:?}.",
+                RuleLoader::syscall_name(syscall)?
+            ));
+        }
+
         unsafe {
             // Include system call number with data, this may save us some calls to
             // ptrace(GET_REGS).
             if seccomp_rule_add(self.ctx, SCMP_ACT_TRACE(syscall as u32), syscall as i32, 0) < 0 {
-                bail!("Unable to add intercept rule for {}", syscall);
+                bail!(context!("Unable to add intercept rule for {}", syscall));
             }
             Ok(())
         }
@@ -52,19 +62,31 @@ impl RuleLoader {
     /// TODO: This function is unused for now. Use `let_pass` isntead. Is this useful?
     #[allow(dead_code)]
     pub fn let_pass_debug(&mut self, syscall: c_long, on_debug: OnDebug) -> Result<()> {
+        if !self.rules_set.insert(syscall) {
+            bail!(context!(
+                "Rule for system call already existed {:?}.",
+                RuleLoader::syscall_name(syscall)?
+            ));
+        }
         match on_debug {
             OnDebug::Intercept if self.debug => self.intercept(syscall),
             _ => unsafe {
                 // Send system call number as data to tracer to avoid a ptrace(GET_REGS).
                 if seccomp_rule_add(self.ctx, SCMP_ACT_ALLOW, syscall as i32, 0) < 0 {
-                    let syscall = get_syscall_name(syscall as usize)
-                        .with_context(|| context!("Cannot fetch name for syscall={}", syscall))?;
-
-                    bail!("Unable to add rule for \"{}\"", syscall);
+                    bail!(context!(
+                        "Unable to add rule for \"{}\"",
+                        RuleLoader::syscall_name(syscall)?
+                    ));
                 }
                 Ok(())
             },
         }
+    }
+
+    /// Fetch syscall name for error handling.
+    fn syscall_name(syscall: c_long) -> Result<&'static str> {
+        get_syscall_name(syscall as usize)
+            .with_context(|| context!("Cannot fetch name for syscall={}", syscall))
     }
 
     pub fn let_pass(&mut self, syscall: c_long) -> Result<()> {
@@ -80,12 +102,16 @@ impl RuleLoader {
             // use a u16::MAX instead.
             let res = seccomp_init(SCMP_ACT_TRACE(u16::MAX as u32));
             if res.is_null() {
-                bail!("Unable to seccomp_init");
+                bail!(context!("Unable to seccomp_init"));
             }
             res
         };
 
         let debug = !matches!(env::var_os("RUST_LOG"), None);
-        Ok(RuleLoader { debug, ctx })
+        Ok(RuleLoader {
+            debug,
+            ctx,
+            rules_set: HashSet::new(),
+        })
     }
 }
