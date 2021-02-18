@@ -33,6 +33,8 @@ impl Task {
         }
     }
 
+    /// We cannot return a proper error from here as the function type wouldn't match for
+    /// RawWakerVTable.
     unsafe fn wake(data: *const ()) {
         let pid = *(data as *const Pid);
         trace!("Waking up task: {}", pid);
