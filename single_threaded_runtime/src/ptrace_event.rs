@@ -9,9 +9,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::task::Waker;
 
+use crate::context;
+use anyhow::{bail, Context, Result};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::Context;
 use std::task::Poll;
 
 #[allow(unused_imports)]
@@ -34,7 +35,7 @@ use std::collections::HashSet;
 impl Future for AsyncPtrace {
     type Output = WaitStatus;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<WaitStatus> {
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<WaitStatus> {
         let s = span!(Level::TRACE, "AsyncPtrace::poll()");
         let _e = s.enter();
         event!(Level::TRACE, ?self.pid, "Polling Once for");
@@ -70,7 +71,7 @@ impl PtraceReactor {
 }
 
 impl Reactor for PtraceReactor {
-    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> bool {
+    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> Result<bool> {
         let s = span!(Level::INFO, "wait_for_event()");
         let _e = s.enter();
 
@@ -95,10 +96,10 @@ impl Reactor for PtraceReactor {
                 // Child finished it is done running.
                 if let Sys(Errno::ECHILD) = error {
                     trace!("done!");
-                    panic!("Does this ever happen?");
+                    bail!(context!("Does this ever happen?"));
                 // true
                 } else {
-                    panic!("Unexpected error reason: {}", error);
+                    bail!(context!("Unexpected error reason: {}", error));
                 }
             }
             0 => {
@@ -111,16 +112,15 @@ impl Reactor for PtraceReactor {
                 }
 
                 let waker = WAKERS.with(|wakers| {
-                    wakers
-                        .borrow_mut()
-                        .remove(&pid)
-                        .expect("Expected waker to be in our set.")
-                });
+                    wakers.borrow_mut().remove(&pid).with_context(|| {
+                        context!("Waker not present in our waker set. This is a bug!")
+                    })
+                })?;
 
                 waker.wake();
-                false
+                Ok(false)
             }
-            n => panic!("Unexpected return code from waitid: {}", n),
+            n => bail!(context!("Unexpected return code from waitid: {}", n)),
         }
     }
 }
@@ -137,7 +137,7 @@ impl PtraceReactor {
         live_procs: &HashSet<Pid>,
         siginfo: &mut libc::siginfo_t,
         pid: Pid,
-    ) -> bool {
+    ) -> Result<bool> {
         match siginfo.si_code {
             libc::CLD_TRAPPED => {
                 info!(
@@ -151,23 +151,27 @@ impl PtraceReactor {
                 // do the ptrace(cont) for us. See `run_process()` docs for more info.
                 match waitpid(pid, None) {
                     Ok(w) => {
-                        // Paranoia.
-                        assert!(
-                            matches!(w, WaitStatus::Stopped(_, _)),
-                            "waitpid returned different WaitStatus than \
+                        if !matches!(w, WaitStatus::Stopped(_, _)) {
+                            bail!(context!(
+                                "Waitpid returned different WaitStatus than \
                                  expected when handling signal/fork race."
-                        );
+                            ));
+                        }
+
                         // We need to re-do this function again. Recurse is the easiest way?
                         // :grimace-emoji:
                         self.wait_for_event(live_procs)
                     }
                     Err(e) => {
-                        panic!("Unable to take event off event queue: {:?}", e);
+                        bail!(context!("Unable to take event off event queue: {:?}", e));
                     }
                 }
             }
             c => {
-                panic!("Unknown PID encountered by reactor. Siginfo.si_code {}", c);
+                bail!(context!(
+                    "Unknown PID encountered by reactor. Siginfo.si_code {}",
+                    c
+                ));
             }
         }
     }

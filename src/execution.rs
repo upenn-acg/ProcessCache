@@ -88,7 +88,7 @@ impl LogWriter {
     }
 }
 
-pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> nix::Result<()> {
+pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
     let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
     let ptracer = Ptracer::new(first_proc);
     info!("Running whole program");
@@ -100,8 +100,12 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> nix::Result<()> 
         log_writer.clone(),
     );
 
-    executor.add_future(Task::new(f, first_proc));
-    executor.run_all();
+    executor
+        .add_future(Task::new(f, first_proc))
+        .with_context(|| context!("Cannot add initial future to executor."))?;
+    executor
+        .run_all()
+        .with_context(|| context!("Executor failure while running our tasks."))?;
 
     log_writer.flush();
     Ok(())
@@ -237,7 +241,9 @@ pub async fn do_run_process(
 
                 // Recursively call run process to handle the new child process!
                 let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
-                executor.add_future(Task::new(f, child));
+                executor.add_future(Task::new(f, child)).with_context(|| {
+                    context!("Failed to add new task for child process during clone event.")
+                })?;
             }
 
             TraceEvent::Posthook(_) => {

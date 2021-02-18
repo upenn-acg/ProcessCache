@@ -5,8 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 pub mod ptrace_event;
 pub mod task;
+mod utils;
+
 use crate::task::Task;
-use std::task::Context;
+use anyhow::{bail, Context, Result};
 use std::task::Poll;
 use tracing::{event, span, Level};
 
@@ -24,7 +26,7 @@ thread_local! {
 /// support multiple ready tasks after `wait_for_event`.
 pub trait Reactor {
     /// Return value indicates when all processes have finished running?
-    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> bool;
+    fn wait_for_event(&mut self, live_procs: &HashSet<Pid>) -> Result<bool>;
 }
 
 /// This is our futures runtime. It is responsible for accepting futures to run,
@@ -51,38 +53,47 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
     }
 
     /// Add future to our executor and poll once to start running it.
-    pub fn add_future(&self, mut task: Task) {
+    pub fn add_future(&self, mut task: Task) -> Result<()> {
         let s = span!(Level::INFO, "add_future()");
         s.in_scope(|| event!(Level::INFO, ?task.pid, "Adding new task to executor"));
 
         // Guard against the user passing the same PID for an existing task.
         if !self.task_pids.borrow_mut().insert(*task.pid) {
-            panic!(
+            bail!(context!(
                 "Pid {} already existed for another Task. This is a duplicate",
                 task.pid
-            );
+            ));
         }
 
         let waker = task.get_waker();
 
-        match task.future.as_mut().poll(&mut Context::from_waker(&waker)) {
+        match task
+            .future
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+        {
             Poll::Pending => {
                 s.in_scope(|| trace!("Still executing..."));
 
                 WAITING_TASKS.with(|ht| {
                     if let Some(existing) = ht.borrow_mut().insert(*task.pid, task) {
-                        panic!("Existing task already found for: {:?}", existing.pid);
+                        bail!(context!(
+                            "Existing task already found for: {:?}",
+                            existing.pid
+                        ));
                     }
-                });
+                    Ok(())
+                })?;
             }
             Poll::Ready(_) => {
                 info!("Future finished successfully!");
                 // All done don't bother adding...
             }
         }
+        Ok(())
     }
 
-    pub fn run_all(&self) {
+    pub fn run_all(&self) -> Result<()> {
         trace!("Running all futures.");
 
         // The future may have polled and finished in the add_future method.
@@ -90,7 +101,7 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
         let no_waiting_tasks = WAITING_TASKS.with(|tb| tb.borrow().is_empty());
         if no_waiting_tasks {
             info!("No waiting tasks. All done!");
-            return;
+            return Ok(());
         }
 
         let mut all_done = false;
@@ -100,17 +111,21 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
 
             self.reactor
                 .borrow_mut()
-                .wait_for_event(&*self.task_pids.borrow());
+                .wait_for_event(&*self.task_pids.borrow())
+                .with_context(|| context!("Cannot wait for reactor event."))?;
 
-            NEXT_TASK.with(|nt| {
+            NEXT_TASK.with::<_, Result<()>>(|nt| {
                 let mut task = nt
                     .borrow_mut()
                     .take()
-                    .expect("No such entry, should have been there.");
+                    .with_context(|| context!("No such entry, should have been there."))?;
                 let waker = task.get_waker();
 
                 // as_mut(&mut self) -> Pin<&mut <P as Deref>::Target>
-                let poll = task.future.as_mut().poll(&mut Context::from_waker(&waker));
+                let poll = task
+                    .future
+                    .as_mut()
+                    .poll(&mut std::task::Context::from_waker(&waker));
 
                 WAITING_TASKS.with(|tasks| {
                     match poll {
@@ -118,7 +133,9 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
                         Poll::Pending => {
                             if tasks.borrow_mut().insert(*task.pid, task).is_some() {
                                 // Somehow the task was already in there...
-                                panic!("Task already existed in tasks. This is a duplicate.");
+                                bail!(context!(
+                                    "Task already existed in tasks. This is a duplicate."
+                                ));
                             }
                         }
                         // Event for this task has arrived.
@@ -130,13 +147,19 @@ impl<R: Reactor> SingleThreadedRuntime<R> {
 
                             // This task is forever done. Remove from our active Pid set.
                             if !self.task_pids.borrow_mut().remove(&task.pid) {
-                                panic!("Pid {} not found in our active Pid list.", task.pid);
+                                bail!(context!(
+                                    "Pid {} not found in our active Pid list.",
+                                    task.pid
+                                ));
                             }
                             debug!("Task {} done!", task.pid);
                         }
                     }
-                });
-            });
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
         }
+        Ok(())
     }
 }
