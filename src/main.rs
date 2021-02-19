@@ -176,9 +176,29 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getuid)?;
     loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_geteuid)?;
-    // TODO: Probably should handle later...
-
+    loader.let_pass(libc::SYS_getppid)?;
+    loader.let_pass(libc::SYS_getegid)?;
     loader.let_pass(libc::SYS_fadvise64)?;
+    loader.let_pass(libc::SYS_mremap)?;
+    loader.let_pass(libc::SYS_rt_sigreturn)?;
+
+    // TODO Less clear whether it should be handled.
+    loader.let_pass(libc::SYS_sysinfo)?;
+    loader.intercept(libc::SYS_socket)?;
+    loader.intercept(libc::SYS_connect)?;
+    loader.let_pass(libc::SYS_getrandom)?;
+    loader.let_pass(libc::SYS_lgetxattr)?;
+    loader.let_pass(libc::SYS_getxattr)?;
+    loader.let_pass(libc::SYS_statx)?;
+    loader.let_pass(libc::SYS_getrusage)?;
+    loader.let_pass(libc::SYS_chmod)?;
+    loader.let_pass(libc::SYS_pselect6)?;
+
+    // TODO: Probably should handle later...
+    loader.let_pass(libc::SYS_rename)?;
+    loader.let_pass(libc::SYS_mkdir)?;
+    loader.let_pass(libc::SYS_umask)?;
+    loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_pipe)?;
     loader.let_pass(libc::SYS_chdir)?;
@@ -189,13 +209,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
-    loader.let_pass(libc::SYS_lgetxattr)?;
-    loader.let_pass(libc::SYS_getxattr)?;
-    loader.let_pass(libc::SYS_statx)?;
-
-    loader.intercept(libc::SYS_socket)?;
-    loader.intercept(libc::SYS_connect)?;
-    loader.let_pass(libc::SYS_getrandom)?;
 
     loader.load_to_kernel()
 }
