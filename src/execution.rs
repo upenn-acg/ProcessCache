@@ -93,7 +93,7 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
     let ptracer = Ptracer::new(first_proc);
     info!("Running whole program");
 
-    let f = run_process(
+    let f = trace_process(
         // Every executing process gets its own handle into the executor.
         executor.clone(),
         ptracer,
@@ -105,43 +105,35 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
         .with_context(|| context!("Cannot add initial future to executor."))?;
     executor
         .run_all()
-        .with_context(|| context!("Executor failure while running our tasks."))?;
+        .with_context(|| context!("Failure while running tasks."))?;
 
     log_writer.flush();
     Ok(())
 }
 
-/// Wrapper for displaying error messages. All error messages are handled here.
 /// NOTE: The process should start in a STOPPED state. Ptrace does this by default so it should just
 /// work.
 /// For all child processes (assuming we're are ptracing a process tree) technically there is a
 /// ptrace::STOPPED event on the wait-event queue, but it seems calling ptrace(continue) will get
-/// rid of this event (this is the first thing that `get_next_event()` does in `do_run_process()`.
+/// rid of this event (this is the first thing that `get_next_event()` does in `trace_process()`.
 /// So we actually can just ignore this event. This is actually what we want and how we handle the
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. See
 /// `handle_signal_fork_race()` in ptrace_event.rs for more info. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
-pub async fn run_process(
-    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
-    tracer: Ptracer,
-    log_writer: LogWriter,
-) -> Result<()> {
-    let pid = tracer.curr_proc;
-    do_run_process(executor, tracer, log_writer.clone())
-        .await
-        .with_context(|| context!("Process {:?} failed.", pid))?;
-    Ok(())
-}
-
-pub async fn do_run_process(
+pub async fn trace_process(
     executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
     mut tracer: Ptracer,
     log_writer: LogWriter,
 ) -> Result<()> {
     let s = span!(Level::INFO, "do_run_process", pid=?tracer.curr_proc);
+    s.in_scope(|| info!("Starting Process"));
 
     loop {
-        match tracer.get_next_event().await? {
+        match tracer
+            .get_next_event()
+            .await
+            .with_context(|| context!("Failed to get next event."))?
+        {
             TraceEvent::Exec(pid) => {
                 s.in_scope(|| debug!("Saw exec event for pid {}", pid));
             }
@@ -226,7 +218,7 @@ pub async fn do_run_process(
                     _ => {}
                 }
             }
-            TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
+            e @ TraceEvent::Fork(_) | e @ TraceEvent::VFork(_) | e @ TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);
@@ -236,9 +228,13 @@ pub async fn do_run_process(
                 log_writer.add_event(&ForkEvent::new(child, tracer.curr_proc))?;
 
                 // Recursively call run process to handle the new child process!
-                let f = run_process(executor.clone(), Ptracer::new(child), log_writer.clone());
+                let f = trace_process(executor.clone(), Ptracer::new(child), log_writer.clone());
                 executor.add_future(Task::new(f, child)).with_context(|| {
-                    context!("Failed to add new task for child process during clone event.")
+                    context!(
+                        "Failed to add new task for child process {:?} during {:?} event.",
+                        child,
+                        e
+                    )
                 })?;
             }
 

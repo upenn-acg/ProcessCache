@@ -137,8 +137,6 @@ impl Ptracer {
     }
 
     pub(crate) async fn get_next_event(&mut self) -> anyhow::Result<TraceEvent> {
-        // info!("Waiting for next ptrace event.");
-
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
         ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None)
@@ -241,6 +239,6 @@ pub fn ptrace_syscall(
         #[allow(deprecated)]
         // Omit integer, not interesting.
         ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
-            .with_context(|| context!("Cannot call ptrace(syscall)"))
+            .with_context(|| context!("Cannot call ptrace({:?}) for {:?}", request, pid))
     }
 }
