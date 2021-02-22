@@ -139,7 +139,6 @@ dependencies = [
  "libc",
  "nix",
  "seccomp-sys",
- "single_threaded_runtime",
  "structopt",
  "tracing",
  "tracing-subscriber",
@@ -377,17 +376,6 @@ checksum = "7b4921be914e16899a80adefb821f8ddb7974e3f1250223575a44ed994882127"
 dependencies = [
  "lazy_static",
  "loom",
-]
-
-[[package]]
-name = "single_threaded_runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "log",
- "nix",
- "tracing",
 ]
 
 [[package]]
