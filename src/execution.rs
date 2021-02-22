@@ -8,9 +8,6 @@ use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
 use nix::unistd::Pid;
-use single_threaded_runtime::task::Task;
-use single_threaded_runtime::SingleThreadedRuntime;
-//use core::num::flt2dec::strategy::dragon::format_exact;
 use std::cell::RefCell;
 use std::fmt;
 use std::fs::{read_link, File};
@@ -25,9 +22,9 @@ use crate::tracer::TraceEvent;
 
 use crate::Ptracer;
 #[allow(unused_imports)]
-use single_threaded_runtime::ptrace_event::{AsyncPtrace, PtraceReactor};
-use tracing::{debug, info, span, trace, Level};
+use tracing::{debug, error, info, span, trace, Level};
 
+use crate::async_runtime::AsyncRuntime;
 use anyhow::{bail, Context, Result};
 
 pub struct Log {
@@ -89,23 +86,13 @@ impl LogWriter {
 }
 
 pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
-    let executor = Rc::new(SingleThreadedRuntime::new(PtraceReactor::new()));
-    let ptracer = Ptracer::new(first_proc);
+    let f = |pid: Pid| trace_process(Ptracer::new(pid), log_writer.clone());
+    let async_runtime = AsyncRuntime::new(f);
+
     info!("Running whole program");
-
-    let f = trace_process(
-        // Every executing process gets its own handle into the executor.
-        executor.clone(),
-        ptracer,
-        log_writer.clone(),
-    );
-
-    executor
-        .add_future(Task::new(f, first_proc))
-        .with_context(|| context!("Cannot add initial future to executor."))?;
-    executor
-        .run_all()
-        .with_context(|| context!("Failure while running tasks."))?;
+    async_runtime
+        .run_task(first_proc)
+        .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
     log_writer.flush();
     Ok(())
@@ -120,20 +107,20 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. See
 /// `handle_signal_fork_race()` in ptrace_event.rs for more info. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
-pub async fn trace_process(
-    executor: Rc<SingleThreadedRuntime<PtraceReactor>>,
-    mut tracer: Ptracer,
-    log_writer: LogWriter,
-) -> Result<()> {
-    let s = span!(Level::INFO, "do_run_process", pid=?tracer.curr_proc);
+pub async fn trace_process(mut tracer: Ptracer, log_writer: LogWriter) -> Result<()> {
+    let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
+    let mut signal = None;
 
     loop {
-        match tracer
-            .get_next_event()
+        let event = tracer
+            .get_next_event(signal)
             .await
-            .with_context(|| context!("Failed to get next event."))?
-        {
+            .with_context(|| context!("Unable to get next event in execution loop."))?;
+        // Clear out signal after use.
+        signal = None;
+
+        match event {
             TraceEvent::Exec(pid) => {
                 s.in_scope(|| debug!("Saw exec event for pid {}", pid));
             }
@@ -218,7 +205,7 @@ pub async fn trace_process(
                     _ => {}
                 }
             }
-            e @ TraceEvent::Fork(_) | e @ TraceEvent::VFork(_) | e @ TraceEvent::Clone(_) => {
+            TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);
@@ -226,16 +213,6 @@ pub async fn trace_process(
                 });
 
                 log_writer.add_event(&ForkEvent::new(child, tracer.curr_proc))?;
-
-                // Recursively call run process to handle the new child process!
-                let f = trace_process(executor.clone(), Ptracer::new(child), log_writer.clone());
-                executor.add_future(Task::new(f, child)).with_context(|| {
-                    context!(
-                        "Failed to add new task for child process {:?} during {:?} event.",
-                        child,
-                        e
-                    )
-                })?;
             }
 
             TraceEvent::Posthook(_) => {
@@ -245,7 +222,8 @@ pub async fn trace_process(
             }
 
             // Received a signal event.
-            TraceEvent::ReceivedSignal(pid, signal) => {
+            TraceEvent::ReceivedSignal(pid, caught_signal) => {
+                signal = Some(caught_signal);
                 s.in_scope(|| debug!(?signal, "pid {} received signal {:?}", pid, signal));
             }
 
@@ -260,7 +238,7 @@ pub async fn trace_process(
     }
 
     // Saw pre-exit event, wait for final exit event.
-    match tracer.get_next_event().await? {
+    match tracer.get_next_event(None).await? {
         TraceEvent::ProcessExited(pid) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
         }

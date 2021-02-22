@@ -1,6 +1,7 @@
 use execution::LogWriter;
 use tracing_subscriber::filter::EnvFilter;
 
+mod async_runtime;
 mod execution;
 mod log;
 mod ptracer;

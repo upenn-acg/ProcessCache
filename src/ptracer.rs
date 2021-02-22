@@ -18,7 +18,8 @@ use crate::tracer::TraceEvent;
 #[allow(unused_imports)]
 use anyhow::{anyhow, bail, ensure, Context};
 
-use single_threaded_runtime::ptrace_event::AsyncPtrace;
+use crate::async_runtime::AsyncPtrace;
+// use single_threaded_runtime::ptrace_event::AsyncPtrace;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -136,10 +137,13 @@ impl Ptracer {
         Ok(res)
     }
 
-    pub(crate) async fn get_next_event(&mut self) -> anyhow::Result<TraceEvent> {
+    pub(crate) async fn get_next_event(
+        &mut self,
+        signal: Option<Signal>,
+    ) -> anyhow::Result<TraceEvent> {
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
-        ptrace_syscall(self.curr_proc, ContinueEvent::Continue, None)
+        ptrace_syscall(self.curr_proc, ContinueEvent::Continue, signal)
             .with_context(|| context!("Unable to get next system call event."))?;
         // Wait for ptrace event from this pid here.
         let event = AsyncPtrace {
