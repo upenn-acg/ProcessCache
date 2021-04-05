@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
 
 // TODO: use anyhow errors?
 
 // Types of READ access to a resource.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccessType {
     Contents,
     Metadata,
@@ -13,6 +14,7 @@ pub enum AccessType {
 }
 // Resource struct.
 // Files basically.
+#[derive(Debug)]
 pub struct Resource {
     access_type: AccessType,
     fd: Option<i32>,
@@ -48,6 +50,7 @@ impl Resource {
 // be a vector. Need to know what was actually
 // accessed so it's going to change to a map
 // inode --> resource
+#[derive(Debug)]
 pub struct Exec {
     args: Vec<String>,
     cwd: String,
@@ -89,6 +92,7 @@ impl Exec {
     }
 }
 
+#[derive(Debug)]
 pub struct Execs {
     // Executable that is currently running.
     current_exec: String,
@@ -103,7 +107,9 @@ pub struct Execs {
     // a resource to an exec but oh wait! we had already
     // context switched! :O
     // For now, just one exec, we don't have to do this.
-    execs: HashMap<String, Exec>,
+    //
+    // TODO: this shouldn't just be pub
+    pub execs: HashMap<String, Exec>,
 }
 
 impl Execs {
@@ -148,10 +154,17 @@ impl Execs {
         self.current_exec = new_exec;
     }
 }
+
+impl fmt::Display for Execs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, ":{:?}", self)
+    }    
+}
 // ¯\_(ツ)_/¯
 #[derive(Clone)]
 pub struct RcExecs {
-    rc_execs: Rc<RefCell<Execs>>,
+     // TODO: this shouldn't just be pub
+    pub rc_execs: Rc<RefCell<Execs>>,
 }
 
 impl RcExecs {
