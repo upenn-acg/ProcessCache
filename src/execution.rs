@@ -1,6 +1,3 @@
-use crate::context;
-use crate::system_call_names::get_syscall_name;
-
 use fmt::Display;
 #[allow(unused_imports)]
 use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
@@ -9,24 +6,26 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
 use nix::unistd::Pid;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::{read_link, File};
-use std::io::BufWriter;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::rc::Rc;
 
+use crate::async_runtime::AsyncRuntime;
+use crate::context;
+use crate::idk::{AccessType, Exec, RcExecs, Resource};
 use crate::log::{ExecveEvent, ForkEvent, Mode, OpenEvent, StatEvent};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
+use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
-
 use crate::Ptracer;
+
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::async_runtime::AsyncRuntime;
 use anyhow::{bail, Context, Result};
-
 pub struct Log {
     log: BufWriter<File>,
     print_all_syscalls: bool,
@@ -85,8 +84,8 @@ impl LogWriter {
     }
 }
 
-pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
-    let f = |pid: Pid| trace_process(Ptracer::new(pid), log_writer.clone());
+pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecs) -> Result<()> {
+    let f = |pid: Pid| trace_process(Ptracer::new(pid), log_writer.clone(), rc_execs.clone());
     let async_runtime = AsyncRuntime::new(f);
 
     info!("Running whole program");
@@ -95,6 +94,7 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
     log_writer.flush();
+
     Ok(())
 }
 
@@ -107,7 +107,11 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter) -> Result<()> {
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. See
 /// `handle_signal_fork_race()` in ptrace_event.rs for more info. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
-pub async fn trace_process(mut tracer: Ptracer, log_writer: LogWriter) -> Result<()> {
+pub async fn trace_process(
+    mut tracer: Ptracer,
+    log_writer: LogWriter,
+    rc_execs: RcExecs,
+) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
@@ -175,9 +179,14 @@ pub async fn trace_process(mut tracer: Ptracer, log_writer: LogWriter) -> Result
                             .get_registers()
                             .with_context(|| context!("Execve getting registers."))?;
 
-                        let _res = handle_execve(regs, tracer.clone(), log_writer.clone())
-                            .await
-                            .with_context(|| format!("handle_execve({:?}) failed", pid));
+                        let _res = handle_execve(
+                            regs,
+                            tracer.clone(),
+                            log_writer.clone(),
+                            rc_execs.clone(),
+                        )
+                        .await
+                        .with_context(|| format!("handle_execve({:?}) failed", pid));
 
                         continue;
                     }
@@ -198,7 +207,9 @@ pub async fn trace_process(mut tracer: Ptracer, log_writer: LogWriter) -> Result
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "creat" | "openat" | "open" => handle_open(regs, &tracer, &log_writer, name)?,
+                    "creat" | "openat" | "open" => {
+                        handle_open(&log_writer, &rc_execs, &regs, name, &tracer)?
+                    }
                     "fstat" | "lstat" | "newfstatat" | "stat" => {
                         handle_stat(regs, &tracer, &log_writer, name)?
                     }
@@ -252,10 +263,11 @@ pub async fn trace_process(mut tracer: Ptracer, log_writer: LogWriter) -> Result
 }
 
 fn handle_open(
-    regs: Regs<Unmodified>,
-    tracer: &Ptracer,
     log_writer: &LogWriter,
+    rc_execs: &RcExecs,
+    regs: &Regs<Unmodified>,
     syscall_name: &str,
+    tracer: &Ptracer,
 ) -> Result<()> {
     let fd = regs.retval() as i32;
     let pid = tracer.curr_proc;
@@ -315,10 +327,21 @@ fn handle_open(
             inode,
             is_create,
             mode,
-            path,
+            path.clone(),
             pid,
             String::from(syscall_name),
         );
+
+        // Right now only tracking READS individual execs do.
+        // Creat + open(at) used to create files are not
+        // being handled yet.
+        if !is_create {
+            // Add new metadata access (metadata read because it's opening the file)
+            let resource_fd = if fd > 0 { Some(fd) } else { None };
+            // TODO: remove this unwrap()
+            let resource = Resource::new(AccessType::Metadata, resource_fd, Some(path));
+            rc_execs.add_new_access(inode.unwrap(), resource);
+        }
 
         log_writer.add_event(&open_event)?;
     }
@@ -399,6 +422,7 @@ async fn handle_execve(
     regs: Regs<Unmodified>,
     mut tracer: Ptracer,
     log_writer: LogWriter,
+    rc_execs: RcExecs,
 ) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
     let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
@@ -417,8 +441,18 @@ async fn handle_execve(
             debug!("execve(\"{:?}\", {:?})", path_name, args);
             trace!("envp={:?}", envp);
         });
-        let execve_event = ExecveEvent::new(args, path_name);
+        // TODO: Consolidate when this becomes P$ (log will not be needed anymore)
+        // These are essentially the same right now but I can't bring myself
+        // to combine them
+        let execve_event = ExecveEvent::new(args.clone(), path_name.clone());
         log_writer.add_event(&execve_event)?;
+
+        // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
+        let cwd = String::from("cwd");
+        // TODO: actually track environment variables
+        let exec = Exec::new(args, cwd, HashMap::new());
+        rc_execs.add_new_exec(exec, path_name.clone());
+        rc_execs.update_curr_exec(path_name);
     }
 
     Ok(())
