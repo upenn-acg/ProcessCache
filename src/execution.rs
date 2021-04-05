@@ -94,7 +94,12 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecs) 
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
     log_writer.flush();
-
+    // TODO: Print out the unique execs.
+    // There should just be one.
+    for (exec_str, exec) in rc_execs.rc_execs.borrow().execs.iter() {
+        println!("Unique Execution String: {}", exec_str);
+        println!("Exec: {:?}", exec);
+    }
     Ok(())
 }
 
