@@ -3,6 +3,7 @@ use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
 mod execution;
+mod idk;
 mod log;
 mod ptracer;
 mod regs;
@@ -12,6 +13,7 @@ mod tracer;
 mod utils;
 
 pub use crate::execution::trace_program;
+pub use crate::idk::RcExecs;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
 
@@ -86,9 +88,15 @@ fn run_tracer_and_tracee(
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
 
+            // When we create unique_execs we want to create
+            // a new exec
+            // Silly unit structs with their silly accessing system
+            let args = command.1;
+            let executable = command.0;
+            let unique_execs = RcExecs::new(args, executable);
             let log_writer = LogWriter::new(&output_file_name, print_all_syscalls);
 
-            execution::trace_program(tracee_pid, log_writer)?;
+            execution::trace_program(tracee_pid, log_writer, unique_execs)?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),
@@ -206,10 +214,13 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_readlink)?;
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;
-    loader.let_pass(libc::SYS_access)?;
-    loader.let_pass(libc::SYS_close)?;
+    loader.let_pass(libc::SYS_access)?; // empty main
+    loader.let_pass(libc::SYS_close)?; // empty main
     loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
+
+    // TODO: Handle for empty main
+    loader.let_pass(libc::SYS_poll)?;
 
     loader.load_to_kernel()
 }
