@@ -216,7 +216,7 @@ pub async fn trace_process(
                         handle_open(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     "fstat" | "lstat" | "newfstatat" | "stat" => {
-                        handle_stat(regs, &tracer, &log_writer, name)?
+                        handle_stat(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     _ => {}
                 }
@@ -356,10 +356,11 @@ fn handle_open(
 // First, we will just handle SUCCESS and FAIL of STAT calls
 // SUCCESS: RET VAL = 0
 fn handle_stat(
-    regs: Regs<Unmodified>,
-    tracer: &Ptracer,
     log_writer: &LogWriter,
+    rc_execs: &RcExecs,
+    regs: &Regs<Unmodified>,
     syscall_name: &str,
+    tracer: &Ptracer,
 ) -> Result<()> {
     let ret_val = regs.retval() as i32;
     let pid = tracer.curr_proc;
@@ -411,13 +412,17 @@ fn handle_stat(
             fd,
             inode,
             is_symlink,
-            path,
+            path.clone(),
             pid,
             success,
             String::from(syscall_name),
         );
 
         log_writer.add_event(&stat_event)?;
+
+        let resource = Resource::new(AccessType::Metadata, fd, path);
+        // TODO: Get rid of the unwrap here
+        rc_execs.add_new_access(inode.unwrap(), resource);
     }
 
     Ok(())
