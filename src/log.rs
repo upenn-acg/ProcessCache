@@ -14,14 +14,16 @@ pub struct AccessEvent {
     // Full path 
     path: String,
     pid: Pid,
+    successful: bool,
 }
 
 impl AccessEvent {
-    pub fn new(inode: Option<u64>, path: String, pid: Pid) -> AccessEvent {
+    pub fn new(inode: Option<u64>, path: String, pid: Pid, successful: bool) -> AccessEvent {
         AccessEvent {
             inode,
             path,
             pid,
+            successful,
         }
     }
 }

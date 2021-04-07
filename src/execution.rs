@@ -214,7 +214,7 @@ pub async fn trace_process(
 
                 match name {
                     "access" => {
-                        handle_access(&log_writer, &rc_execs, &regs, name, &tracer)?
+                        handle_access(&log_writer, &rc_execs, &regs, &tracer)?
                     }
                     "creat" | "openat" | "open" => {
                         handle_open(&log_writer, &rc_execs, &regs, name, &tracer)?
@@ -278,7 +278,6 @@ fn handle_access(
     log_writer: &LogWriter,
     rc_execs: &RcExecs,
     regs: &Regs<Unmodified>,
-    syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
     // We want to either add or update
@@ -290,11 +289,12 @@ fn handle_access(
 
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
-        debug!("File metadata access event: ({})", syscall_name);
+        debug!("File metadata event: (access)");
     });
 
     let ret_val = regs.retval() as i32;
     let success = ret_val == 0;
+
     // retval = 0 is success for this syscall.
     if success || log_writer.print_all_syscalls() {
         let bytes = regs.arg1() as *const c_char;
@@ -309,7 +309,7 @@ fn handle_access(
             None
         };
 
-        let access_event = AccessEvent::new(option_inode, path.clone(), tracer.curr_proc);
+        let access_event = AccessEvent::new(option_inode, path.clone(), tracer.curr_proc, success);
         log_writer.add_event(&access_event)?;
         if success {
             // Access is a metadata access. Lol. Meta. 
@@ -497,7 +497,6 @@ fn handle_read(
 
         let full_path = format!("{:?}", full);
         let ret_val = regs.retval() as i32;
-        println!("ret val for read: {}", ret_val);
         let read_event = ReadEvent::new(fd, option_inode, Some(full_path.clone()), tracer.curr_proc, String::from(syscall_name));
         log_writer.add_event(&read_event)?;
         if success {
