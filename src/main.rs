@@ -146,6 +146,7 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
 fn our_seccomp_rules() -> anyhow::Result<()> {
     let mut loader = seccomp::RuleLoader::new()?;
 
+    loader.intercept(libc::SYS_access)?;
     loader.intercept(libc::SYS_creat)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
@@ -159,16 +160,18 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_pread64)?;
+    loader.intercept(libc::SYS_read)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
     loader.let_pass(libc::SYS_mmap)?;
-    loader.let_pass(libc::SYS_read)?;
+    // loader.let_pass(libc::SYS_read)?; // empty main
     loader.let_pass(libc::SYS_write)?;
     loader.let_pass(libc::SYS_mprotect)?;
-    loader.let_pass(libc::SYS_pread64)?;
+    // loader.let_pass(libc::SYS_pread64)?; // empty main
     loader.let_pass(libc::SYS_munmap)?;
     loader.let_pass(libc::SYS_set_tid_address)?;
     loader.let_pass(libc::SYS_set_robust_list)?;
@@ -214,8 +217,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_readlink)?;
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;
-    loader.let_pass(libc::SYS_access)?; // empty main
-    loader.let_pass(libc::SYS_close)?; // empty main
+    // loader.let_pass(libc::SYS_access)?; // empty main
+    loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
 

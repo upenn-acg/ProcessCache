@@ -8,14 +8,15 @@ use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{read_link, File};
+// TODO: why two read links?!?!?
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::context;
 use crate::idk::{AccessType, Exec, RcExecs, Resource};
-use crate::log::{ExecveEvent, ForkEvent, Mode, OpenEvent, StatEvent};
+use crate::log::{AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::system_call_names::get_syscall_name;
@@ -212,11 +213,17 @@ pub async fn trace_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
+                    "access" => {
+                        handle_access(&log_writer, &rc_execs, &regs, name, &tracer)?
+                    }
                     "creat" | "openat" | "open" => {
                         handle_open(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     "fstat" | "lstat" | "newfstatat" | "stat" => {
                         handle_stat(&log_writer, &rc_execs, &regs, name, &tracer)?
+                    }
+                    "pread64" | "read" => { 
+                        handle_read(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     _ => {}
                 }
@@ -262,6 +269,96 @@ pub async fn trace_process(
             "Saw other event when expecting ProcessExited event: {:?}",
             other
         ),
+    }
+
+    Ok(())
+}
+
+fn handle_access(
+    log_writer: &LogWriter,
+    rc_execs: &RcExecs,
+    regs: &Regs<Unmodified>,
+    syscall_name: &str,
+    tracer: &Ptracer,
+) -> Result<()> {
+    // We want to either add or update
+    // a resource entry with a metadata access,
+    // and potentially a path name for the resource
+    // if we didn't have one before.
+
+    // TODO: LOG WRITER 
+
+    let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
+    sys_span.in_scope(|| {
+        debug!("File metadata access event: ({})", syscall_name);
+    });
+
+    let ret_val = regs.retval() as i32;
+    let success = ret_val == 0;
+    // retval = 0 is success for this syscall.
+    if success || log_writer.print_all_syscalls() {
+        let bytes = regs.arg1() as *const c_char;
+        let path = tracer.read_c_string(bytes)?;
+
+        let option_inode = if success {
+            // Need to get the inode. Pretty sure this path is always absolute? (Only a sith deals in absolutes...
+            // and also whoever designed the system call API...)
+            let stat_struct = stat(path.as_str())?;
+            Some(stat_struct.st_ino)
+        } else {
+            None
+        };
+
+        let access_event = AccessEvent::new(option_inode, path.clone(), tracer.curr_proc);
+        log_writer.add_event(&access_event)?;
+        if success {
+            // Access is a metadata access. Lol. Meta. 
+            // No fd.
+            let resource_instance = Resource::new(AccessType::Metadata, None, Some(path));
+            rc_execs.add_new_access(option_inode.unwrap(), resource_instance);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_execve(
+    regs: Regs<Unmodified>,
+    mut tracer: Ptracer,
+    log_writer: LogWriter,
+    rc_execs: RcExecs,
+) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
+    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
+    let args = tracer
+        .read_c_string_array(regs.arg2() as *const *const c_char)
+        .with_context(|| context!("Reading arguments to execve"))?;
+    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
+
+    // Execve doesn't return when it succeeds.
+    // If we get Ok, it failed.
+    // If we get Err, it succeeded.
+    // And yes I realize that is confusing.
+    // TODO: may not always work?
+    let success = tracer.posthook().await.is_err();
+    if success || log_writer.print_all_syscalls() {
+        sys_span.in_scope(|| {
+            debug!("execve(\"{:?}\", {:?})", path_name, args);
+            trace!("envp={:?}", envp);
+        });
+        // TODO: Consolidate when this becomes P$ (log will not be needed anymore)
+        // These are essentially the same right now but I can't bring myself
+        // to combine them
+        let execve_event = ExecveEvent::new(args.clone(), path_name.clone());
+        log_writer.add_event(&execve_event)?;
+    } 
+
+    if success {
+        // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
+        let cwd = String::from("cwd");
+        // TODO: actually track environment variables
+        let exec = Exec::new(args, cwd, HashMap::new());
+        rc_execs.add_new_exec(exec, path_name.clone());
+        rc_execs.update_curr_exec(path_name);
     }
 
     Ok(())
@@ -337,18 +434,76 @@ fn handle_open(
             String::from(syscall_name),
         );
 
-        // Right now only tracking READS individual execs do.
-        // Creat + open(at) used to create files are not
-        // being handled yet.
-        if !is_create {
-            // Add new metadata access (metadata read because it's opening the file)
+        log_writer.add_event(&open_event)?;
+
+        // Successful and not create,
+        // we need to track this read to
+        // metadata.
+        if !is_create && fd > 0 {
+            // Right now only tracking READS individual execs do.
+            // Creat + open(at) used to create files are not
+            // being handled yet.
+
             let resource_fd = if fd > 0 { Some(fd) } else { None };
             // TODO: remove this unwrap()
             let resource = Resource::new(AccessType::Metadata, resource_fd, Some(path));
             rc_execs.add_new_access(inode.unwrap(), resource);
         }
+    }
+    Ok(())
+}
 
-        log_writer.add_event(&open_event)?;
+// Handle read and pread64.
+fn handle_read(
+    log_writer: &LogWriter,
+    rc_execs: &RcExecs,
+    regs: &Regs<Unmodified>,
+    syscall_name: &str,
+    tracer: &Ptracer,
+) -> Result<()> {
+    // We want to either add or update
+    // a resource entry with a contents access.
+    // TODO: LOG WRITER 
+
+    let sys_span = span!(Level::INFO, "handle_read", pid=?tracer.curr_proc);
+    sys_span.in_scope(|| {
+        debug!("File contents access event: ({})", syscall_name);
+    });
+
+    let ret_val = regs.retval() as i32;
+    // retval = 0 is end of file but success.
+    // retval > 0 is number of bytes read.
+    // retval < ERROR
+    let success = ret_val >= 0;
+    if success || log_writer.print_all_syscalls() {
+
+        // Read is a contents access. 
+        // Fd is an arg.
+        let fd = regs.arg1() as i32;
+        
+        // Get the path from the fd.
+        let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
+        let full = readlink(proc_path.as_str())?;
+        //let full_path_str = format!("{:?}", full_path);
+
+        // Have to get the inode.
+        let option_inode = if success {
+            let stat_struct = stat(full.to_str().with_context(|| context!("who cares"))?)?;
+            let inode = stat_struct.st_ino;
+            Some(inode)
+        } else {
+            None
+        };
+
+        let full_path = format!("{:?}", full);
+        let ret_val = regs.retval() as i32;
+        println!("ret val for read: {}", ret_val);
+        let read_event = ReadEvent::new(fd, option_inode, Some(full_path.clone()), tracer.curr_proc, String::from(syscall_name));
+        log_writer.add_event(&read_event)?;
+        if success {
+            let resource_instance = Resource::new(AccessType::Contents, Some(fd), Some(full_path));
+            rc_execs.add_new_access(option_inode.unwrap(), resource_instance);
+        }
     }
     Ok(())
 }
@@ -387,7 +542,7 @@ fn handle_stat(
 
             let path = tracer.read_c_string(arg)?;
 
-            let is_symlink = read_link(path.clone()).is_ok();
+            let is_symlink = readlink(path.as_str()).is_ok();
             (None, is_symlink, Some(path))
         };
 
@@ -420,49 +575,13 @@ fn handle_stat(
 
         log_writer.add_event(&stat_event)?;
 
-        let resource = Resource::new(AccessType::Metadata, fd, path);
-        // TODO: Get rid of the unwrap here
-        rc_execs.add_new_access(inode.unwrap(), resource);
-    }
-
-    Ok(())
-}
-
-async fn handle_execve(
-    regs: Regs<Unmodified>,
-    mut tracer: Ptracer,
-    log_writer: LogWriter,
-    rc_execs: RcExecs,
-) -> Result<()> {
-    let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
-    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
-    let args = tracer
-        .read_c_string_array(regs.arg2() as *const *const c_char)
-        .with_context(|| context!("Reading arguments to execve"))?;
-    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
-
-    // Execve doesn't return when it succeeds.
-    // If we get Ok, it failed.
-    // If we get Err, it succeeded.
-    // And yes I realize that is confusing.
-    // TODO: may not always work?
-    if tracer.posthook().await.is_err() || log_writer.print_all_syscalls() {
-        sys_span.in_scope(|| {
-            debug!("execve(\"{:?}\", {:?})", path_name, args);
-            trace!("envp={:?}", envp);
-        });
-        // TODO: Consolidate when this becomes P$ (log will not be needed anymore)
-        // These are essentially the same right now but I can't bring myself
-        // to combine them
-        let execve_event = ExecveEvent::new(args.clone(), path_name.clone());
-        log_writer.add_event(&execve_event)?;
-
-        // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
-        let cwd = String::from("cwd");
-        // TODO: actually track environment variables
-        let exec = Exec::new(args, cwd, HashMap::new());
-        rc_execs.add_new_exec(exec, path_name.clone());
-        rc_execs.update_curr_exec(path_name);
+        // We don't want to keep track of this resource
+        // For caching if it wasn't successfully accessed.
+        if success {
+            let resource = Resource::new(AccessType::Metadata, fd, path);
+            // TODO: Get rid of the unwrap here
+            rc_execs.add_new_access(inode.unwrap(), resource);
+        }
     }
 
     Ok(())

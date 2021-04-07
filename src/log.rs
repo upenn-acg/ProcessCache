@@ -1,11 +1,35 @@
 use nix::unistd::Pid;
-use std::fmt;
+use std::{fmt, io::Read};
 
 #[derive(Debug)]
 pub enum Mode {
     ReadOnly,
     ReadWrite,
     WriteOnly,
+}
+
+#[derive(Debug)]
+pub struct AccessEvent {
+    inode: Option<u64>,
+    // Full path 
+    path: String,
+    pid: Pid,
+}
+
+impl AccessEvent {
+    pub fn new(inode: Option<u64>, path: String, pid: Pid) -> AccessEvent {
+        AccessEvent {
+            inode,
+            path,
+            pid,
+        }
+    }
+}
+
+impl fmt::Display for AccessEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "{:?}", self)
+    }
 }
 
 #[derive(Debug)]
@@ -87,6 +111,32 @@ impl fmt::Display for OpenEvent {
     }
 }
 
+#[derive(Debug)]
+pub struct ReadEvent {
+    fd: i32,
+    inode: Option<u64>,    
+    path: Option<String>,
+    pid: Pid,
+    syscall_name: String,
+}
+
+impl ReadEvent {
+    pub fn new(fd: i32, inode: Option<u64>, path: Option<String>, pid: Pid, syscall_name: String) -> ReadEvent {
+        ReadEvent {
+            fd,
+            inode,
+            path,
+            pid,
+            syscall_name,
+        }
+    }
+}
+
+impl fmt::Display for ReadEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "{:?}", self)
+    }
+}
 #[derive(Debug)]
 pub struct StatEvent {
     /// For newfstatat check the flags

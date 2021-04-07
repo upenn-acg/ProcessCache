@@ -80,14 +80,14 @@ impl Exec {
     // May need to update the access type
     // May be able to add a path for this resource
     // May be able to add the fd for this resource
-    pub fn add_new_access(&mut self, inode: u64, resource: Resource) {
-        if let Some(resource_entry) = self.resources_accessed.get_mut(&inode) {
-            resource_entry.fd = resource.fd;
-            resource_entry.path = resource.path;
-            resource_entry.update_access_type(resource.access_type);
+    pub fn add_new_access(&mut self, inode: u64, new_resource_instance: Resource) {
+        if let Some(existing_resource_entry) = self.resources_accessed.get_mut(&inode) {
+            existing_resource_entry.fd = new_resource_instance.fd;
+            existing_resource_entry.path = new_resource_instance.path;
+            existing_resource_entry.update_access_type(new_resource_instance.access_type);
         } else {
             // Insert the new resource.
-            self.resources_accessed.insert(inode, resource);
+            self.resources_accessed.insert(inode, new_resource_instance);
         }
     }
 }
