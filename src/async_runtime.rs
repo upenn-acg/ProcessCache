@@ -66,7 +66,11 @@ where
             }
             Poll::Pending => {
                 // We just added this task. It should never exist already. We still check it?
-                if let Some(_) = self.waiting_tasks.insert(initial_task.pid, initial_task) {
+                if self
+                    .waiting_tasks
+                    .insert(initial_task.pid, initial_task)
+                    .is_some()
+                {
                     unreachable!("Task already existed. This should be impossible");
                 }
             }

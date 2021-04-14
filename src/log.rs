@@ -1,5 +1,5 @@
 use nix::unistd::Pid;
-use std::{fmt, io::Read};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Mode {
@@ -11,7 +11,7 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct AccessEvent {
     inode: Option<u64>,
-    // Full path 
+    // Full path
     path: String,
     pid: Pid,
     successful: bool,
@@ -116,14 +116,20 @@ impl fmt::Display for OpenEvent {
 #[derive(Debug)]
 pub struct ReadEvent {
     fd: i32,
-    inode: Option<u64>,    
+    inode: Option<u64>,
     path: Option<String>,
     pid: Pid,
     syscall_name: String,
 }
 
 impl ReadEvent {
-    pub fn new(fd: i32, inode: Option<u64>, path: Option<String>, pid: Pid, syscall_name: String) -> ReadEvent {
+    pub fn new(
+        fd: i32,
+        inode: Option<u64>,
+        path: Option<String>,
+        pid: Pid,
+        syscall_name: String,
+    ) -> ReadEvent {
         ReadEvent {
             fd,
             inode,
