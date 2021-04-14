@@ -131,11 +131,9 @@ where
                 let pid = Pid::from_raw(unsafe { siginfo.si_pid() });
                 trace!("... Next ptrace event arrived for Pid {}", pid);
 
-                if !self.waiting_tasks.contains_key(&pid) {
-                    // We just checked this, no need to check return value of insert.
-                    self.waiting_tasks
-                        .insert(pid, Task::new((self.run_fn)(pid), pid));
-                }
+                self.waiting_tasks
+                    .entry(pid)
+                    .or_insert(Task::new((self.run_fn)(pid), pid));
 
                 let ret = self
                     .waiting_tasks

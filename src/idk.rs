@@ -70,6 +70,12 @@ impl Outputs {
         }
     }
 }
+
+impl Default for Outputs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 // A unique ID struct for a unique execution.
 // We ID an execution by args, executable, cwd, env_vars (todo).
 #[derive(Clone, Eq, Debug, Hash, PartialEq)]
@@ -135,10 +141,7 @@ pub struct Executions {
 }
 
 impl Executions {
-    pub fn new(args: Vec<String>, current_executable: String) -> Executions {
-        // TODO: Fix this lmao it's abysmal
-        let cwd = String::from("cwd");
-
+    pub fn new(args: Vec<String>, current_executable: String, cwd: String) -> Executions {
         // We need to add the first exec so we don't miss it.
         // Silly me was only adding in the handle_execve() function,
         // which totally doesn't get called by the initial process, smdh
@@ -202,9 +205,9 @@ pub struct RcExecutions {
 
 impl RcExecutions {
     // TODO?: env vars?
-    pub fn new(args: Vec<String>, executable: String) -> RcExecutions {
+    pub fn new(args: Vec<String>, executable: String, cwd: String) -> RcExecutions {
         RcExecutions {
-            rc_execs: Rc::new(RefCell::new(Executions::new(args, executable))),
+            rc_execs: Rc::new(RefCell::new(Executions::new(args, executable, cwd))),
         }
     }
 
