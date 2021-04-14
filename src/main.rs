@@ -13,7 +13,7 @@ mod tracer;
 mod utils;
 
 pub use crate::execution::trace_program;
-pub use crate::idk::RcExecs;
+pub use crate::idk::RcExecutions;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
 
@@ -93,7 +93,7 @@ fn run_tracer_and_tracee(
             // Silly unit structs with their silly accessing system
             let args = command.1;
             let executable = command.0;
-            let unique_execs = RcExecs::new(args, executable);
+            let unique_execs = RcExecutions::new(args, executable);
             let log_writer = LogWriter::new(&output_file_name, print_all_syscalls);
 
             execution::trace_program(tracee_pid, log_writer, unique_execs)?;

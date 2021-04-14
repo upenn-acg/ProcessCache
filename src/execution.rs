@@ -6,7 +6,6 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
 use nix::unistd::Pid;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 // TODO: why two read links?!?!?
 use std::fs::File;
@@ -15,7 +14,7 @@ use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::context;
-use crate::idk::{AccessType, Exec, RcExecs, Resource};
+use crate::idk::{AccessType, ExecKey, RcExecutions, RegFile};
 use crate::log::{AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -85,7 +84,7 @@ impl LogWriter {
     }
 }
 
-pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecs) -> Result<()> {
+pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecutions) -> Result<()> {
     let f = |pid: Pid| trace_process(Ptracer::new(pid), log_writer.clone(), rc_execs.clone());
     let async_runtime = AsyncRuntime::new(f);
 
@@ -97,9 +96,9 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecs) 
     log_writer.flush();
     // TODO: Print out the unique execs.
     // There should just be one.
-    for (exec_str, exec) in rc_execs.rc_execs.borrow().execs.iter() {
-        println!("Unique Execution String: {}", exec_str);
-        println!("Exec: {:?}", exec);
+    for (exec_key, outputs) in rc_execs.rc_execs.borrow().execs.iter() {
+        println!("Unique Execution Key: {:?}", exec_key);
+        println!("Outputs: {:?}", outputs);
     }
     Ok(())
 }
@@ -116,7 +115,7 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecs) 
 pub async fn trace_process(
     mut tracer: Ptracer,
     log_writer: LogWriter,
-    rc_execs: RcExecs,
+    rc_execs: RcExecutions,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -213,16 +212,14 @@ pub async fn trace_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "access" => {
-                        handle_access(&log_writer, &rc_execs, &regs, &tracer)?
-                    }
+                    "access" => handle_access(&log_writer, &rc_execs, &regs, &tracer)?,
                     "creat" | "openat" | "open" => {
                         handle_open(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     "fstat" | "lstat" | "newfstatat" | "stat" => {
                         handle_stat(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
-                    "pread64" | "read" => { 
+                    "pread64" | "read" => {
                         handle_read(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
                     _ => {}
@@ -276,7 +273,7 @@ pub async fn trace_process(
 
 fn handle_access(
     log_writer: &LogWriter,
-    rc_execs: &RcExecs,
+    rc_execs: &RcExecutions,
     regs: &Regs<Unmodified>,
     tracer: &Ptracer,
 ) -> Result<()> {
@@ -285,7 +282,7 @@ fn handle_access(
     // and potentially a path name for the resource
     // if we didn't have one before.
 
-    // TODO: LOG WRITER 
+    // TODO: LOG WRITER
 
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
@@ -312,10 +309,14 @@ fn handle_access(
         let access_event = AccessEvent::new(option_inode, path.clone(), tracer.curr_proc, success);
         log_writer.add_event(&access_event)?;
         if success {
-            // Access is a metadata access. Lol. Meta. 
+            // Access is a metadata access. Lol. Meta.
             // No fd.
-            let resource_instance = Resource::new(AccessType::Metadata, None, Some(path));
-            rc_execs.add_new_access(option_inode.unwrap(), resource_instance);
+
+            // ID by the inode
+            let inode = option_inode.unwrap();
+            // Need to make a RegFile.
+            let reg_file = RegFile::new(AccessType::Metadata, None, Some(path));
+            rc_execs.add_new_file_access(inode, reg_file);
         }
     }
     Ok(())
@@ -325,7 +326,7 @@ async fn handle_execve(
     regs: Regs<Unmodified>,
     mut tracer: Ptracer,
     log_writer: LogWriter,
-    rc_execs: RcExecs,
+    rc_execs: RcExecutions,
 ) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
     let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
@@ -350,15 +351,17 @@ async fn handle_execve(
         // to combine them
         let execve_event = ExecveEvent::new(args.clone(), path_name.clone());
         log_writer.add_event(&execve_event)?;
-    } 
+    }
 
     if success {
         // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
-        let cwd = String::from("cwd");
+        let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+        let cwd_path = readlink(cwd_link.as_str())?;
+        let cwd = format!("{:?}", cwd_path);
         // TODO: actually track environment variables
-        let exec = Exec::new(args, cwd, HashMap::new());
-        rc_execs.add_new_exec(exec, path_name.clone());
-        rc_execs.update_curr_exec(path_name);
+        let exec_key = ExecKey::new(args, cwd, path_name);
+        rc_execs.add_new_uniq_exec(exec_key.clone());
+        rc_execs.change_curr_exec(exec_key);
     }
 
     Ok(())
@@ -366,7 +369,7 @@ async fn handle_execve(
 
 fn handle_open(
     log_writer: &LogWriter,
-    rc_execs: &RcExecs,
+    rc_execs: &RcExecutions,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -445,9 +448,10 @@ fn handle_open(
             // being handled yet.
 
             let resource_fd = if fd > 0 { Some(fd) } else { None };
-            // TODO: remove this unwrap()
-            let resource = Resource::new(AccessType::Metadata, resource_fd, Some(path));
-            rc_execs.add_new_access(inode.unwrap(), resource);
+            // TODO: remove this unwrap()?
+            let inode = inode.unwrap();
+            let file = RegFile::new(AccessType::Metadata, resource_fd, Some(path));
+            rc_execs.add_new_file_access(inode, file);
         }
     }
     Ok(())
@@ -456,14 +460,14 @@ fn handle_open(
 // Handle read and pread64.
 fn handle_read(
     log_writer: &LogWriter,
-    rc_execs: &RcExecs,
+    rc_execs: &RcExecutions,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
     // We want to either add or update
     // a resource entry with a contents access.
-    // TODO: LOG WRITER 
+    // TODO: LOG WRITER
 
     let sys_span = span!(Level::INFO, "handle_read", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
@@ -476,11 +480,10 @@ fn handle_read(
     // retval < ERROR
     let success = ret_val >= 0;
     if success || log_writer.print_all_syscalls() {
-
-        // Read is a contents access. 
+        // Read is a contents access.
         // Fd is an arg.
         let fd = regs.arg1() as i32;
-        
+
         // Get the path from the fd.
         let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
         let full = readlink(proc_path.as_str())?;
@@ -496,12 +499,17 @@ fn handle_read(
         };
 
         let full_path = format!("{:?}", full);
-        let ret_val = regs.retval() as i32;
-        let read_event = ReadEvent::new(fd, option_inode, Some(full_path.clone()), tracer.curr_proc, String::from(syscall_name));
+        let read_event = ReadEvent::new(
+            fd,
+            option_inode,
+            Some(full_path.clone()),
+            tracer.curr_proc,
+            String::from(syscall_name),
+        );
         log_writer.add_event(&read_event)?;
         if success {
-            let resource_instance = Resource::new(AccessType::Contents, Some(fd), Some(full_path));
-            rc_execs.add_new_access(option_inode.unwrap(), resource_instance);
+            let file = RegFile::new(AccessType::Contents, Some(fd), Some(full_path));
+            rc_execs.add_new_file_access(option_inode.unwrap(), file);
         }
     }
     Ok(())
@@ -511,7 +519,7 @@ fn handle_read(
 // SUCCESS: RET VAL = 0
 fn handle_stat(
     log_writer: &LogWriter,
-    rc_execs: &RcExecs,
+    rc_execs: &RcExecutions,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -575,11 +583,13 @@ fn handle_stat(
         log_writer.add_event(&stat_event)?;
 
         // We don't want to keep track of this resource
-        // For caching if it wasn't successfully accessed.
+        // for caching if it wasn't successfully accessed.
         if success {
-            let resource = Resource::new(AccessType::Metadata, fd, path);
+            // TODO: get rid of unwrap() here?
+            let inode = inode.unwrap();
+            let file = RegFile::new(AccessType::Metadata, fd, path);
             // TODO: Get rid of the unwrap here
-            rc_execs.add_new_access(inode.unwrap(), resource);
+            rc_execs.add_new_file_access(inode, file);
         }
     }
 
