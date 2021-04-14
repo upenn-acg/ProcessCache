@@ -17,6 +17,7 @@ pub use crate::idk::RcExecutions;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
 
+use nix::fcntl::readlink;
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
 use nix::unistd::{execvp, fork, ForkResult};
@@ -93,7 +94,11 @@ fn run_tracer_and_tracee(
             // Silly unit structs with their silly accessing system
             let args = command.1;
             let executable = command.0;
-            let unique_execs = RcExecutions::new(args, executable);
+            let cwd_link = format!("/proc/{}/cwd", tracee_pid);
+            let cwd_path = readlink(cwd_link.as_str())?;
+            let cwd = cwd_path.into_string().unwrap();
+
+            let unique_execs = RcExecutions::new(args, executable, cwd);
             let log_writer = LogWriter::new(&output_file_name, print_all_syscalls);
 
             execution::trace_program(tracee_pid, log_writer, unique_execs)?;

@@ -357,7 +357,7 @@ async fn handle_execve(
         // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
         let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
         let cwd_path = readlink(cwd_link.as_str())?;
-        let cwd = format!("{:?}", cwd_path);
+        let cwd = cwd_path.into_string().unwrap();
         // TODO: actually track environment variables
         let exec_key = ExecKey::new(args, cwd, path_name);
         rc_execs.add_new_uniq_exec(exec_key.clone());
@@ -412,7 +412,7 @@ fn handle_open(
             )?;
             let inode = stat_struct.st_ino;
 
-            let full_path = format!("{:?}", full);
+            let full_path = full.into_string().unwrap();
             (full_path, Some(inode))
         } else {
             // Failed, report no inode and relative path.
@@ -487,7 +487,6 @@ fn handle_read(
         // Get the path from the fd.
         let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
         let full = readlink(proc_path.as_str())?;
-        //let full_path_str = format!("{:?}", full_path);
 
         // Have to get the inode.
         let option_inode = if success {
@@ -498,7 +497,7 @@ fn handle_read(
             None
         };
 
-        let full_path = format!("{:?}", full);
+        let full_path = full.into_string().unwrap();
         let read_event = ReadEvent::new(
             fd,
             option_inode,
