@@ -47,8 +47,12 @@ impl RegFile {
 // Outputs from a unique execution.
 #[derive(Debug)]
 pub struct Outputs {
-    // TODO:
-    // exit_code: Option<u32> or Option<Enum>?
+    // can't be an enum, because no one conforms to exit code numbers, but typically
+    // 0 is success
+    // anything else is failure (of some kind)
+    // I kinda imagine if I am going to be faking this value,
+    // I will need the actual number.
+    // exit_status: Option<i32>,
     files_read: HashMap<u64, RegFile>,
     // TODO:
     // stderr: String,
@@ -100,30 +104,14 @@ impl ExecKey {
             // TODO: env_vars,
         }
     }
-
-    // Pass in the access type because a process may stat a file (metadata)
-    // and then read from it (contents), so it reads both. Or it might just read the contents
-    // and not metadata. Or just the metadata but not the contents.
-    //
-    // May need to update the access type
-    // May be able to add a path for this resource
-    // May be able to add the fd for this resource
-    // pub fn add_new_file_access(&mut self, inode: u64, new_file_access: RegFile) {
-    //     if let Some(existing_resource_entry) = self.resources_accessed.get_mut(&inode) {
-    //         existing_resource_entry.fd = new_resource_instance.fd;
-    //         existing_resource_entry.path = new_resource_instance.path;
-    //         existing_resource_entry.update_access_type(new_resource_instance.access_type);
-    //     } else {
-    //         // Insert the new resource.
-    //         self.resources_accessed.insert(inode, new_resource_instance);
-    //     }
-    // }
 }
 
 #[derive(Debug)]
 pub struct Executions {
     // Executable that is currently running.
-    current_exec: ExecKey,
+    // Option because I can't think of a better way to represent the fact
+    // that when I initialize this I don't
+    current_exec: Option<ExecKey>,
     // String here is the executable.
     // For now this is all I am ID-ing them by.
 
@@ -141,16 +129,15 @@ pub struct Executions {
 }
 
 impl Executions {
-    pub fn new(args: Vec<String>, current_executable: String, cwd: String) -> Executions {
+    pub fn new() -> Executions {
         // We need to add the first exec so we don't miss it.
         // Silly me was only adding in the handle_execve() function,
         // which totally doesn't get called by the initial process, smdh
-        let first_exec_key = ExecKey::new(args, cwd, current_executable);
-        let mut execs = HashMap::new();
-        execs.insert(first_exec_key.clone(), Outputs::new());
+        // SMDH I "fixed" a problem that didn't exist and made it a problem. ^^^
+        // Idk why I thought I was right.
         Executions {
-            current_exec: first_exec_key,
-            execs,
+            current_exec: None,
+            execs: HashMap::new(),
         }
     }
 
@@ -166,12 +153,14 @@ impl Executions {
     // May be able to add a path for this resource.
     // May be able to add the fd for this resource.
     pub fn add_new_file_access(&mut self, inode: u64, file: RegFile) {
-        if let Some(outputs) = self.execs.get_mut(&self.current_exec) {
-            // TODO: handle adding other kinds of outputs
-            outputs.add_new_file_access(inode, file);
-        } else {
-            // TODO: better error?
-            panic!("Current exec is not found in execs!");
+        if let Some(curr_exec) = self.current_exec.clone() {
+            if let Some(outputs) = self.execs.get_mut(&curr_exec) {
+                // TODO: handle adding other kinds of outputs
+                outputs.add_new_file_access(inode, file);
+            } else {
+                // TODO: better error?
+                panic!("Current exec is not found in execs!");
+            }
         }
     }
 
@@ -187,7 +176,7 @@ impl Executions {
     // TODO: I guess this function assumes that the exec_key is
     // already in the map...
     pub fn change_curr_exec(&mut self, exec_key: ExecKey) {
-        self.current_exec = exec_key;
+        self.current_exec = Some(exec_key);
     }
 }
 
@@ -204,10 +193,9 @@ pub struct RcExecutions {
 }
 
 impl RcExecutions {
-    // TODO?: env vars?
-    pub fn new(args: Vec<String>, executable: String, cwd: String) -> RcExecutions {
+    pub fn new() -> RcExecutions {
         RcExecutions {
-            rc_execs: Rc::new(RefCell::new(Executions::new(args, executable, cwd))),
+            rc_execs: Rc::new(RefCell::new(Executions::new())),
         }
     }
 
