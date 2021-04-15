@@ -354,7 +354,6 @@ async fn handle_execve(
     }
 
     if success {
-        // TODO readlink /proc/$pid/cwd I am lazy rn it's friday
         let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
         let cwd_path = readlink(cwd_link.as_str())?;
         let cwd = cwd_path.into_string().unwrap();
