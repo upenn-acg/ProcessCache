@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::context;
-use crate::idk::{AccessType, ExecKey, RcExecutions, RegFile};
+use crate::idk::{AccessType, Execution, RcExecutions, RegFile};
 use crate::log::{AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -96,9 +96,8 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecuti
     log_writer.flush();
     // TODO: Print out the unique execs.
     // There should just be one.
-    for (exec_key, outputs) in rc_execs.rc_execs.borrow().execs.iter() {
-        println!("Unique Execution Key: {:?}", exec_key);
-        println!("Outputs: {:?}", outputs);
+    for exec in rc_execs.rc_execs.borrow().execs.iter() {
+        println!("Execution: {:?}", exec);
     }
     Ok(())
 }
@@ -277,13 +276,6 @@ fn handle_access(
     regs: &Regs<Unmodified>,
     tracer: &Ptracer,
 ) -> Result<()> {
-    // We want to either add or update
-    // a resource entry with a metadata access,
-    // and potentially a path name for the resource
-    // if we didn't have one before.
-
-    // TODO: LOG WRITER
-
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
         debug!("File metadata event: (access)");
@@ -315,8 +307,8 @@ fn handle_access(
             // ID by the inode
             let inode = option_inode.unwrap();
             // Need to make a RegFile.
-            let reg_file = RegFile::new(AccessType::Metadata, None, Some(path));
-            rc_execs.add_new_file_access(inode, reg_file);
+            let reg_file = RegFile::new(None, inode, Some(path));
+            rc_execs.add_new_access(AccessType::Metadata, reg_file);
         }
     }
     Ok(())
@@ -357,10 +349,9 @@ async fn handle_execve(
         let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
         let cwd_path = readlink(cwd_link.as_str())?;
         let cwd = cwd_path.into_string().unwrap();
-        // TODO: actually track environment variables
-        let exec_key = ExecKey::new(args, cwd, path_name);
-        rc_execs.add_new_uniq_exec(exec_key.clone());
-        rc_execs.change_curr_exec(exec_key);
+        let execution = Execution::new(args, cwd, envp, path_name);
+
+        rc_execs.add_new_uniq_exec(execution);
     }
 
     Ok(())
@@ -449,8 +440,8 @@ fn handle_open(
             let resource_fd = if fd > 0 { Some(fd) } else { None };
             // TODO: remove this unwrap()?
             let inode = inode.unwrap();
-            let file = RegFile::new(AccessType::Metadata, resource_fd, Some(path));
-            rc_execs.add_new_file_access(inode, file);
+            let file = RegFile::new(resource_fd, inode, Some(path));
+            rc_execs.add_new_access(AccessType::Metadata, file);
         }
     }
     Ok(())
@@ -506,8 +497,10 @@ fn handle_read(
         );
         log_writer.add_event(&read_event)?;
         if success {
-            let file = RegFile::new(AccessType::Contents, Some(fd), Some(full_path));
-            rc_execs.add_new_file_access(option_inode.unwrap(), file);
+            // TODO: eww kelly
+            let inode = option_inode.unwrap();
+            let file = RegFile::new(Some(fd), inode, Some(full_path));
+            rc_execs.add_new_access(AccessType::ReadContents, file);
         }
     }
     Ok(())
@@ -585,9 +578,9 @@ fn handle_stat(
         if success {
             // TODO: get rid of unwrap() here?
             let inode = inode.unwrap();
-            let file = RegFile::new(AccessType::Metadata, fd, path);
+            let file = RegFile::new(fd, inode, path);
             // TODO: Get rid of the unwrap here
-            rc_execs.add_new_file_access(inode, file);
+            rc_execs.add_new_access(AccessType::Metadata, file);
         }
     }
 
