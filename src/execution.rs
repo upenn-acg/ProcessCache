@@ -13,8 +13,8 @@ use std::io::{BufWriter, Write};
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
+use crate::cache::{AccessType, Execution, RcExecutions, RegFile};
 use crate::context;
-use crate::idk::{AccessType, Execution, RcExecutions, RegFile};
 use crate::log::{
     AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent, WriteEvent,
 };
@@ -483,7 +483,10 @@ fn handle_read(
 
         // Have to get the inode.
         let option_inode = if success {
-            let stat_struct = stat(full.to_str().with_context(|| context!("who cares"))?)?;
+            let stat_struct = stat(
+                full.to_str()
+                    .with_context(|| context!("failed to cast path to str"))?,
+            )?;
             let inode = stat_struct.st_ino;
             Some(inode)
         } else {
@@ -623,23 +626,42 @@ fn handle_write(
 
         // Have to get the inode.
         let option_inode = if success {
-            let stat_struct = stat(full.to_str().with_context(|| context!("who cares"))?)?;
+            let stat_struct = stat(
+                full.to_str()
+                    .with_context(|| context!("failed to cast path to str"))?,
+            )?;
             let inode = stat_struct.st_ino;
             Some(inode)
         } else {
             None
         };
-        let full_path = full.into_string().unwrap();
 
+        let full_path = match fd {
+            1 => String::from("stdout"),
+            2 => String::from("stderr"),
+            _ => full.into_string().unwrap(),
+        };
         let write_event =
             WriteEvent::new(fd, option_inode, Some(full_path.clone()), tracer.curr_proc);
         log_writer.add_event(&write_event)?;
 
         if success {
-            // TODO: eww kelly
-            let inode = option_inode.unwrap();
-            let file = RegFile::new(Some(fd), inode, Some(full_path));
-            rc_execs.add_new_access(AccessType::WriteContents, file);
+            match fd {
+                1 => {
+                    let stdout = tracer.read_c_string(regs.arg2() as *const c_char)?;
+                    rc_execs.add_stdout(stdout);
+                }
+                2 => {
+                    let stderr = tracer.read_c_string(regs.arg2() as *const c_char)?;
+                    rc_execs.add_stderr(stderr);
+                }
+                _ => {
+                    // TODO: eww kelly
+                    let inode = option_inode.unwrap();
+                    let file = RegFile::new(Some(fd), inode, Some(full_path));
+                    rc_execs.add_new_access(AccessType::WriteContents, file);
+                }
+            }
         }
     }
     Ok(())
