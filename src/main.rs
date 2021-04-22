@@ -88,15 +88,6 @@ fn run_tracer_and_tracee(
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
 
-            // When we create unique_execs we want to create
-            // a new exec
-            // Silly unit structs with their silly accessing system
-            // let args = command.1;
-            // let executable = command.0;
-            // let cwd_link = format!("/proc/{}/cwd", tracee_pid);
-            // let cwd_path = readlink(cwd_link.as_str())?;
-            // let cwd = cwd_path.into_string().unwrap();
-
             let unique_execs = RcExecutions::new();
             let log_writer = LogWriter::new(&output_file_name, print_all_syscalls);
 
@@ -168,12 +159,13 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_read)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
+    loader.intercept(libc::SYS_write)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
     loader.let_pass(libc::SYS_mmap)?;
     // loader.let_pass(libc::SYS_read)?; // empty main
-    loader.let_pass(libc::SYS_write)?;
+    // loader.let_pass(libc::SYS_write)?;
     loader.let_pass(libc::SYS_mprotect)?;
     // loader.let_pass(libc::SYS_pread64)?; // empty main
     loader.let_pass(libc::SYS_munmap)?;
