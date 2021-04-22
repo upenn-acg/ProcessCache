@@ -2,8 +2,8 @@ use execution::LogWriter;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
+mod cache;
 mod execution;
-mod idk;
 mod log;
 mod ptracer;
 mod regs;
@@ -12,8 +12,8 @@ mod system_call_names;
 mod tracer;
 mod utils;
 
+pub use crate::cache::RcExecutions;
 pub use crate::execution::trace_program;
-pub use crate::idk::RcExecutions;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
 
