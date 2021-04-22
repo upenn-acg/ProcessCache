@@ -20,16 +20,8 @@ pub struct RegFile {
 }
 
 impl RegFile {
-    pub fn new(
-        fd: Option<i32>,
-        inode: u64,
-        path: Option<String>,
-    ) -> RegFile {
-        RegFile {
-            fd,
-            inode,
-            path,
-        }
+    pub fn new(fd: Option<i32>, inode: u64, path: Option<String>) -> RegFile {
+        RegFile { fd, inode, path }
     }
 }
 
@@ -41,14 +33,19 @@ pub struct Execution {
     executable: String,
     exit_status: Option<u32>,
     files_accessed: Vec<RegFile>,
-    files_read:Vec<RegFile>,
+    files_read: Vec<RegFile>,
     files_written: Vec<RegFile>,
     stderr: Option<String>,
     stdout: Option<String>,
 }
 
 impl Execution {
-    pub fn new(args: Vec<String>, cwd: String, env_vars: Vec<String>, executable: String) -> Execution {
+    pub fn new(
+        args: Vec<String>,
+        cwd: String,
+        env_vars: Vec<String>,
+        executable: String,
+    ) -> Execution {
         Execution {
             args,
             cwd,
@@ -76,6 +73,22 @@ impl Execution {
     pub fn add_new_metadata_access(&mut self, file: RegFile) {
         self.files_accessed.push(file);
     }
+
+    // Add the execution's output to stderr.
+    pub fn add_stderr(&mut self, stderr: String) {
+        let out = self.stderr.clone();
+        let mut new_stderr = out.unwrap_or_default();
+        new_stderr.push_str(&stderr);
+        self.stderr = Some(new_stderr);
+    }
+
+    // Add the execution's output to stdout.
+    pub fn add_stdout(&mut self, stdout: String) {
+        let out = self.stdout.clone();
+        let mut new_stdout = out.unwrap_or_default();
+        new_stdout.push_str(&stdout);
+        self.stdout = Some(new_stdout);
+    }
 }
 #[derive(Debug)]
 pub struct Executions {
@@ -99,8 +112,8 @@ impl Executions {
     pub fn add_new_access(&mut self, access_type: AccessType, file: RegFile) {
         let idx = match self.current_exec_idx {
             Some(i) => i,
-            // TODO: this seems error prone ;) 
-            None => 0, 
+            // TODO: this seems error prone ;)
+            None => 0,
         };
 
         if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
@@ -129,7 +142,19 @@ impl Executions {
         } else {
             self.current_exec_idx = Some(0);
         }
-        self.execs.push(exec); 
+        self.execs.push(exec);
+    }
+
+    pub fn add_stdout(&mut self, stdout: String) {
+        let idx = match self.current_exec_idx {
+            Some(i) => i,
+            // TODO: this seems error prone ;)
+            None => 0,
+        };
+
+        if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
+            curr_entry.add_stdout(stdout);
+        }
     }
 }
 
@@ -159,5 +184,9 @@ impl RcExecutions {
 
     pub fn add_new_access(&self, access_type: AccessType, file: RegFile) {
         self.rc_execs.borrow_mut().add_new_access(access_type, file);
+    }
+
+    pub fn add_stdout(&self, stdout: String) {
+        self.rc_execs.borrow_mut().add_stdout(stdout);
     }
 }

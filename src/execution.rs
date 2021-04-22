@@ -15,7 +15,9 @@ use std::rc::Rc;
 use crate::async_runtime::AsyncRuntime;
 use crate::context;
 use crate::idk::{AccessType, Execution, RcExecutions, RegFile};
-use crate::log::{AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent};
+use crate::log::{
+    AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent, WriteEvent,
+};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::system_call_names::get_syscall_name;
@@ -221,6 +223,7 @@ pub async fn trace_process(
                     "pread64" | "read" => {
                         handle_read(&log_writer, &rc_execs, &regs, name, &tracer)?
                     }
+                    "write" => handle_write(&log_writer, &rc_execs, &regs, &tracer)?,
                     _ => {}
                 }
             }
@@ -584,5 +587,60 @@ fn handle_stat(
         }
     }
 
+    Ok(())
+}
+fn handle_write(
+    log_writer: &LogWriter,
+    rc_execs: &RcExecutions,
+    regs: &Regs<Unmodified>,
+    tracer: &Ptracer,
+) -> Result<()> {
+    // Okay, so here we have to deal with:
+    // stderr (fd 2)
+    // stdout (fd 1)
+    // fd > 2 regular file write (for now just files)
+    //
+    // Don't care about stdin (fd 0)
+
+    let sys_span = span!(Level::INFO, "handle_write", pid=?tracer.curr_proc);
+    sys_span.in_scope(|| {
+        debug!("File contents write event: (write)");
+    });
+
+    // retval = 0 is end of file but success.
+    // retval > 0 is number of bytes read.
+    // retval < 0 is ERROR
+    let ret_val = regs.retval() as i32;
+    let success = ret_val >= 0;
+    if success || log_writer.print_all_syscalls() {
+        // Contents.
+        // Fd is an arg.
+        let fd = regs.arg1() as i32;
+
+        // Get the path from the fd.
+        let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
+        let full = readlink(proc_path.as_str())?;
+
+        // Have to get the inode.
+        let option_inode = if success {
+            let stat_struct = stat(full.to_str().with_context(|| context!("who cares"))?)?;
+            let inode = stat_struct.st_ino;
+            Some(inode)
+        } else {
+            None
+        };
+        let full_path = full.into_string().unwrap();
+
+        let write_event =
+            WriteEvent::new(fd, option_inode, Some(full_path.clone()), tracer.curr_proc);
+        log_writer.add_event(&write_event)?;
+
+        if success {
+            // TODO: eww kelly
+            let inode = option_inode.unwrap();
+            let file = RegFile::new(Some(fd), inode, Some(full_path));
+            rc_execs.add_new_access(AccessType::WriteContents, file);
+        }
+    }
     Ok(())
 }

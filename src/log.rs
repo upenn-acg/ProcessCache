@@ -188,3 +188,28 @@ impl fmt::Display for StatEvent {
         writeln!(f, "{:?}", self)
     }
 }
+
+#[derive(Debug)]
+pub struct WriteEvent {
+    fd: i32,
+    inode: Option<u64>,
+    path: Option<String>,
+    pid: Pid,
+}
+
+impl WriteEvent {
+    pub fn new(fd: i32, inode: Option<u64>, path: Option<String>, pid: Pid) -> WriteEvent {
+        WriteEvent {
+            fd,
+            inode,
+            path,
+            pid,
+        }
+    }
+}
+
+impl fmt::Display for WriteEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "{:?}", self)
+    }
+}
