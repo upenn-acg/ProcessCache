@@ -310,7 +310,7 @@ fn handle_access(
             // ID by the inode
             let inode = option_inode.unwrap();
             // Need to make a RegFile.
-            let reg_file = RegFile::new(None, inode, Some(path));
+            let reg_file = RegFile::new(None, inode, Some(path), String::from("access"));
             rc_execs.add_new_access(AccessType::Metadata, reg_file);
         }
     }
@@ -435,16 +435,20 @@ fn handle_open(
         // Successful and not create,
         // we need to track this read to
         // metadata.
-        if !is_create && fd > 0 {
+        if fd > 0 {
+            let access_type = if is_create {
+                AccessType::FileCreate
+            } else {
+                AccessType::Metadata
+            };
             // Right now only tracking READS individual execs do.
             // Creat + open(at) used to create files are not
             // being handled yet.
 
-            let resource_fd = if fd > 0 { Some(fd) } else { None };
             // TODO: remove this unwrap()?
             let inode = inode.unwrap();
-            let file = RegFile::new(resource_fd, inode, Some(path));
-            rc_execs.add_new_access(AccessType::Metadata, file);
+            let file = RegFile::new(Some(fd), inode, Some(path), String::from(syscall_name));
+            rc_execs.add_new_access(access_type, file);
         }
     }
     Ok(())
@@ -505,7 +509,7 @@ fn handle_read(
         if success {
             // TODO: eww kelly
             let inode = option_inode.unwrap();
-            let file = RegFile::new(Some(fd), inode, Some(full_path));
+            let file = RegFile::new(Some(fd), inode, Some(full_path), String::from(syscall_name));
             rc_execs.add_new_access(AccessType::ReadContents, file);
         }
     }
@@ -584,7 +588,7 @@ fn handle_stat(
         if success {
             // TODO: get rid of unwrap() here?
             let inode = inode.unwrap();
-            let file = RegFile::new(fd, inode, path);
+            let file = RegFile::new(fd, inode, path, String::from(syscall_name));
             // TODO: Get rid of the unwrap here
             rc_execs.add_new_access(AccessType::Metadata, file);
         }
@@ -658,7 +662,8 @@ fn handle_write(
                 _ => {
                     // TODO: eww kelly
                     let inode = option_inode.unwrap();
-                    let file = RegFile::new(Some(fd), inode, Some(full_path));
+                    let file =
+                        RegFile::new(Some(fd), inode, Some(full_path), String::from("write"));
                     rc_execs.add_new_access(AccessType::WriteContents, file);
                 }
             }
