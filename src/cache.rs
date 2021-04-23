@@ -7,6 +7,7 @@ use std::rc::Rc;
 // Types of READ access to a resource.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccessType {
+    FileCreate,
     Metadata,
     ReadContents,
     WriteContents,
@@ -17,11 +18,17 @@ pub struct RegFile {
     fd: Option<i32>,
     inode: u64,
     path: Option<String>, // TODO:  handle absolute + relative, AT_FDCWD
+    syscall_name: String,
 }
 
 impl RegFile {
-    pub fn new(fd: Option<i32>, inode: u64, path: Option<String>) -> RegFile {
-        RegFile { fd, inode, path }
+    pub fn new(fd: Option<i32>, inode: u64, path: Option<String>, syscall_name: String) -> RegFile {
+        RegFile {
+            fd,
+            inode,
+            path,
+            syscall_name,
+        }
     }
 }
 
@@ -37,6 +44,7 @@ pub struct Execution {
     executable: String,
     exit_status: Option<u32>,
     files_accessed: Vec<RegFile>,
+    files_created: Vec<RegFile>,
     files_read: Vec<RegFile>,
     files_written: Vec<RegFile>,
     stderr: Option<String>,
@@ -57,6 +65,7 @@ impl Execution {
             executable,
             exit_status: None,
             files_accessed: Vec::new(),
+            files_created: Vec::new(),
             files_read: Vec::new(),
             files_written: Vec::new(),
             stderr: None,
@@ -69,10 +78,15 @@ impl Execution {
         self.files_read.push(file);
     }
 
+    // Add new file contents write (write).
     pub fn add_new_contents_write(&mut self, file: RegFile) {
         self.files_written.push(file);
     }
 
+    // Add new file create (creat, open, openat)
+    pub fn add_new_file_create(&mut self, file: RegFile) {
+        self.files_created.push(file);
+    }
     // Add new file metadata access (open(at) [not creating file], access).
     pub fn add_new_metadata_access(&mut self, file: RegFile) {
         self.files_accessed.push(file);
@@ -98,6 +112,7 @@ impl Execution {
 pub struct Executions {
     // Executable that is currently running.
     // TODO: Handle this in some reasonable way.
+    // Because this is a hot mess.
     current_exec_idx: Option<u32>,
     pub execs: Vec<Execution>,
 }
@@ -122,6 +137,9 @@ impl Executions {
 
         if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
             match access_type {
+                AccessType::FileCreate => {
+                    curr_entry.add_new_file_create(file);
+                }
                 AccessType::Metadata => {
                     curr_entry.add_new_metadata_access(file);
                 }
