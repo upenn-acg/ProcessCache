@@ -154,7 +154,7 @@ pub async fn trace_process(
                         context!("Unable to fetch regs for unspecified syscall")
                     })?;
 
-                    let syscall = regs.syscall_number() as usize;
+                    let syscall = regs.syscall_number::<usize>();
                     let name = get_syscall_name(syscall)
                         .with_context(|| context!("Unable to get syscall name for {}", syscall))?;
                     bail!(context!("Unhandled system call {:?}", name));
@@ -208,7 +208,7 @@ pub async fn trace_process(
                 // In posthook.
                 let _ = s.enter();
                 let _ = sys_span.enter();
-                let retval = regs.retval() as i32;
+                let retval = regs.retval::<i32>();
 
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
@@ -284,12 +284,12 @@ fn handle_access(
         debug!("File metadata event: (access)");
     });
 
-    let ret_val = regs.retval() as i32;
+    let ret_val = regs.retval::<i32>();
     let success = ret_val == 0;
 
     // retval = 0 is success for this syscall.
     if success || log_writer.print_all_syscalls() {
-        let bytes = regs.arg1() as *const c_char;
+        let bytes = regs.arg1::<*const c_char>();
         let path = tracer.read_c_string(bytes)?;
 
         let option_inode = if success {
@@ -324,11 +324,11 @@ async fn handle_execve(
     rc_execs: RcExecutions,
 ) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
-    let path_name = tracer.read_c_string(regs.arg1() as *const c_char)?;
+    let path_name = tracer.read_c_string(regs.arg1())?;
     let args = tracer
-        .read_c_string_array(regs.arg2() as *const *const c_char)
+        .read_c_string_array(regs.arg2())
         .with_context(|| context!("Reading arguments to execve"))?;
-    let envp = tracer.read_c_string_array(regs.arg3() as *const *const c_char)?;
+    let envp = tracer.read_c_string_array(regs.arg3())?;
 
     // Execve doesn't return when it succeeds.
     // If we get Ok, it failed.
@@ -367,7 +367,7 @@ fn handle_open(
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
-    let fd = regs.retval() as i32;
+    let fd = regs.retval::<i32>();
     let pid = tracer.curr_proc;
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
@@ -380,9 +380,9 @@ fn handle_open(
             (true, Mode::WriteOnly)
         } else {
             let flags = if syscall_name == "open" {
-                regs.arg2() as i32
+                regs.arg2::<i32>()
             } else {
-                regs.arg3() as i32
+                regs.arg3::<i32>()
             };
             let is_create = flags & O_CREAT != 0;
             let mode = match flags & O_ACCMODE {
@@ -409,10 +409,10 @@ fn handle_open(
             (full_path, Some(inode))
         } else {
             // Failed, report no inode and relative path.
-            let arg = if syscall_name == "openat" {
-                regs.arg2() as *const c_char
+            let arg: *const c_char = if syscall_name == "openat" {
+                regs.arg2()
             } else {
-                regs.arg1() as *const c_char
+                regs.arg1()
             };
             let rel_path = tracer.read_c_string(arg)?;
 
@@ -471,7 +471,7 @@ fn handle_read(
         debug!("File contents access event: ({})", syscall_name);
     });
 
-    let ret_val = regs.retval() as i32;
+    let ret_val: i32 = regs.retval();
     // retval = 0 is end of file but success.
     // retval > 0 is number of bytes read.
     // retval < ERROR
@@ -479,7 +479,7 @@ fn handle_read(
     if success || log_writer.print_all_syscalls() {
         // Read is a contents access.
         // Fd is an arg.
-        let fd = regs.arg1() as i32;
+        let fd: i32 = regs.arg1();
 
         // Get the path from the fd.
         let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
@@ -525,7 +525,7 @@ fn handle_stat(
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
-    let ret_val = regs.retval() as i32;
+    let ret_val: i32 = regs.retval();
     let pid = tracer.curr_proc;
     let success = ret_val == 0;
 
@@ -537,14 +537,14 @@ fn handle_stat(
     // Return value == 0 means success
     if success || log_writer.print_all_syscalls() {
         let (fd, is_symlink, path) = if syscall_name == "fstat" {
-            let fd = regs.arg1() as i32;
+            let fd: i32 = regs.arg1();
             (Some(fd), false, None)
         } else {
             // lstat, newstatat, stat
-            let arg = match syscall_name {
-                "lstat" | "stat" => regs.arg1() as *const c_char,
+            let arg: *const c_char = match syscall_name {
+                "lstat" | "stat" => regs.arg1(),
                 // newstatat
-                "newfstatat" => regs.arg2() as *const c_char,
+                "newfstatat" => regs.arg2(),
                 other => bail!(context!("Unhandled syscall: {}", other)),
             };
 
@@ -556,7 +556,7 @@ fn handle_stat(
 
         // Don't want the inode if it failed (ret_val != 0)
         let inode = if success {
-            let stat_ptr = regs.arg2() as *const libc::stat;
+            let stat_ptr: *const libc::stat = regs.arg2();
             let stat_struct = tracer.read_value(stat_ptr)?;
             Some(stat_struct.st_ino)
         } else {
@@ -564,7 +564,7 @@ fn handle_stat(
         };
 
         let at_symlink_nofollow = if syscall_name == "newfstatat" {
-            let flags = regs.arg4() as i32;
+            let flags = regs.arg4::<i32>();
             flags & AT_SYMLINK_NOFOLLOW != 0
         } else {
             false
@@ -617,12 +617,12 @@ fn handle_write(
     // retval = 0 is end of file but success.
     // retval > 0 is number of bytes read.
     // retval < 0 is ERROR
-    let ret_val = regs.retval() as i32;
+    let ret_val: i32 = regs.retval();
     let success = ret_val >= 0;
     if success || log_writer.print_all_syscalls() {
         // Contents.
         // Fd is an arg.
-        let fd = regs.arg1() as i32;
+        let fd = regs.arg1::<i32>();
 
         // Get the path from the fd.
         let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
@@ -652,11 +652,11 @@ fn handle_write(
         if success {
             match fd {
                 1 => {
-                    let stdout = tracer.read_c_string(regs.arg2() as *const c_char)?;
+                    let stdout = tracer.read_c_string(regs.arg2())?;
                     rc_execs.add_stdout(stdout);
                 }
                 2 => {
-                    let stderr = tracer.read_c_string(regs.arg2() as *const c_char)?;
+                    let stderr = tracer.read_c_string(regs.arg2())?;
                     rc_execs.add_stderr(stderr);
                 }
                 _ => {
