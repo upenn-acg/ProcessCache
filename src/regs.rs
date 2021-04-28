@@ -1,5 +1,6 @@
 use libc::user_regs_struct;
 use std::marker::PhantomData;
+use std::os::raw::c_char;
 
 /// Represents a register which has never been written to.
 pub enum Unmodified {}
@@ -35,11 +36,33 @@ impl Regs<Unmodified> {
 macro_rules! read_regs_function {
     ($fname:ident, $reg:ident) => {
         #[allow(dead_code)]
-        pub fn $fname(&self) -> u64 {
-            self.regs.$reg
+        pub fn $fname<T: RegisterCast>(&self) -> T {
+            T::cast(self.regs.rax)
         }
     };
 }
+
+pub trait RegisterCast {
+    fn cast(r: u64) -> Self;
+}
+
+macro_rules! implement_register_cast {
+    ($t:ty) => {
+        impl RegisterCast for $t {
+            fn cast(r: u64) -> Self {
+                r as Self
+            }
+        }
+    };
+}
+
+implement_register_cast!(u64);
+implement_register_cast!(usize);
+implement_register_cast!(i32);
+implement_register_cast!(*const c_char);
+implement_register_cast!(*const char);
+implement_register_cast!(*const *const c_char);
+implement_register_cast!(*const libc::stat);
 
 impl Regs<Unmodified> {
     read_regs_function!(arg1, rdi);
