@@ -37,7 +37,7 @@ macro_rules! read_regs_function {
     ($fname:ident, $reg:ident) => {
         #[allow(dead_code)]
         pub fn $fname<T: RegisterCast>(&self) -> T {
-            T::cast(self.regs.rax)
+            T::cast(self.regs.$reg)
         }
     };
 }
