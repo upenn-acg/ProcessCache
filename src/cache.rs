@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::fmt;
+use std::{cell::RefCell, path::PathBuf};
 use std::rc::Rc;
 
 // TODO: use anyhow errors?
@@ -14,16 +13,16 @@ pub enum AccessType {
 }
 // File struct.
 #[derive(Debug)]
-pub struct RegFile {
+pub struct FileAccess {
     fd: Option<i32>,
     inode: u64,
-    path: Option<String>, // TODO:  handle absolute + relative, AT_FDCWD
+    path: Option<PathBuf>, // TODO:  handle absolute + relative, AT_FDCWD
     syscall_name: String,
 }
 
-impl RegFile {
-    pub fn new(fd: Option<i32>, inode: u64, path: Option<String>, syscall_name: String) -> RegFile {
-        RegFile {
+impl FileAccess {
+    pub fn new(fd: Option<i32>, inode: u64, path: Option<PathBuf>, syscall_name: String) -> FileAccess {
+        FileAccess {
             fd,
             inode,
             path,
@@ -41,14 +40,17 @@ pub struct Execution {
     args: Vec<String>,
     cwd: String,
     env_vars: Vec<String>,
-    executable: String,
+    // Currently this is just the first argument to execve
+    // so I am not making sure it's the abosolute path.
+    // May want to do that in the future?
+    executable: String, 
     exit_status: Option<u32>,
-    files_accessed: Vec<RegFile>,
-    files_created: Vec<RegFile>,
-    files_read: Vec<RegFile>,
-    files_written: Vec<RegFile>,
-    stderr: Option<String>,
-    stdout: Option<String>,
+    files_accessed: Vec<FileAccess>,
+    files_created: Vec<FileAccess>,
+    files_read: Vec<FileAccess>,
+    files_written: Vec<FileAccess>,
+    stderr: String,
+    stdout: String,
 }
 
 impl Execution {
@@ -68,44 +70,42 @@ impl Execution {
             files_created: Vec::new(),
             files_read: Vec::new(),
             files_written: Vec::new(),
-            stderr: None,
-            stdout: None,
+            stderr: String::new(),
+            stdout: String::new(),
         }
     }
 
     // Add new file contents read (read, pread64).
-    pub fn add_new_contents_read(&mut self, file: RegFile) {
+    fn add_new_contents_read(&mut self, file: FileAccess) {
         self.files_read.push(file);
     }
 
     // Add new file contents write (write).
-    pub fn add_new_contents_write(&mut self, file: RegFile) {
+    fn add_new_contents_write(&mut self, file: FileAccess) {
         self.files_written.push(file);
     }
 
     // Add new file create (creat, open, openat)
-    pub fn add_new_file_create(&mut self, file: RegFile) {
+    fn add_new_file_create(&mut self, file: FileAccess) {
         self.files_created.push(file);
     }
     // Add new file metadata access (open(at) [not creating file], access).
-    pub fn add_new_metadata_access(&mut self, file: RegFile) {
+    fn add_new_metadata_access(&mut self, file: FileAccess) {
         self.files_accessed.push(file);
     }
 
     // Add the execution's output to stderr.
-    pub fn add_stderr(&mut self, stderr: String) {
-        let out = self.stderr.clone();
-        let mut new_stderr = out.unwrap_or_default();
+    fn add_stderr(&mut self, stderr: String) {
+        let mut new_stderr = self.stderr.clone();
         new_stderr.push_str(&stderr);
-        self.stderr = Some(new_stderr);
+        self.stderr = new_stderr;
     }
 
     // Add the execution's output to stdout.
-    pub fn add_stdout(&mut self, stdout: String) {
-        let out = self.stdout.clone();
-        let mut new_stdout = out.unwrap_or_default();
+    fn add_stdout(&mut self, stdout: String) {
+        let mut new_stdout = self.stdout.clone();
         new_stdout.push_str(&stdout);
-        self.stdout = Some(new_stdout);
+        self.stdout = new_stdout;
     }
 }
 #[derive(Debug)]
@@ -118,7 +118,7 @@ pub struct Executions {
 }
 
 impl Executions {
-    pub fn new() -> Executions {
+    fn new() -> Executions {
         Executions {
             current_exec_idx: None,
             execs: Vec::new(),
@@ -128,7 +128,7 @@ impl Executions {
     // TODO: I am assuming we should add this to current execution,
     // but the whole "curr exec" thing is probably going to need to
     // be fixed anyway because that just feels error prone.
-    pub fn add_new_access(&mut self, access_type: AccessType, file: RegFile) {
+    fn add_new_access(&mut self, access_type: AccessType, file: FileAccess) {
         let idx = match self.current_exec_idx {
             Some(i) => i,
             // TODO: this seems error prone ;)
@@ -158,7 +158,7 @@ impl Executions {
 
     // Pushes the new exec onto the vector of execs
     // and updates the current_exec_idx.
-    pub fn add_new_uniq_exec(&mut self, exec: Execution) {
+    fn add_new_uniq_exec(&mut self, exec: Execution) {
         if let Some(idx) = self.current_exec_idx {
             self.current_exec_idx = Some(idx + 1);
         } else {
@@ -167,7 +167,7 @@ impl Executions {
         self.execs.push(exec);
     }
 
-    pub fn add_stdout(&mut self, stdout: String) {
+    fn add_stdout(&mut self, stdout: String) {
         let idx = match self.current_exec_idx {
             Some(i) => i,
             // TODO: this seems error prone ;)
@@ -179,7 +179,7 @@ impl Executions {
         }
     }
 
-    pub fn add_stderr(&mut self, stderr: String) {
+    fn add_stderr(&mut self, stderr: String) {
         let idx = match self.current_exec_idx {
             Some(i) => i,
             // TODO: this seems error prone ;)
@@ -192,11 +192,6 @@ impl Executions {
     }
 }
 
-impl fmt::Display for Executions {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, ":{:?}", self)
-    }
-}
 // ¯\_(ツ)_/¯
 #[derive(Clone)]
 pub struct RcExecutions {
@@ -216,7 +211,7 @@ impl RcExecutions {
         self.rc_execs.borrow_mut().add_new_uniq_exec(exec);
     }
 
-    pub fn add_new_access(&self, access_type: AccessType, file: RegFile) {
+    pub fn add_new_access(&self, access_type: AccessType, file: FileAccess) {
         self.rc_execs.borrow_mut().add_new_access(access_type, file);
     }
 

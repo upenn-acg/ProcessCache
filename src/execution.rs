@@ -7,13 +7,13 @@ use nix::sys::stat::stat;
 use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::fmt;
-// TODO: why two read links?!?!?
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{AccessType, Execution, RcExecutions, RegFile};
+use crate::cache::{AccessType, Execution, RcExecutions, FileAccess};
 use crate::context;
 use crate::log::{
     AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent, WriteEvent,
@@ -29,7 +29,6 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
 use std::ffi::OsString;
-use std::path::PathBuf;
 
 pub struct Log {
     log: BufWriter<File>,
@@ -310,8 +309,10 @@ fn handle_access(
 
             // ID by the inode
             let inode = option_inode.unwrap();
-            // Need to make a RegFile.
-            let reg_file = RegFile::new(None, inode, Some(path), String::from("access"));
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push(path);
+            // Need to make a FileAccess.
+            let reg_file = FileAccess::new(None, inode, Some(pathbuf), String::from("access"));
             rc_execs.add_new_access(AccessType::Metadata, reg_file);
         }
     }
@@ -448,7 +449,9 @@ fn handle_open(
 
             // TODO: remove this unwrap()?
             let inode = inode.unwrap();
-            let file = RegFile::new(Some(fd), inode, Some(path), String::from(syscall_name));
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push(path);
+            let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name));
             rc_execs.add_new_access(access_type, file);
         }
     }
@@ -490,12 +493,14 @@ fn handle_read(
         let stat_struct = stat(full_path.as_str())?;
         let inode = stat_struct.st_ino;
 
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push(full_path.clone());
         rc_execs.add_new_access(
             AccessType::ReadContents,
-            RegFile::new(
+            FileAccess::new(
                 Some(fd),
                 inode,
-                Some(full_path.clone()),
+                Some(pathbuf),
                 String::from(syscall_name),
             ),
         );
@@ -589,7 +594,15 @@ fn handle_stat(
         if success {
             // TODO: get rid of unwrap() here?
             let inode = inode.unwrap();
-            let file = RegFile::new(fd, inode, path, String::from(syscall_name));
+            let pathbuf = match path {
+                Some(p) => {
+                    let mut pathbuf = PathBuf::new();
+                    pathbuf.push(p);
+                    Some(pathbuf)
+                }
+                None => None,
+            }; 
+            let file = FileAccess::new(fd, inode, pathbuf, String::from(syscall_name));
             // TODO: Get rid of the unwrap here
             rc_execs.add_new_access(AccessType::Metadata, file);
         }
@@ -660,8 +673,10 @@ fn handle_write(
                 _ => {
                     // TODO: eww kelly
                     let inode = option_inode.unwrap();
+                    let mut pathbuf = PathBuf::new();
+                    pathbuf.push(full_path);
                     let file =
-                        RegFile::new(Some(fd), inode, Some(full_path), String::from("write"));
+                        FileAccess::new(Some(fd), inode, Some(pathbuf), String::from("write"));
                     rc_execs.add_new_access(AccessType::WriteContents, file);
                 }
             }
