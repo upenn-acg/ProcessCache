@@ -88,7 +88,9 @@ impl Ptracer {
         self.curr_proc
     }
 
-    pub(crate) fn read_c_string(&self, address: *const c_char) -> nix::Result<String> {
+    pub(crate) fn read_c_string(&self, address: *const c_char) -> anyhow::Result<String> {
+        ensure!(!address.is_null(), context!("Address is null."));
+
         let address = address as *mut c_void;
         let mut string = String::new();
         // Move 8 bytes up each time for next read.
@@ -117,6 +119,8 @@ impl Ptracer {
     pub fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
         use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
         use std::mem::size_of;
+
+        ensure!(!address.is_null(), context!("Address is null."));
 
         // Ugh rust doesn't support this type as a const so I can't use a stack allocated
         // array here.
@@ -198,7 +202,7 @@ impl Ptracer {
         &self,
         address: *const *const c_char,
     ) -> anyhow::Result<Vec<String>> {
-        ensure!(!address.is_null(), "address is null.");
+        ensure!(!address.is_null(), context!("Address is null."));
 
         let mut i = 0;
         let mut vec = Vec::new();
