@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{AccessType, Execution, RcExecutions, FileAccess};
+use crate::cache::{AccessType, Execution, FileAccess, RcExecutions};
 use crate::context;
 use crate::log::{
     AccessEvent, ExecveEvent, ForkEvent, Mode, OpenEvent, ReadEvent, StatEvent, WriteEvent,
@@ -89,20 +89,25 @@ impl LogWriter {
 }
 
 pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecutions) -> Result<()> {
-    let f = |pid: Pid| trace_process(Ptracer::new(pid), log_writer.clone(), rc_execs.clone());
-    let async_runtime = AsyncRuntime::new(f);
-
     info!("Running whole program");
+
+    let async_runtime = AsyncRuntime::new();
+    let f = trace_process(
+        async_runtime.clone(),
+        Ptracer::new(first_proc),
+        log_writer.clone(),
+        rc_execs.clone(),
+    );
     async_runtime
-        .run_task(first_proc)
+        .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
     log_writer.flush();
     // TODO: Print out the unique execs.
     // There should just be one.
-    for exec in rc_execs.rc_execs.borrow().execs.iter() {
-        println!("Execution: {:?}", exec);
-    }
+    // for exec in rc_execs.rc_execs.borrow().execs.iter() {
+    //     println!("Execution: {:?}", exec);
+    // }
     Ok(())
 }
 
@@ -115,6 +120,7 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecuti
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
 pub async fn trace_process(
+    async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
     log_writer: LogWriter,
     rc_execs: RcExecutions,
@@ -235,6 +241,14 @@ pub async fn trace_process(
                 });
 
                 log_writer.add_event(&ForkEvent::new(child, tracer.curr_proc))?;
+
+                let f = trace_process(
+                    async_runtime.clone(),
+                    Ptracer::new(child),
+                    log_writer.clone(),
+                    rc_execs.clone(),
+                );
+                async_runtime.add_new_task(child, f)?;
             }
 
             TraceEvent::Posthook(_) => {
@@ -290,12 +304,15 @@ fn handle_access(
     // retval = 0 is success for this syscall.
     if success || log_writer.print_all_syscalls() {
         let bytes = regs.arg1::<*const c_char>();
-        let path = tracer.read_c_string(bytes)?;
+        let path = tracer
+            .read_c_string(bytes)
+            .with_context(|| context!("Cannot read `access` path."))?;
 
         let option_inode = if success {
             // Need to get the inode. Pretty sure this path is always absolute? (Only a sith deals in absolutes...
             // and also whoever designed the system call API...)
-            let stat_struct = stat(path.as_str())?;
+            let stat_struct = stat(path.as_str())
+                .with_context(|| context!("Cannot read tracee's stat struct."))?;
             Some(stat_struct.st_ino)
         } else {
             None
@@ -497,12 +514,7 @@ fn handle_read(
         pathbuf.push(full_path.clone());
         rc_execs.add_new_access(
             AccessType::ReadContents,
-            FileAccess::new(
-                Some(fd),
-                inode,
-                Some(pathbuf),
-                String::from(syscall_name),
-            ),
+            FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name)),
         );
 
         lw_inode = Some(inode);
@@ -601,7 +613,7 @@ fn handle_stat(
                     Some(pathbuf)
                 }
                 None => None,
-            }; 
+            };
             let file = FileAccess::new(fd, inode, pathbuf, String::from(syscall_name));
             // TODO: Get rid of the unwrap here
             rc_execs.add_new_access(AccessType::Metadata, file);
@@ -640,11 +652,13 @@ fn handle_write(
 
         // Get the path from the fd.
         let proc_path = format!("/proc/{}/fd/{}", tracer.curr_proc, fd);
-        let full = readlink(proc_path.as_str())?;
+        let full = readlink(proc_path.as_str())
+            .with_context(|| context!("Cannot get path to file descriptor."))?;
 
         // Have to get the inode.
         let option_inode = if success {
-            let stat_struct = stat(full.as_os_str())?;
+            let stat_struct = stat(full.as_os_str())
+                .with_context(|| context!("Cannot stat file descriptor's path."))?;
             let inode = stat_struct.st_ino;
             Some(inode)
         } else {
