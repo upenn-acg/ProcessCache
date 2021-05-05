@@ -96,7 +96,7 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecuti
         async_runtime.clone(),
         Ptracer::new(first_proc),
         log_writer.clone(),
-        rc_execs.clone(),
+        rc_execs,
     );
     async_runtime
         .run_task(first_proc, f)

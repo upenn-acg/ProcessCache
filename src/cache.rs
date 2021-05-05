@@ -1,5 +1,5 @@
-use std::{cell::RefCell, path::PathBuf};
 use std::rc::Rc;
+use std::{cell::RefCell, path::PathBuf};
 
 // TODO: use anyhow errors?
 
@@ -21,7 +21,12 @@ pub struct FileAccess {
 }
 
 impl FileAccess {
-    pub fn new(fd: Option<i32>, inode: u64, path: Option<PathBuf>, syscall_name: String) -> FileAccess {
+    pub fn new(
+        fd: Option<i32>,
+        inode: u64,
+        path: Option<PathBuf>,
+        syscall_name: String,
+    ) -> FileAccess {
         FileAccess {
             fd,
             inode,
@@ -43,7 +48,7 @@ pub struct Execution {
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
-    executable: String, 
+    executable: String,
     exit_status: Option<u32>,
     files_accessed: Vec<FileAccess>,
     files_created: Vec<FileAccess>,
@@ -129,11 +134,7 @@ impl Executions {
     // but the whole "curr exec" thing is probably going to need to
     // be fixed anyway because that just feels error prone.
     fn add_new_access(&mut self, access_type: AccessType, file: FileAccess) {
-        let idx = match self.current_exec_idx {
-            Some(i) => i,
-            // TODO: this seems error prone ;)
-            None => 0,
-        };
+        let idx = self.current_exec_idx.unwrap_or(0);
 
         if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
             match access_type {
@@ -168,11 +169,7 @@ impl Executions {
     }
 
     fn add_stdout(&mut self, stdout: String) {
-        let idx = match self.current_exec_idx {
-            Some(i) => i,
-            // TODO: this seems error prone ;)
-            None => 0,
-        };
+        let idx = self.current_exec_idx.unwrap_or(0);
 
         if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
             curr_entry.add_stdout(stdout);
@@ -180,11 +177,7 @@ impl Executions {
     }
 
     fn add_stderr(&mut self, stderr: String) {
-        let idx = match self.current_exec_idx {
-            Some(i) => i,
-            // TODO: this seems error prone ;)
-            None => 0,
-        };
+        let idx = self.current_exec_idx.unwrap_or(0);
 
         if let Some(curr_entry) = self.execs.get_mut(idx as usize) {
             curr_entry.add_stderr(stderr);

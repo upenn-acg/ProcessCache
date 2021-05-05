@@ -96,7 +96,7 @@ impl AsyncRuntime {
         match task.poll_task() {
             Poll::Ready(r) => {
                 r.with_context(|| context!("Initial task failed immediately with error."))?;
-                return Ok(true);
+                Ok(true)
             }
             Poll::Pending => Ok(false),
         }
