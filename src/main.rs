@@ -4,7 +4,6 @@ use tracing_subscriber::filter::EnvFilter;
 mod async_runtime;
 mod cache;
 mod execution;
-mod log;
 mod ptracer;
 mod regs;
 mod seccomp;
