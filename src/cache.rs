@@ -43,7 +43,7 @@ impl FileAccess {
 #[derive(Debug)]
 pub struct Execution {
     args: Vec<String>,
-    cwd: String,
+    cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
@@ -61,7 +61,7 @@ pub struct Execution {
 impl Execution {
     pub fn new(
         args: Vec<String>,
-        cwd: String,
+        cwd: PathBuf,
         env_vars: Vec<String>,
         executable: String,
     ) -> Execution {
