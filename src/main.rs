@@ -1,4 +1,3 @@
-use execution::LogWriter;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
@@ -62,19 +61,17 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let opt = Opt::from_args();
-    let print_all_syscalls = opt.print_syscalls_on_error;
-    let output_file_name = opt.output_file;
+    // let print_all_syscalls = opt.print_syscalls_on_error;
+    // let output_file_name = opt.output_file;
 
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command, print_all_syscalls, output_file_name)?;
+    run_tracer_and_tracee(command)?;
     Ok(())
 }
 
 fn run_tracer_and_tracee(
     command: Command,
-    print_all_syscalls: bool,
-    output_file_name: String,
 ) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
@@ -88,9 +85,8 @@ fn run_tracer_and_tracee(
             Ptracer::set_trace_options(tracee_pid)?;
 
             let unique_execs = RcExecutions::new();
-            let log_writer = LogWriter::new(&output_file_name, print_all_syscalls);
 
-            execution::trace_program(tracee_pid, log_writer, unique_execs)?;
+            execution::trace_program(tracee_pid, unique_execs)?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),
