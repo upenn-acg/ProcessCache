@@ -1,16 +1,10 @@
-use fmt::Display;
 #[allow(unused_imports)]
 use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::stat;
 use nix::unistd::Pid;
-use std::cell::RefCell;
-use std::fmt;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{AccessType, Execution, FileAccess, RcExecutions};
@@ -27,79 +21,19 @@ use tracing::{debug, error, info, span, trace, Level};
 use anyhow::{bail, Context, Result};
 use std::ffi::OsString;
 
-pub struct Log {
-    log: BufWriter<File>,
-    print_all_syscalls: bool,
-    #[allow(dead_code)]
-    output_file_name: String,
-}
-
-impl Log {
-    pub fn new(output_file_name: &str, print_all_syscalls: bool) -> Log {
-        Log {
-            log: BufWriter::new(File::create(output_file_name).unwrap()),
-            print_all_syscalls,
-            output_file_name: String::from(output_file_name),
-        }
-    }
-
-    pub fn add_event(&mut self, event: &impl fmt::Display) -> Result<()> {
-        let str = format!("{}", event);
-        let bytes = str.as_bytes();
-        self.log.write_all(bytes)?;
-
-        Ok(())
-    }
-
-    pub fn flush(&mut self) {
-        self.log.flush().unwrap();
-    }
-
-    pub fn print_all_syscalls(&self) -> bool {
-        self.print_all_syscalls
-    }
-}
-
-#[derive(Clone)]
-pub struct LogWriter {
-    log: Rc<RefCell<Log>>,
-}
-
-impl LogWriter {
-    pub fn new(output_file_name: &str, print_all_syscalls: bool) -> LogWriter {
-        LogWriter {
-            log: Rc::new(RefCell::new(Log::new(output_file_name, print_all_syscalls))),
-        }
-    }
-
-    pub fn add_event(&self, event: &impl Display) -> Result<()> {
-        self.log.borrow_mut().add_event(event)
-    }
-
-    pub fn flush(&self) {
-        self.log.borrow_mut().flush();
-    }
-
-    pub fn print_all_syscalls(&self) -> bool {
-        self.log.borrow().print_all_syscalls()
-    }
-}
-
-pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecutions) -> Result<()> {
+pub fn trace_program(first_proc: Pid, rc_execs: RcExecutions) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
-        log_writer.clone(),
         rc_execs.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    log_writer.flush();
     // TODO: Print out the unique execs.
     // There should just be one.
     for exec in rc_execs.rc_execs.borrow().execs.iter() {
@@ -119,7 +53,6 @@ pub fn trace_program(first_proc: Pid, log_writer: LogWriter, rc_execs: RcExecuti
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
-    log_writer: LogWriter,
     rc_execs: RcExecutions,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
@@ -231,7 +164,6 @@ pub async fn trace_process(
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
-                    log_writer.clone(),
                     rc_execs.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
@@ -426,7 +358,7 @@ fn handle_read(
         let inode = stat_struct.st_ino;
 
         let mut pathbuf = PathBuf::new();
-        pathbuf.push(full_path.clone());
+        pathbuf.push(full_path);
         rc_execs.add_new_access(
             AccessType::ReadContents,
             FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name)),
