@@ -10,7 +10,6 @@ mod system_call_names;
 mod tracer;
 mod utils;
 
-pub use crate::cache::RcExecutions;
 pub use crate::execution::trace_program;
 pub use crate::ptracer::Ptracer;
 use tracing::{debug, error};
@@ -70,9 +69,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_tracer_and_tracee(
-    command: Command,
-) -> anyhow::Result<()> {
+fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -84,9 +81,7 @@ fn run_tracer_and_tracee(
             debug!("Child returned ready!");
             Ptracer::set_trace_options(tracee_pid)?;
 
-            let unique_execs = RcExecutions::new();
-
-            execution::trace_program(tracee_pid, unique_execs)?;
+            execution::trace_program(tracee_pid)?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),

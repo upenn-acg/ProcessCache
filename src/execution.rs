@@ -7,7 +7,7 @@ use nix::unistd::Pid;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{AccessType, Execution, FileAccess, RcExecutions};
+use crate::cache::{ExecInfo, Execution, FileAccess, GlobalExecutions};
 use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -21,14 +21,24 @@ use tracing::{debug, error, info, span, trace, Level};
 use anyhow::{bail, Context, Result};
 use std::ffi::OsString;
 
-pub fn trace_program(first_proc: Pid, rc_execs: RcExecutions) -> Result<()> {
+pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
+    // We have to create the first execution struct outside
+    // trace process, so we don't accidentally overwrite it
+    // within trace_process().
+
+    let first_execution = Execution::new(ExecInfo::new());
+
+    let global_executions = GlobalExecutions::new();
+    global_executions.add_new_execution(first_execution.clone());
+
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
-        rc_execs.clone(),
+        first_execution,
+        global_executions.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -36,7 +46,10 @@ pub fn trace_program(first_proc: Pid, rc_execs: RcExecutions) -> Result<()> {
 
     // TODO: Print out the unique execs.
     // There should just be one.
-    for exec in rc_execs.rc_execs.borrow().execs.iter() {
+    // for exec in rc_execs.rc_execs.borrow().execs.iter() {
+    //     println!("Execution: {:?}", exec);
+    // }
+    for exec in global_executions.executions.borrow().iter() {
         println!("Execution: {:?}", exec);
     }
     Ok(())
@@ -53,7 +66,8 @@ pub fn trace_program(first_proc: Pid, rc_execs: RcExecutions) -> Result<()> {
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
-    rc_execs: RcExecutions,
+    mut curr_execution: Execution,
+    global_executions: GlobalExecutions,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -68,14 +82,39 @@ pub async fn trace_process(
         signal = None;
 
         match event {
+            // If we see an exec event from ptrace, we know it was successful.
             TraceEvent::Exec(pid) => {
                 s.in_scope(|| debug!("Saw exec event for pid {}", pid));
+
+                let regs = tracer
+                    .get_registers()
+                    .with_context(|| context!("Failed to get regs in exec event"))?;
+                let path_name = tracer.read_c_string(regs.arg1())?;
+                let args = tracer
+                    .read_c_string_array(regs.arg2())
+                    .with_context(|| context!("Reading arguments to execve"))?;
+                let envp = tracer.read_c_string_array(regs.arg3())?;
+
+                let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                let cwd_path = readlink(cwd_link.as_str())
+                    .with_context(|| context!("Failed to readlink (cwd)"))?;
+                let cwd = cwd_path.to_str().unwrap().to_owned();
+                let mut cwd_pathbuf = PathBuf::new();
+                cwd_pathbuf.push(cwd);
+
+                let mut new_execution = Execution::new(ExecInfo::new());
+                new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+
+                global_executions.add_new_execution(new_execution.clone());
+                // This is a NEW exec, we must update the current
+                // execution to this new one.
+                curr_execution = new_execution;
             }
             TraceEvent::PreExit(_pid) => {
                 s.in_scope(|| debug!("Saw preexit event."));
                 break;
             }
-            TraceEvent::Prehook(pid) => {
+            TraceEvent::Prehook(_) => {
                 let e = s.enter();
 
                 // The default seccomp rule for unspecified system call rules is to send us
@@ -117,16 +156,7 @@ pub async fn trace_process(
                         debug!("Special event. Do not go to posthook.");
                         continue;
                     }
-                    "execve" => {
-                        let regs = tracer
-                            .get_registers()
-                            .with_context(|| context!("Execve getting registers."))?;
 
-                        let _res = handle_execve(regs, tracer.clone(), rc_execs.clone())
-                            .await
-                            .with_context(|| format!("handle_execve({:?}) failed", pid));
-                        continue;
-                    }
                     _ => {}
                 }
 
@@ -144,13 +174,15 @@ pub async fn trace_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "access" => handle_access(&rc_execs, &regs, &tracer)?,
-                    "creat" | "openat" | "open" => handle_open(&rc_execs, &regs, name, &tracer)?,
-                    "fstat" | "lstat" | "newfstatat" | "stat" => {
-                        handle_stat(&rc_execs, &regs, name, &tracer)?
+                    "access" => handle_access(&curr_execution, &regs, &tracer)?,
+                    "creat" | "openat" | "open" => {
+                        handle_open(&curr_execution, &regs, name, &tracer)?
                     }
-                    "pread64" | "read" => handle_read(&rc_execs, &regs, name, &tracer)?,
-                    "write" => handle_write(&rc_execs, &regs, &tracer)?,
+                    "fstat" | "lstat" | "newfstatat" | "stat" => {
+                        handle_stat(&curr_execution, &regs, name, &tracer)?
+                    }
+                    "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
+                    "write" => handle_write(&curr_execution, &regs, &tracer)?,
                     _ => {}
                 }
             }
@@ -164,7 +196,8 @@ pub async fn trace_process(
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
-                    rc_execs.clone(),
+                    curr_execution.clone(),
+                    global_executions.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -205,7 +238,7 @@ pub async fn trace_process(
     Ok(())
 }
 
-fn handle_access(rc_execs: &RcExecutions, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
+fn handle_access(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
         debug!("File metadata event: (access)");
@@ -229,54 +262,13 @@ fn handle_access(rc_execs: &RcExecutions, regs: &Regs<Unmodified>, tracer: &Ptra
         pathbuf.push(path);
         // Need to make a FileAccess.
         let reg_file = FileAccess::new(None, inode, Some(pathbuf), String::from("access"));
-        rc_execs.add_new_access(AccessType::Metadata, reg_file);
+        execution.add_new_metadata_access(reg_file);
     }
-    Ok(())
-}
-
-async fn handle_execve(
-    regs: Regs<Unmodified>,
-    mut tracer: Ptracer,
-    rc_execs: RcExecutions,
-) -> Result<()> {
-    let sys_span = span!(Level::INFO, "handle_execve", pid=?tracer.curr_proc);
-    let path_name = tracer.read_c_string(regs.arg1())?;
-
-    let args = tracer
-        .read_c_string_array(regs.arg2())
-        .with_context(|| context!("Reading arguments to execve"))?;
-
-    let envp = tracer.read_c_string_array(regs.arg3())?;
-    sys_span.in_scope(|| {
-        debug!("execve(\"{:?}\", {:?})", path_name, args);
-        trace!("envp={:?}", envp);
-    });
-
-    // Execve doesn't return when it succeeds.
-    // If we get Ok, it failed.
-    // If we get Err, it succeeded.
-    // And yes I realize that is confusing.
-    // TODO: may not always work?
-    let syscall_succeeded = tracer.posthook().await.is_err();
-
-    // TODO: also track failed execves
-    if syscall_succeeded {
-        let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-        let cwd_path =
-            readlink(cwd_link.as_str()).with_context(|| context!("Failed to readlink (cwd)"))?;
-        let cwd = cwd_path.to_str().unwrap().to_owned();
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(cwd);
-        let execution = Execution::new(args, pathbuf, envp, path_name);
-
-        rc_execs.add_new_uniq_exec(execution);
-    }
-
     Ok(())
 }
 
 fn handle_open(
-    rc_execs: &RcExecutions,
+    execution: &Execution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -310,31 +302,23 @@ fn handle_open(
             .with_context(|| context!("Cannot read tracee's stat struct."))?;
         let inode = stat_struct.st_ino;
 
-        // Successful and not a create, we need to track this read to metadata.
-        let access_type = if is_create {
-            AccessType::FileCreate
-        } else {
-            AccessType::Metadata
-        };
-
         let mut pathbuf = PathBuf::new();
         pathbuf.push(full_path);
         let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name));
 
-        rc_execs.add_new_access(access_type, file);
+        if is_create {
+            execution.add_new_file_create(file);
+        } else {
+            execution.add_new_metadata_access(file);
+        };
     }
     Ok(())
-}
-
-fn path_from_fd(pid: Pid, fd: i32) -> nix::Result<OsString> {
-    let proc_path = format!("/proc/{}/fd/{}", pid, fd);
-    readlink(proc_path.as_str())
 }
 
 /// Handle read and pread64.
 /// We consider a 'read' system call to be a contents access.
 fn handle_read(
-    rc_execs: &RcExecutions,
+    execution: &Execution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -359,10 +343,9 @@ fn handle_read(
 
         let mut pathbuf = PathBuf::new();
         pathbuf.push(full_path);
-        rc_execs.add_new_access(
-            AccessType::ReadContents,
-            FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name)),
-        );
+        let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name));
+
+        execution.add_new_contents_read(file);
     }
     Ok(())
 }
@@ -370,7 +353,7 @@ fn handle_read(
 // First, we will just handle SUCCESS and FAIL of STAT calls
 // SUCCESS: RET VAL = 0
 fn handle_stat(
-    rc_execs: &RcExecutions,
+    execution: &Execution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -406,12 +389,12 @@ fn handle_stat(
         let inode = stat_struct.st_ino;
 
         let file = FileAccess::new(fd, inode, path, String::from(syscall_name));
-        rc_execs.add_new_access(AccessType::Metadata, file);
+        execution.add_new_metadata_access(file);
     }
 
     Ok(())
 }
-fn handle_write(rc_execs: &RcExecutions, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
+fn handle_write(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
     // Okay, so here we have to deal with:
     // stderr (fd 2)
     // stdout (fd 1)
@@ -449,19 +432,24 @@ fn handle_write(rc_execs: &RcExecutions, regs: &Regs<Unmodified>, tracer: &Ptrac
             0 => (),
             1 => {
                 let stdout = tracer.read_c_string(regs.arg2())?;
-                rc_execs.add_stdout(stdout);
+                execution.add_stdout(stdout);
             }
             2 => {
                 let stderr = tracer.read_c_string(regs.arg2())?;
-                rc_execs.add_stderr(stderr);
+                execution.add_stderr(stderr);
             }
             _ => {
                 let mut pathbuf = PathBuf::new();
                 pathbuf.push(full_path);
                 let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from("write"));
-                rc_execs.add_new_access(AccessType::WriteContents, file);
+                execution.add_new_contents_write(file);
             }
         }
     }
     Ok(())
+}
+
+fn path_from_fd(pid: Pid, fd: i32) -> nix::Result<OsString> {
+    let proc_path = format!("/proc/{}/fd/{}", pid, fd);
+    readlink(proc_path.as_str())
 }
