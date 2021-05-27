@@ -131,32 +131,32 @@ pub async fn trace_process(
                 // TODO: Handle them properly...
                 match name {
                     "execve" => {
-                        // let regs = tracer
-                        //     .get_registers()
-                        //     .with_context(|| context!("Failed to get regs in exec event"))?;
-                        // let arg = regs.arg1();
-                        // let path_name = tracer.read_c_string(arg)?;
-                        // debug!("PATH NAME: {}", path_name);
+                        let regs = tracer
+                            .get_registers()
+                            .with_context(|| context!("Failed to get regs in exec event"))?;
+                        let arg = regs.arg1();
+                        let path_name = tracer.read_c_string(arg)?;
+                        debug!("PATH NAME: {}", path_name);
 
-                        // let args = tracer
-                        //     .read_c_string_array(regs.arg2())
-                        //     .with_context(|| context!("Reading arguments to execve"))?;
-                        // let envp = tracer.read_c_string_array(regs.arg3())?;
+                        let args = tracer
+                            .read_c_string_array(regs.arg2())
+                            .with_context(|| context!("Reading arguments to execve"))?;
+                        let envp = tracer.read_c_string_array(regs.arg3())?;
 
-                        // let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-                        // let cwd_path = readlink(cwd_link.as_str())
-                        //     .with_context(|| context!("Failed to readlink (cwd)"))?;
-                        // let cwd = cwd_path.to_str().unwrap().to_owned();
-                        // let mut cwd_pathbuf = PathBuf::new();
-                        // cwd_pathbuf.push(cwd);
+                        let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                        let cwd_path = readlink(cwd_link.as_str())
+                            .with_context(|| context!("Failed to readlink (cwd)"))?;
+                        let cwd = cwd_path.to_str().unwrap().to_owned();
+                        let mut cwd_pathbuf = PathBuf::new();
+                        cwd_pathbuf.push(cwd);
 
-                        // let mut new_execution = Execution::new(ExecInfo::new());
-                        // new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+                        let mut new_execution = Execution::new(ExecInfo::new());
+                        new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
 
-                        // global_executions.add_new_execution(new_execution.clone());
-                        // // This is a NEW exec, we must update the current
-                        // // execution to this new one.
-                        // curr_execution = new_execution;
+                        global_executions.add_new_execution(new_execution.clone());
+                        // This is a NEW exec, we must update the current
+                        // execution to this new one.
+                        curr_execution = new_execution;
                         continue;
                     }
                     "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
