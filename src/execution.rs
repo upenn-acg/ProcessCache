@@ -85,36 +85,8 @@ pub async fn trace_process(
             // If we see an exec event from ptrace, we know it was successful.
             TraceEvent::Exec(pid) => {
                 s.in_scope(|| debug!("Saw exec event for pid {}", pid));
-
-
-                // this should be done not here, as the registers have already been
+                // Handling stuff related to execve should NOT be done here, as the registers have already been
                 // blown away.
-                // let regs = tracer
-                //     .get_registers()
-                //     .with_context(|| context!("Failed to get regs in exec event"))?;
-                // let arg = regs.arg1();
-                // let path_name = tracer.read_c_string(arg)?;
-                // debug!("PATH NAME: {}", path_name);
-                
-                // let args = tracer
-                //     .read_c_string_array(regs.arg2())
-                //     .with_context(|| context!("Reading arguments to execve"))?;
-                // let envp = tracer.read_c_string_array(regs.arg3())?;
-
-                // let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-                // let cwd_path = readlink(cwd_link.as_str())
-                //     .with_context(|| context!("Failed to readlink (cwd)"))?;
-                // let cwd = cwd_path.to_str().unwrap().to_owned();
-                // let mut cwd_pathbuf = PathBuf::new();
-                // cwd_pathbuf.push(cwd);
-
-                // let mut new_execution = Execution::new(ExecInfo::new());
-                // new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
-
-                // global_executions.add_new_execution(new_execution.clone());
-                // // This is a NEW exec, we must update the current
-                // // execution to this new one.
-                // curr_execution = new_execution;
             }
             TraceEvent::PreExit(_pid) => {
                 s.in_scope(|| debug!("Saw preexit event."));
@@ -158,7 +130,36 @@ pub async fn trace_process(
                 // bother handling it, let the main loop take care of it.
                 // TODO: Handle them properly...
                 match name {
-                    "execve" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
+                    "execve" => {
+                        // let regs = tracer
+                        //     .get_registers()
+                        //     .with_context(|| context!("Failed to get regs in exec event"))?;
+                        // let arg = regs.arg1();
+                        // let path_name = tracer.read_c_string(arg)?;
+                        // debug!("PATH NAME: {}", path_name);
+
+                        // let args = tracer
+                        //     .read_c_string_array(regs.arg2())
+                        //     .with_context(|| context!("Reading arguments to execve"))?;
+                        // let envp = tracer.read_c_string_array(regs.arg3())?;
+
+                        // let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                        // let cwd_path = readlink(cwd_link.as_str())
+                        //     .with_context(|| context!("Failed to readlink (cwd)"))?;
+                        // let cwd = cwd_path.to_str().unwrap().to_owned();
+                        // let mut cwd_pathbuf = PathBuf::new();
+                        // cwd_pathbuf.push(cwd);
+
+                        // let mut new_execution = Execution::new(ExecInfo::new());
+                        // new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+
+                        // global_executions.add_new_execution(new_execution.clone());
+                        // // This is a NEW exec, we must update the current
+                        // // execution to this new one.
+                        // curr_execution = new_execution;
+                        continue;
+                    }
+                    "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
@@ -384,13 +385,17 @@ fn handle_stat(
                 other => bail!(context!("Unhandled syscall: {}", other)),
             };
 
-            let path = tracer.read_c_string(arg)?;
+            let path = tracer
+                .read_c_string(arg)
+                .with_context(|| context!("Can't get path from path arg."))?;
             let mut pathbuf = PathBuf::new();
             pathbuf.push(path);
             (None, Some(pathbuf))
         };
 
-        let stat_struct = tracer.read_value::<libc::stat>(regs.arg2())?;
+        let stat_struct = tracer
+            .read_value::<libc::stat>(regs.arg2())
+            .with_context(|| context!("Can't read stat struct"))?;
         let inode = stat_struct.st_ino;
 
         let file = FileAccess::new(fd, inode, path, String::from(syscall_name));
@@ -436,11 +441,15 @@ fn handle_write(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer
             // Don't care about stdin.
             0 => (),
             1 => {
-                let stdout = tracer.read_c_string(regs.arg2())?;
+                let stdout = tracer
+                    .read_c_string(regs.arg2())
+                    .with_context(|| context!("Can't read stdout to string."))?;
                 execution.add_stdout(stdout);
             }
             2 => {
-                let stderr = tracer.read_c_string(regs.arg2())?;
+                let stderr = tracer
+                    .read_c_string(regs.arg2())
+                    .with_context(|| context!("Can't read stderr to string."))?;
                 execution.add_stderr(stderr);
             }
             _ => {
