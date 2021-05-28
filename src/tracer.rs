@@ -16,7 +16,7 @@ pub enum TraceEvent {
     Clone(Pid),
     VFork(Pid),
     Posthook(Pid),
-    ProcessExited(Pid),
+    ProcessExited(Pid, i32),
     ReceivedSignal(Pid, Signal),
     KilledBySignal(Pid, Signal),
 }
@@ -34,7 +34,7 @@ impl From<WaitStatus> for TraceEvent {
                 _ => panic!("Unknown status from PtraceEven: {:?}", status as i32),
             },
             WaitStatus::PtraceSyscall(pid) => TraceEvent::Posthook(pid),
-            WaitStatus::Exited(pid, _exit_code) => TraceEvent::ProcessExited(pid),
+            WaitStatus::Exited(pid, exit_code) => TraceEvent::ProcessExited(pid, exit_code),
             WaitStatus::Stopped(pid, signal) => TraceEvent::ReceivedSignal(pid, signal),
             // Not really expecting to see these. Might need them later.
             WaitStatus::Signaled(pid, signal, _core_duped) => {

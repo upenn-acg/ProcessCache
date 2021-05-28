@@ -44,11 +44,6 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // TODO: Print out the unique execs.
-    // There should just be one.
-    // for exec in rc_execs.rc_execs.borrow().execs.iter() {
-    //     println!("Execution: {:?}", exec);
-    // }
     for exec in global_executions.executions.borrow().iter() {
         println!("Execution: {:?}", exec);
     }
@@ -150,7 +145,7 @@ pub async fn trace_process(
                         let mut cwd_pathbuf = PathBuf::new();
                         cwd_pathbuf.push(cwd);
 
-                        let mut new_execution = Execution::new(ExecInfo::new());
+                        let new_execution = Execution::new(ExecInfo::new());
                         new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
 
                         global_executions.add_new_execution(new_execution.clone());
@@ -223,7 +218,7 @@ pub async fn trace_process(
             TraceEvent::KilledBySignal(pid, signal) => {
                 s.in_scope(|| debug!(?signal, "Process {} killed by signal {:?}", pid, signal));
             }
-            TraceEvent::ProcessExited(_pid) => {
+            TraceEvent::ProcessExited(_pid, _exit_code) => {
                 // No idea how this could happen.
                 unreachable!("Did not expect to see ProcessExited event here.");
             }
@@ -232,8 +227,11 @@ pub async fn trace_process(
 
     // Saw pre-exit event, wait for final exit event.
     match tracer.get_next_event(None).await? {
-        TraceEvent::ProcessExited(pid) => {
+        TraceEvent::ProcessExited(pid, exit_code) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
+            
+            // Add exit code to the exec struct.
+            curr_execution.add_exit_code(exit_code);
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
