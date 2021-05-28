@@ -32,7 +32,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     let first_execution = Execution::new(ExecInfo::new());
 
     let global_executions = GlobalExecutions::new();
-    global_executions.add_new_execution(first_execution.clone());
+    // global_executions.add_new_execution(first_execution.clone());
 
     let f = trace_process(
         async_runtime.clone(),
