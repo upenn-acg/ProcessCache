@@ -39,7 +39,7 @@ pub struct ExecInfo {
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
     executable: String,
-    exit_status: Option<u32>,
+    exit_code: Option<i32>,
     files_accessed: Vec<FileAccess>,
     files_created: Vec<FileAccess>,
     files_read: Vec<FileAccess>,
@@ -55,7 +55,7 @@ impl ExecInfo {
             cwd: PathBuf::new(),
             env_vars: Vec::new(),
             executable: String::new(),
-            exit_status: None,
+            exit_code: None,
             files_accessed: Vec::new(),
             files_created: Vec::new(),
             files_read: Vec::new(),
@@ -65,7 +65,11 @@ impl ExecInfo {
         }
     }
 
-    pub fn add_identifiers(
+    fn add_exit_code(&mut self, code: i32) {
+        self.exit_code = Some(code);
+    }
+
+    fn add_identifiers(
         &mut self,
         args: Vec<String>,
         cwd: PathBuf,
@@ -77,7 +81,7 @@ impl ExecInfo {
         self.env_vars = env_vars;
         self.executable = executable;
     }
-
+    
     // Add new file contents read (read, pread64).
     fn add_new_contents_read(&mut self, file: FileAccess) {
         self.files_read.push(file);
@@ -89,24 +93,24 @@ impl ExecInfo {
     }
 
     // Add new file create (creat, open, openat)
-    pub fn add_new_file_create(&mut self, file: FileAccess) {
+    fn add_new_file_create(&mut self, file: FileAccess) {
         self.files_created.push(file);
     }
 
     // Add new file metadata access (open(at) [not creating file], access).
-    pub fn add_new_metadata_access(&mut self, file: FileAccess) {
+    fn add_new_metadata_access(&mut self, file: FileAccess) {
         self.files_accessed.push(file);
     }
 
     // Add the execution's output to stderr.
-    pub fn add_stderr(&mut self, stderr: String) {
+    fn add_stderr(&mut self, stderr: String) {
         let mut new_stderr = self.stderr.clone();
         new_stderr.push_str(&stderr);
         self.stderr = new_stderr;
     }
 
     // Add the execution's output to stdout.
-    pub fn add_stdout(&mut self, stdout: String) {
+    fn add_stdout(&mut self, stdout: String) {
         let mut new_stdout = self.stdout.clone();
         new_stdout.push_str(&stdout);
         self.stdout = new_stdout;
@@ -125,8 +129,14 @@ impl Execution {
         }
     }
 
+    pub fn add_exit_code(&self, code: i32) {
+        self.execution
+            .borrow_mut()
+            .add_exit_code(code);
+    }
+
     pub fn add_identifiers(
-        &mut self,
+        &self,
         args: Vec<String>,
         cwd: PathBuf,
         env_vars: Vec<String>,
