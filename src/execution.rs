@@ -154,7 +154,7 @@ pub async fn trace_process(
                         curr_execution = new_execution;
                         continue;
                     }
-                    "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
+                    "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }

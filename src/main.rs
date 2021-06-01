@@ -211,5 +211,9 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     // TODO: Handle for empty main
     loader.let_pass(libc::SYS_poll)?;
 
+    // TODO: handle for hmmer workflow
+    loader.let_pass(libc::SYS_madvise)?;
+    loader.let_pass(libc::SYS_times)?;
+
     loader.load_to_kernel()
 }
