@@ -29,10 +29,16 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
 
+    // We need to pass an execution struct to trace_process(),
+    // because the function needs to be able to pass an execution
+    // struct to a child process. But, we don't actually ADD the
+    // execution struct to global_executions here, this happens
+    // in the prehook of an execve call, after we get the next event
+    // and verify it is not a posthook (would be a failed execve) but
+    // an exec event, meaning the execve succeeded, so it should be
+    // added to global_executions.
     let first_execution = Execution::new(ExecInfo::new());
-
     let global_executions = GlobalExecutions::new();
-    // global_executions.add_new_execution(first_execution.clone());
 
     let f = trace_process(
         async_runtime.clone(),
@@ -64,7 +70,7 @@ pub async fn trace_process(
     mut curr_execution: Execution,
     global_executions: GlobalExecutions,
 ) -> Result<()> {
-    let s = span!(Level::INFO, stringify!(trace_proces), pid=?tracer.curr_proc);
+    let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
 
@@ -145,13 +151,28 @@ pub async fn trace_process(
                         let mut cwd_pathbuf = PathBuf::new();
                         cwd_pathbuf.push(cwd);
 
-                        let new_execution = Execution::new(ExecInfo::new());
-                        new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+                        let next_event = tracer.get_next_event(None).await.with_context(|| {
+                            context!("Unable to get next event after execve prehook.")
+                        })?;
 
-                        global_executions.add_new_execution(new_execution.clone());
-                        // This is a NEW exec, we must update the current
-                        // execution to this new one.
-                        curr_execution = new_execution;
+                        match next_event {
+                            TraceEvent::Exec(_) => {
+                                // The execve succeeded, add to global_executions.
+                                let new_execution = Execution::new(ExecInfo::new());
+                                new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+                                global_executions.add_new_execution(new_execution.clone());
+
+                                // This is a NEW exec, we must update the current
+                                // execution to this new one.
+                                curr_execution = new_execution;
+                            }
+                            _ => {
+                                // The execve failed, do not add to global_executions.
+                                s.in_scope(|| {
+                                    debug!("Execve failed.");
+                                })
+                            }
+                        }
                         continue;
                     }
                     "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
@@ -229,7 +250,7 @@ pub async fn trace_process(
     match tracer.get_next_event(None).await? {
         TraceEvent::ProcessExited(pid, exit_code) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
-            
+
             // Add exit code to the exec struct.
             curr_execution.add_exit_code(exit_code);
         }
