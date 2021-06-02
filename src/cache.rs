@@ -81,7 +81,7 @@ impl ExecInfo {
         self.env_vars = env_vars;
         self.executable = executable;
     }
-    
+
     // Add new file contents read (read, pread64).
     fn add_new_contents_read(&mut self, file: FileAccess) {
         self.files_read.push(file);
@@ -130,9 +130,7 @@ impl Execution {
     }
 
     pub fn add_exit_code(&self, code: i32) {
-        self.execution
-            .borrow_mut()
-            .add_exit_code(code);
+        self.execution.borrow_mut().add_exit_code(code);
     }
 
     pub fn add_identifiers(
