@@ -154,10 +154,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
     loader.let_pass(libc::SYS_mmap)?;
-    // loader.let_pass(libc::SYS_read)?; // empty main
-    // loader.let_pass(libc::SYS_write)?;
     loader.let_pass(libc::SYS_mprotect)?;
-    // loader.let_pass(libc::SYS_pread64)?; // empty main
     loader.let_pass(libc::SYS_munmap)?;
     loader.let_pass(libc::SYS_set_tid_address)?;
     loader.let_pass(libc::SYS_set_robust_list)?;
@@ -203,7 +200,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_readlink)?;
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;
-    // loader.let_pass(libc::SYS_access)?; // empty main
     loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
@@ -211,9 +207,11 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     // TODO: Handle for empty main
     loader.let_pass(libc::SYS_poll)?;
 
-    // TODO: handle for hmmer workflow
-    loader.let_pass(libc::SYS_madvise)?;
-    loader.let_pass(libc::SYS_times)?;
+    // Clustal
+    loader.let_pass(libc::SYS_writev)?;
+
+    // Raxml
+    loader.let_pass(libc::SYS_clock_gettime)?;
 
     loader.load_to_kernel()
 }

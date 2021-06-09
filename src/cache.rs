@@ -1,11 +1,19 @@
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
 
+#[derive(Debug)]
+pub enum OpenMode {
+    ReadOnly,
+    ReadWrite,
+    WriteOnly,
+}
 // File struct.
 #[derive(Debug)]
 pub struct FileAccess {
     fd: Option<i32>,
     inode: u64,
+    // For open/openat/creat we report the open mode as well.
+    open_mode: Option<OpenMode>,
     path: Option<PathBuf>, // TODO:  handle absolute + relative, AT_FDCWD
     syscall_name: String,
 }
@@ -14,12 +22,14 @@ impl FileAccess {
     pub fn new(
         fd: Option<i32>,
         inode: u64,
+        open_mode: Option<OpenMode>,
         path: Option<PathBuf>,
         syscall_name: String,
     ) -> FileAccess {
         FileAccess {
             fd,
             inode,
+            open_mode,
             path,
             syscall_name,
         }

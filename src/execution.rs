@@ -7,7 +7,7 @@ use nix::unistd::Pid;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{ExecInfo, Execution, FileAccess, GlobalExecutions};
+use crate::cache::{ExecInfo, Execution, FileAccess, GlobalExecutions, OpenMode};
 use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -286,7 +286,7 @@ fn handle_access(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptrace
         let mut pathbuf = PathBuf::new();
         pathbuf.push(path);
         // Need to make a FileAccess.
-        let reg_file = FileAccess::new(None, inode, Some(pathbuf), String::from("access"));
+        let reg_file = FileAccess::new(None, inode, None, Some(pathbuf), String::from("access"));
         execution.add_new_metadata_access(reg_file);
     }
     Ok(())
@@ -307,16 +307,23 @@ fn handle_open(
 
     let syscall_succeeded = fd > 0;
     if syscall_succeeded {
-        let is_create = if syscall_name == "creat" {
+        let (is_create, open_mode) = if syscall_name == "creat" {
             // creat() uses write only as the mode
-            true
+            (true, OpenMode::WriteOnly)
         } else {
             let flags = if syscall_name == "open" {
                 regs.arg2::<i32>()
             } else {
                 regs.arg3::<i32>()
             };
-            flags & O_CREAT != 0
+            let is_create = flags & O_CREAT != 0;
+            let mode = match flags & O_ACCMODE {
+                O_RDONLY => OpenMode::ReadOnly,
+                O_RDWR => OpenMode::ReadWrite,
+                O_WRONLY => OpenMode::WriteOnly,
+                _ => panic!("Open flags do not match any mode!"),
+            };
+            (is_create, mode)
         };
 
         // Successful, get full path
@@ -329,7 +336,13 @@ fn handle_open(
 
         let mut pathbuf = PathBuf::new();
         pathbuf.push(full_path);
-        let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name));
+        let file = FileAccess::new(
+            Some(fd),
+            inode,
+            Some(open_mode),
+            Some(pathbuf),
+            String::from(syscall_name),
+        );
 
         if is_create {
             execution.add_new_file_create(file);
@@ -368,7 +381,13 @@ fn handle_read(
 
         let mut pathbuf = PathBuf::new();
         pathbuf.push(full_path);
-        let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from(syscall_name));
+        let file = FileAccess::new(
+            Some(fd),
+            inode,
+            None,
+            Some(pathbuf),
+            String::from(syscall_name),
+        );
 
         execution.add_new_contents_read(file);
     }
@@ -417,7 +436,7 @@ fn handle_stat(
             .with_context(|| context!("Can't read stat struct"))?;
         let inode = stat_struct.st_ino;
 
-        let file = FileAccess::new(fd, inode, path, String::from(syscall_name));
+        let file = FileAccess::new(fd, inode, None, path, String::from(syscall_name));
         execution.add_new_metadata_access(file);
     }
 
@@ -474,7 +493,8 @@ fn handle_write(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer
             _ => {
                 let mut pathbuf = PathBuf::new();
                 pathbuf.push(full_path);
-                let file = FileAccess::new(Some(fd), inode, Some(pathbuf), String::from("write"));
+                let file =
+                    FileAccess::new(Some(fd), inode, None, Some(pathbuf), String::from("write"));
                 execution.add_new_contents_write(file);
             }
         }
