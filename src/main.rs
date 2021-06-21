@@ -150,6 +150,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
     loader.intercept(libc::SYS_write)?;
+    loader.intercept(libc::SYS_writev)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
@@ -206,9 +207,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
 
     // TODO: Handle for empty main
     loader.let_pass(libc::SYS_poll)?;
-
-    // Clustal
-    loader.let_pass(libc::SYS_writev)?;
 
     // Raxml
     loader.let_pass(libc::SYS_clock_gettime)?;
