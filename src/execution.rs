@@ -7,7 +7,9 @@ use nix::unistd::Pid;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{ExecInfo, Execution, FileAccess, GlobalExecutions, OpenMode};
+use crate::cache::{
+    ExecAccesses, ExecMetadata, Execution, FileAccess, GlobalExecutions, OpenMode, RcExecution,
+};
 use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -37,7 +39,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // and verify it is not a posthook (would be a failed execve) but
     // an exec event, meaning the execve succeeded, so it should be
     // added to global_executions.
-    let first_execution = Execution::new(ExecInfo::new());
+    let first_execution = RcExecution::new(Execution::Pending);
     let global_executions = GlobalExecutions::new();
 
     let f = trace_process(
@@ -53,6 +55,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     for exec in global_executions.executions.borrow().iter() {
         println!("Execution: {:?}", exec);
     }
+    let length = global_executions.get_execution_count();
+    println!("Number of executions: {}", length);
     Ok(())
 }
 
@@ -67,7 +71,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
-    mut curr_execution: Execution,
+    mut curr_execution: RcExecution,
     global_executions: GlobalExecutions,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
@@ -148,31 +152,41 @@ pub async fn trace_process(
                         let cwd_path = readlink(cwd_link.as_str())
                             .with_context(|| context!("Failed to readlink (cwd)"))?;
                         let cwd = cwd_path.to_str().unwrap().to_owned();
-                        let mut cwd_pathbuf = PathBuf::new();
-                        cwd_pathbuf.push(cwd);
+                        let cwd_pathbuf = PathBuf::from(cwd);
 
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
                             context!("Unable to get next event after execve prehook.")
                         })?;
 
-                        match next_event {
+                        let new_execution = match next_event {
                             TraceEvent::Exec(_) => {
-                                // The execve succeeded, add to global_executions.
-                                let new_execution = Execution::new(ExecInfo::new());
-                                new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
-                                global_executions.add_new_execution(new_execution.clone());
-
-                                // This is a NEW exec, we must update the current
-                                // execution to this new one.
-                                curr_execution = new_execution;
+                                // The execve succeeded!
+                                // Create a Successful Execution and add to global executions.
+                                s.in_scope(|| {
+                                    debug!("Execve succeeded!");
+                                });
+                                RcExecution::new(Execution::Successful(
+                                    ExecMetadata::new(),
+                                    ExecAccesses::new(),
+                                ))
                             }
                             _ => {
-                                // The execve failed, do not add to global_executions.
+                                // The execve failed!
+                                // Create a Failed Execution and add to global executions.
                                 s.in_scope(|| {
                                     debug!("Execve failed.");
-                                })
+                                });
+                                RcExecution::new(Execution::Failed(ExecMetadata::new()))
                             }
-                        }
+                        };
+
+                        // This is a NEW exec, we must update the current
+                        // execution to this new one.
+                        // I *THINK* I want to update this whether it succeeds or fails.
+                        // Because both of those technically are executions.
+                        new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+                        global_executions.add_new_execution(new_execution.clone());
+                        curr_execution = new_execution;
                         continue;
                     }
                     "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
@@ -200,11 +214,11 @@ pub async fn trace_process(
                     "creat" | "openat" | "open" => {
                         handle_open(&curr_execution, &regs, name, &tracer)?
                     }
-                    "fstat" | "lstat" | "newfstatat" | "stat" => {
+                    "fstat" | "newfstatat" | "stat" => {
                         handle_stat(&curr_execution, &regs, name, &tracer)?
                     }
                     "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
-                    "write" => handle_write(&curr_execution, &regs, &tracer)?,
+                    "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
                     _ => {}
                 }
             }
@@ -263,100 +277,142 @@ pub async fn trace_process(
     Ok(())
 }
 
-fn handle_access(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
+fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
         debug!("File metadata event: (access)");
     });
-
     let ret_val = regs.retval::<i32>();
-    let syscall_succeeded = ret_val == 0;
-
     // retval = 0 is success for this syscall.
-    if syscall_succeeded {
-        let bytes = regs.arg1::<*const c_char>();
-        let path = tracer
-            .read_c_string(bytes)
-            .with_context(|| context!("Cannot read `access` path."))?;
+    let syscall_succeeded = ret_val == 0;
+    let bytes = regs.arg1::<*const c_char>();
+    let register_path = tracer
+        .read_c_string(bytes)
+        .with_context(|| context!("Cannot read `access` path."))?;
+    let syscall_name = String::from("access");
 
-        let stat_struct =
-            stat(path.as_str()).with_context(|| context!("Cannot read tracee's stat struct."))?;
+    let file_access = if syscall_succeeded {
+        // If the call is successful we can
+        // get the inode.
+        let stat_struct = stat(register_path.as_str())
+            .with_context(|| context!("Cannot read tracee's stat struct."))?;
         let inode = stat_struct.st_ino;
+        let path = PathBuf::from(register_path);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(path);
-        // Need to make a FileAccess.
-        let reg_file = FileAccess::new(None, inode, None, Some(pathbuf), String::from("access"));
-        execution.add_new_metadata_access(reg_file);
-    }
+        FileAccess::SuccessfulMetadataAccess {
+            fd: None,
+            inode,
+            path: Some(path),
+            syscall_name,
+        }
+    } else {
+        let path = PathBuf::from(register_path);
+        let path = Some(path);
+        FileAccess::FailedMetadataAccess {
+            fd: None,
+            path,
+            syscall_name,
+        }
+    };
+
+    execution.add_new_access(file_access);
     Ok(())
 }
 
 fn handle_open(
-    execution: &Execution,
+    execution: &RcExecution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
-    let fd = regs.retval::<i32>();
     let pid = tracer.curr_proc;
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
         debug!("File open event: ({})", syscall_name);
     });
 
-    let syscall_succeeded = fd > 0;
-    if syscall_succeeded {
-        let (is_create, open_mode) = if syscall_name == "creat" {
-            // creat() uses write only as the mode
-            (true, OpenMode::WriteOnly)
+    let ret_val = regs.retval::<i32>();
+    let syscall_succeeded = ret_val > 0;
+
+    let (is_create, open_mode) = if syscall_name == "creat" {
+        // creat() uses write only as the mode
+        (true, OpenMode::WriteOnly)
+    } else {
+        let flags = if syscall_name == "open" {
+            regs.arg2::<i32>()
         } else {
-            let flags = if syscall_name == "open" {
-                regs.arg2::<i32>()
-            } else {
-                regs.arg3::<i32>()
-            };
-            let is_create = flags & O_CREAT != 0;
-            let mode = match flags & O_ACCMODE {
-                O_RDONLY => OpenMode::ReadOnly,
-                O_RDWR => OpenMode::ReadWrite,
-                O_WRONLY => OpenMode::WriteOnly,
-                _ => panic!("Open flags do not match any mode!"),
-            };
-            (is_create, mode)
+            regs.arg3::<i32>()
         };
+        let is_create = flags & O_CREAT != 0;
+        let mode = match flags & O_ACCMODE {
+            O_RDONLY => OpenMode::ReadOnly,
+            O_RDWR => OpenMode::ReadWrite,
+            O_WRONLY => OpenMode::WriteOnly,
+            _ => panic!("Open flags do not match any mode!"),
+        };
+        (is_create, mode)
+    };
 
+    let file_access = if syscall_succeeded {
         // Successful, get full path
-        let full_path = path_from_fd(pid, fd).with_context(|| context!("Failed to readlink"))?;
+        // ret_val is the file descriptor if successful
+        let syscall_name = String::from(syscall_name);
+        let full_path =
+            path_from_fd(pid, ret_val).with_context(|| context!("Failed to readlink"))?;
         let full_path = full_path.to_str().unwrap().to_owned();
-
         let stat_struct = stat(full_path.as_str())
             .with_context(|| context!("Cannot read tracee's stat struct."))?;
         let inode = stat_struct.st_ino;
-
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(full_path);
-        let file = FileAccess::new(
-            Some(fd),
-            inode,
-            Some(open_mode),
-            Some(pathbuf),
-            String::from(syscall_name),
-        );
+        let path = PathBuf::from(full_path);
 
         if is_create {
-            execution.add_new_file_create(file);
+            FileAccess::SuccessfulFileCreate {
+                fd: ret_val,
+                inode,
+                path,
+                syscall_name,
+            }
         } else {
-            execution.add_new_metadata_access(file);
+            FileAccess::SuccessfulFileOpen {
+                fd: ret_val,
+                inode,
+                open_mode,
+                path,
+                syscall_name,
+            }
+        }
+    } else {
+        // Failed, no fd, get whatever path is available from the parameters of the syscall.
+        let bytes = match syscall_name {
+            "creat" | "open" => regs.arg1::<*const c_char>(),
+            "openat" => regs.arg2::<*const c_char>(),
+
+            _ => panic!("Not handling an appropriate system call from handle_open!"),
         };
-    }
+        let syscall_name = String::from(syscall_name);
+
+        let path = tracer
+            .read_c_string(bytes)
+            .with_context(|| context!("Cannot read `access` path."))?;
+        let path = PathBuf::from(path);
+        if is_create {
+            FileAccess::FailedFileCreate { path, syscall_name }
+        } else {
+            FileAccess::FailedFileOpen {
+                open_mode,
+                path,
+                syscall_name,
+            }
+        }
+    };
+    execution.add_new_access(file_access);
     Ok(())
 }
 
 /// Handle read and pread64.
 /// We consider a 'read' system call to be a contents access.
 fn handle_read(
-    execution: &Execution,
+    execution: &RcExecution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -364,40 +420,40 @@ fn handle_read(
     let _e = span!(Level::INFO, "handle_read", pid=?tracer.curr_proc).entered();
     debug!("File read event via: {}", syscall_name);
 
-    let fd: i32 = regs.arg1();
     // retval = 0 is end of file but success.
     // retval > 0 is number of bytes read.
     // retval < ERROR.
+    let fd: i32 = regs.arg1();
     let syscall_succeeded = regs.retval::<i32>() >= 0;
+    let syscall_name = String::from(syscall_name);
 
-    // TODO: Also track failed accesses.
-    if syscall_succeeded {
+    let file_access = if syscall_succeeded {
         // Get the path from the fd.
         let full_path = path_from_fd(tracer.curr_proc, fd)?;
         let full_path = full_path.to_str().unwrap().to_owned();
 
         let stat_struct = stat(full_path.as_str())?;
         let inode = stat_struct.st_ino;
+        let path = PathBuf::from(full_path);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(full_path);
-        let file = FileAccess::new(
-            Some(fd),
+        FileAccess::SuccessfulFileRead {
+            fd,
             inode,
-            None,
-            Some(pathbuf),
-            String::from(syscall_name),
-        );
+            path,
+            syscall_name,
+        }
+    } else {
+        FileAccess::FailedFileRead { fd, syscall_name }
+    };
 
-        execution.add_new_contents_read(file);
-    }
+    execution.add_new_access(file_access);
     Ok(())
 }
 
-// First, we will just handle SUCCESS and FAIL of STAT calls
-// SUCCESS: RET VAL = 0
+// Currently: stat, fstat, newfstat64
+// Metadata access
 fn handle_stat(
-    execution: &Execution,
+    execution: &RcExecution,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
@@ -406,48 +462,60 @@ fn handle_stat(
     sys_span.in_scope(|| {
         debug!("File stat event: ({})", syscall_name);
     });
+    // Return value == 0 means success
     let ret_val: i32 = regs.retval();
     let syscall_succeeded = ret_val == 0;
 
-    // Return value == 0 means success
-    if syscall_succeeded {
-        let (fd, path) = if syscall_name == "fstat" {
-            let fd: i32 = regs.arg1();
-            (Some(fd), None)
-        } else {
-            // lstat, newstatat, stat
-            let arg: *const c_char = match syscall_name {
-                "lstat" | "stat" => regs.arg1(),
-                // newstatat
-                "newfstatat" => regs.arg2(),
-                other => bail!(context!("Unhandled syscall: {}", other)),
-            };
-
-            let path = tracer
-                .read_c_string(arg)
-                .with_context(|| context!("Can't get path from path arg."))?;
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push(path);
-            (None, Some(pathbuf))
+    let (fd, path) = if syscall_name == "fstat" {
+        (Some(regs.arg1::<i32>()), None)
+    } else {
+        // newstatat, stat
+        // TODO: handle lstat? Or don't? I don't know? What **do** I know?
+        // TODO: handle DIRFD in newfstatat
+        let arg: *const c_char = match syscall_name {
+            "stat" => regs.arg1(),
+            // newstatat
+            "newfstatat" => regs.arg2(),
+            other => bail!(context!("Unhandled syscall: {}", other)),
         };
 
+        let path = tracer
+            .read_c_string(arg)
+            .with_context(|| context!("Can't get path from path arg."))?;
+        let pathbuf = PathBuf::from(path);
+        (None, Some(pathbuf))
+    };
+
+    let file_access = if syscall_succeeded {
         let stat_struct = tracer
             .read_value::<libc::stat>(regs.arg2())
             .with_context(|| context!("Can't read stat struct"))?;
         let inode = stat_struct.st_ino;
-
-        let file = FileAccess::new(fd, inode, None, path, String::from(syscall_name));
-        execution.add_new_metadata_access(file);
-    }
+        // TODO: maybe get the nice full path if it's successful, using a stat call?
+        // This still gives you info, just not as much.
+        FileAccess::SuccessfulMetadataAccess {
+            fd,
+            inode,
+            path,
+            syscall_name: String::from(syscall_name),
+        }
+    } else {
+        FileAccess::FailedMetadataAccess {
+            fd,
+            path,
+            syscall_name: String::from(syscall_name),
+        }
+    };
+    execution.add_new_access(file_access);
 
     Ok(())
 }
-fn handle_write(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
+
+fn handle_write(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
     // Okay, so here we have to deal with:
     // stderr (fd 2)
     // stdout (fd 1)
     // fd > 2 regular file write (for now just files)
-    //
     // Don't care about stdin (fd 0)
 
     let sys_span = span!(Level::INFO, "handle_write", pid=?tracer.curr_proc);
@@ -460,45 +528,50 @@ fn handle_write(execution: &Execution, regs: &Regs<Unmodified>, tracer: &Ptracer
     // retval < 0 is ERROR
     let ret_val: i32 = regs.retval();
     let syscall_succeeded = ret_val >= 0;
-    if syscall_succeeded {
-        // Contents.
-        // Fd is an arg.
-        let fd = regs.arg1::<i32>();
+    // Contents.
+    // Fd is an arg.
+    let fd = regs.arg1::<i32>();
+    let syscall_name = String::from("write");
 
-        // Get the path from the fd.
-        let full_path = path_from_fd(tracer.curr_proc, fd)
-            .with_context(|| context!("Can't get path from fd."))?;
-        let full_path = full_path.to_str().unwrap().to_owned();
-
-        // Have to get the inode.
-        let stat_struct = stat(full_path.as_str())
-            .with_context(|| context!("Cannot stat file descriptor's path."))?;
-        let inode = stat_struct.st_ino;
-
+    let file_access = if syscall_succeeded {
         match fd {
-            // Don't care about stdin.
-            0 => (),
+            // TODO: stdin?
             1 => {
                 let stdout = tracer
                     .read_c_string(regs.arg2())
                     .with_context(|| context!("Can't read stdout to string."))?;
-                execution.add_stdout(stdout);
+                FileAccess::Stdout(stdout)
             }
             2 => {
                 let stderr = tracer
                     .read_c_string(regs.arg2())
                     .with_context(|| context!("Can't read stderr to string."))?;
-                execution.add_stderr(stderr);
+                FileAccess::Stderr(stderr)
             }
             _ => {
-                let mut pathbuf = PathBuf::new();
-                pathbuf.push(full_path);
-                let file =
-                    FileAccess::new(Some(fd), inode, None, Some(pathbuf), String::from("write"));
-                execution.add_new_contents_write(file);
+                // Get the path from the fd because the call was successful.
+                let path = path_from_fd(tracer.curr_proc, fd)
+                    .with_context(|| context!("Can't get path from fd."))?;
+                let path = path.to_str().unwrap().to_owned();
+
+                // Have to get the inode.
+                let stat_struct = stat(path.as_str())
+                    .with_context(|| context!("Cannot stat file descriptor's path."))?;
+                let inode = stat_struct.st_ino;
+                let path = PathBuf::from(path);
+                FileAccess::SuccessfulFileWrite {
+                    fd,
+                    inode,
+                    path,
+                    syscall_name,
+                }
             }
         }
-    }
+    } else {
+        FileAccess::FailedFileWrite { fd, syscall_name }
+    };
+    execution.add_new_access(file_access);
+
     Ok(())
 }
 
