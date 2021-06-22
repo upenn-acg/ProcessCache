@@ -168,6 +168,7 @@ pub async fn trace_process(
                                 RcExecution::new(Execution::Successful(
                                     ExecMetadata::new(),
                                     ExecAccesses::new(),
+                                    tracer.curr_proc,
                                 ))
                             }
                             _ => {
@@ -229,6 +230,7 @@ pub async fn trace_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
+                curr_execution.add_child_process(child);
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
