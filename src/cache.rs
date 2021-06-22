@@ -1,3 +1,4 @@
+use nix::unistd::Pid;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
 
@@ -125,6 +126,7 @@ impl ExecAccesses {
 #[derive(Debug)]
 pub struct ExecMetadata {
     args: Vec<String>,
+    child_processes: Vec<Pid>,
     cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
@@ -140,11 +142,16 @@ impl ExecMetadata {
     pub fn new() -> ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
+            child_processes: Vec::new(),
             cwd: PathBuf::new(),
             env_vars: Vec::new(),
             executable: String::new(),
             exit_code: None,
         }
+    }
+
+    fn add_child_process(&mut self, child_pid: Pid) {
+        self.child_processes.push(child_pid);
     }
 
     fn add_exit_code(&mut self, code: i32) {
@@ -171,16 +178,23 @@ pub enum Execution {
     Pending, // At time of creation, we don't know what the heck it is!
     // A successful execution has both metadata and
     // potentially file system accesses.
-    Successful(ExecMetadata, ExecAccesses),
+    Successful(ExecMetadata, ExecAccesses, Pid),
 }
 
 impl Execution {
+    pub fn add_child_process(&mut self, child_pid: Pid) {
+        match self {
+            Execution::Successful(metadata, _, _) => metadata.add_child_process(child_pid),
+            _ => panic!("Trying to add child process to failed or pending execution!"),
+        }
+    }
+
     pub fn add_exit_code(&mut self, exit_code: i32) {
         match self {
-            Execution::Successful(metadata, _) => metadata.add_exit_code(exit_code),
+            Execution::Successful(metadata, _, _) => metadata.add_exit_code(exit_code),
             Execution::Failed(metadata) => metadata.add_exit_code(exit_code),
             Execution::Pending => {
-                panic!("Does it make sense to add an exit code to a pending execution...?")
+                panic!("Trying to add exit code to pending execution!")
             }
         }
     }
@@ -193,7 +207,7 @@ impl Execution {
         executable: String,
     ) {
         match self {
-            Execution::Failed(metadata) | Execution::Successful(metadata, _) => {
+            Execution::Failed(metadata) | Execution::Successful(metadata, _, _) => {
                 metadata.add_identifiers(args, cwd, env_vars, executable)
             }
             Execution::Pending => panic!("Should not be adding identifiers to pending exec!"),
@@ -202,7 +216,7 @@ impl Execution {
 
     pub fn add_new_access(&mut self, file_access: FileAccess) {
         match self {
-            Execution::Successful(_, accesses) => accesses.add_new_access(file_access),
+            Execution::Successful(_, accesses, _) => accesses.add_new_access(file_access),
             _ => panic!("Should not be adding an access to a failed exec!"),
         }
     }
@@ -220,6 +234,10 @@ impl RcExecution {
         RcExecution {
             execution: Rc::new(RefCell::new(execution)),
         }
+    }
+
+    pub fn add_child_process(&self, child_pid: Pid) {
+        self.execution.borrow_mut().add_child_process(child_pid);
     }
 
     pub fn add_exit_code(&self, code: i32) {
