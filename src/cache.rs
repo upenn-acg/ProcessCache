@@ -174,7 +174,7 @@ impl ExecMetadata {
 
 #[derive(Debug)]
 pub enum Execution {
-    Failed(ExecMetadata),
+    Failed(ExecMetadata, Pid),
     Pending, // At time of creation, we don't know what the heck it is!
     // A successful execution has both metadata and
     // potentially file system accesses.
@@ -189,10 +189,15 @@ impl Execution {
         }
     }
 
-    pub fn add_exit_code(&mut self, exit_code: i32) {
+    pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
-            Execution::Successful(metadata, _, _) => metadata.add_exit_code(exit_code),
-            Execution::Failed(metadata) => metadata.add_exit_code(exit_code),
+            Execution::Failed(meta, exec_pid) | Execution::Successful(meta, _, exec_pid) => {
+                // Only want the exit code if this is the process
+                // that actually exec'd the process.
+                if *exec_pid == pid {
+                    meta.add_exit_code(exit_code);
+                }
+            }
             Execution::Pending => {
                 panic!("Trying to add exit code to pending execution!")
             }
@@ -207,7 +212,7 @@ impl Execution {
         executable: String,
     ) {
         match self {
-            Execution::Failed(metadata) | Execution::Successful(metadata, _, _) => {
+            Execution::Failed(metadata, _) | Execution::Successful(metadata, _, _) => {
                 metadata.add_identifiers(args, cwd, env_vars, executable)
             }
             Execution::Pending => panic!("Should not be adding identifiers to pending exec!"),
@@ -240,8 +245,8 @@ impl RcExecution {
         self.execution.borrow_mut().add_child_process(child_pid);
     }
 
-    pub fn add_exit_code(&self, code: i32) {
-        self.execution.borrow_mut().add_exit_code(code);
+    pub fn add_exit_code(&self, code: i32, exec_pid: Pid) {
+        self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
 
     pub fn add_identifiers(
