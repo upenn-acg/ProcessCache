@@ -177,7 +177,10 @@ pub async fn trace_process(
                                 s.in_scope(|| {
                                     debug!("Execve failed.");
                                 });
-                                RcExecution::new(Execution::Failed(ExecMetadata::new()))
+                                RcExecution::new(Execution::Failed(
+                                    ExecMetadata::new(),
+                                    tracer.curr_proc,
+                                ))
                             }
                         };
 
@@ -267,8 +270,9 @@ pub async fn trace_process(
         TraceEvent::ProcessExited(pid, exit_code) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
 
-            // Add exit code to the exec struct.
-            curr_execution.add_exit_code(exit_code);
+            // Add exit code to the exec struct, if this is the
+            // pid that exec'd the exec. execececececec.
+            curr_execution.add_exit_code(exit_code, pid);
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
