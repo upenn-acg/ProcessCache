@@ -78,6 +78,8 @@ pub async fn trace_process(
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
 
+    let mut change_to_exit = false;
+
     loop {
         let event = tracer
             .get_next_event(signal)
@@ -162,6 +164,7 @@ pub async fn trace_process(
                             TraceEvent::Exec(_) => {
                                 // The execve succeeded!
                                 // Create a Successful Execution and add to global executions.
+                                change_to_exit = true;
                                 s.in_scope(|| {
                                     debug!("Execve succeeded!");
                                 });
@@ -197,28 +200,30 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
-                    // I want to try out just changing a system call successfully.
-                    // Stat is the guinea pig, and we will try to change it to
-                    // getpid.
-                    "stat" => {
-                        debug!("Trying to change stat call into exit call!");
-                        let regs = tracer
-                            .get_registers()
-                            .with_context(|| context!("Failed to get regs in stat event"))?;
-                        let mut regs = regs.make_modified();
-                        // let getpid_syscall_num = libc::SYS_getpid as u64;
-                        let exit_syscall_num = libc::SYS_exit as u64;
+                    _ => {
+                        // TESTING
+                        // I want to try to skip this execve!
+                        // Have to change:
+                        // rax, orig_rax, arg1
+                        if change_to_exit {
+                            debug!("Trying to change execve call into exit call!");
+                            let regs = tracer
+                                .get_registers()
+                                .with_context(|| context!("Failed to get regs in stat event"))?;
+                            let mut regs = regs.make_modified();
+                            let exit_syscall_num = libc::SYS_exit as u64;
 
-                        // Change the orig rax val don't ask me why
-                        regs.write_syscall_number(exit_syscall_num);
+                            // ?? Change the arg1 to correct exit code?
+                            regs.write_arg1(0);
+                            // Change the orig rax val don't ask me why
+                            regs.write_syscall_number(exit_syscall_num);
+                            // Change the rax val
+                            regs.write_rax(exit_syscall_num);
 
-                        // Change the rax val
-                        regs.write_rax(exit_syscall_num);
-                        tracer.set_regs(&mut regs)?;
-
-                        continue;
+                            tracer.set_regs(&mut regs)?;
+                            continue;
+                        }
                     }
-                    _ => {}
                 }
 
                 trace!("Waiting for posthook event...");

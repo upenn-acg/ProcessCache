@@ -225,6 +225,10 @@ impl Execution {
             _ => panic!("Should not be adding an access to a failed exec!"),
         }
     }
+
+    pub fn successful_exec_call(&self) -> bool {
+        matches!(self, Execution::Successful(_, _, _))
+    }
 }
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
@@ -263,6 +267,10 @@ impl RcExecution {
 
     pub fn add_new_access(&self, file_access: FileAccess) {
         self.execution.borrow_mut().add_new_access(file_access);
+    }
+
+    pub fn successful_exec_call(&self) -> bool {
+        self.execution.borrow().successful_exec_call()
     }
 }
 #[derive(Clone)]
