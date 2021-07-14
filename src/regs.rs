@@ -86,9 +86,8 @@ impl Regs<Unmodified> {
         }
     }
 
-    /// Set registers as writeable. Changes will not be written to tracee until
-    /// flush() is called.
-    #[allow(dead_code)]
+    /// Set registers as writeable.
+    // #[allow(dead_code)]
     pub fn make_modified(self) -> Regs<Modified> {
         Regs {
             regs: self.regs,

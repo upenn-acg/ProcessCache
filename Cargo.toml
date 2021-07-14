@@ -13,3 +13,7 @@ structopt = "0.2"
 byteorder = "1"
 seccomp-sys = "0.1.2"
 anyhow = "1.0"
+
+# [[bin]]
+# name = "command_ls"
+# path = "src/command_ls.rs"

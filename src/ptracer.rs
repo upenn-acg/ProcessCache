@@ -179,7 +179,7 @@ impl Ptracer {
     }
 
     #[allow(dead_code)]
-    fn set_regs(&self, regs: &mut Regs<Modified>) -> anyhow::Result<()> {
+    pub(crate) fn set_regs(&self, regs: &mut Regs<Modified>) -> anyhow::Result<()> {
         unsafe {
             #[allow(deprecated)]
             ptrace::ptrace(
