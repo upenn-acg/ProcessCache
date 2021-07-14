@@ -197,6 +197,27 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
+                    // I want to try out just changing a system call successfully.
+                    // Stat is the guinea pig, and we will try to change it to
+                    // getpid.
+                    "stat" => {
+                        debug!("Trying to change stat call into exit call!");
+                        let regs = tracer
+                            .get_registers()
+                            .with_context(|| context!("Failed to get regs in stat event"))?;
+                        let mut regs = regs.make_modified();
+                        // let getpid_syscall_num = libc::SYS_getpid as u64;
+                        let exit_syscall_num = libc::SYS_exit as u64;
+
+                        // Change the orig rax val don't ask me why
+                        regs.write_syscall_number(exit_syscall_num);
+
+                        // Change the rax val
+                        regs.write_rax(exit_syscall_num);
+                        tracer.set_regs(&mut regs)?;
+
+                        continue;
+                    }
                     _ => {}
                 }
 
@@ -223,6 +244,8 @@ pub async fn trace_process(
                     }
                     "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
                     "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
+
+                    "getpid" => debug!("Got getpid posthook."),
                     _ => {}
                 }
             }

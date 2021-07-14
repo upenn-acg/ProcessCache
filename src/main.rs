@@ -141,6 +141,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_exit_group)?;
     loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_fstat)?;
+    loader.intercept(libc::SYS_getpid)?;
     loader.intercept(libc::SYS_lstat)?;
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
@@ -170,7 +171,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_sigaltstack)?;
     loader.let_pass(libc::SYS_getgid)?;
     loader.let_pass(libc::SYS_getuid)?;
-    loader.let_pass(libc::SYS_getpid)?;
+    // loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getppid)?;
     loader.let_pass(libc::SYS_getegid)?;
