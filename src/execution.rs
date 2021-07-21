@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    ExecAccesses, ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile, OpenMode,
+    ExecAccesses, ExecMetadata, Execution, FileAccess, generate_hash, GlobalExecutions, IOFile, OpenMode,
     RcExecution,
 };
 use crate::context;
@@ -346,11 +346,12 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         //     .with_context(|| context!("Cannot read tracee's stat struct."))?;
         // let inode = stat_struct.st_ino;
         // let path = PathBuf::from(register_path);
-
+        let path = full_path.clone().into_os_string().into_string().unwrap();
+        let hash = generate_hash(path)?;
         IOFile::InputFile(FileAccess::Success {
             file_name,
             full_path,
-            hash: Vec::new(), // TODO: actually do the hash
+            hash, // TODO: actually do the hash
             syscall_name,
         })
     } else {
