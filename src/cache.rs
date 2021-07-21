@@ -1,6 +1,9 @@
 use nix::unistd::Pid;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::Read;
 
 #[derive(Debug)]
 pub enum OpenMode {
@@ -326,4 +329,45 @@ impl GlobalExecutions {
     pub fn get_execution_count(&self) -> i32 {
         self.executions.borrow().len() as i32
     }
+}
+
+// ------ Hashing stuff ------
+
+/// Print digest result as hex string and name pair
+fn print_result(sum: &[u8], name: &str) {
+    for byte in sum {
+        print!("{:02x}", byte);
+    }
+    println!("\t{}", name);
+}
+
+/// Compute digest value for given `Reader` and print it
+/// On any error simply return without doing anything
+fn process<D: Digest + Default, R: Read>(reader: &mut R, name: &str) -> anyhow::Result<Vec<u8>> {
+    const BUFFER_SIZE: usize = 1024;
+    let mut sh = D::default();
+    let mut buffer = [0u8; BUFFER_SIZE];
+    loop {
+        // let n = match reader.read(&mut buffer) {
+        //     Ok(n) => n,
+        //     Err(_) => return,
+        // };
+        let n = reader.read(&mut buffer)?;
+        sh.update(&buffer[..n]);
+        if n == 0 || n < BUFFER_SIZE {
+            break;
+        }
+    }
+
+    let final_array = &sh.finalize();
+    let final_vec_hash = final_array.to_vec();
+    Ok(final_vec_hash)
+    // let final = &sh.finalize();
+    // let whatever = final.as_slice();
+    // print_result(&sh.finalize(), name);
+}
+
+fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
+    let mut file = fs::File::open(&path)?;
+    process::<Sha256, _>(&mut  file, &path)
 }
