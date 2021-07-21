@@ -9,111 +9,136 @@ pub enum OpenMode {
     WriteOnly,
 }
 
+// Success and failure variants of
+// input and output files.
+// TODO: HASH SHOULD NOT TO BE AN OPTION
 #[derive(Debug)]
-// TODO: differentiate between ABSOLUTE PATH and REL PATH?
 pub enum FileAccess {
-    // No need for open mode, we know it is WriteOnly.
-    // Creat, open, openat (same for successful file create).
-    FailedFileCreate {
-        path: PathBuf,
+    Success {
+        file_name: PathBuf,
+        full_path: PathBuf,
+        hash: Vec<u8>,
         syscall_name: String,
     },
-    // Open, openat
-    FailedFileOpen {
-        open_mode: OpenMode,
-        path: PathBuf,
-        syscall_name: String,
-    },
-    // Read's parameter is an fd (same for successful file read).
-    // Read, pread64
-    FailedFileRead {
-        fd: i32,
-        syscall_name: String,
-    },
-    // Write's parameter is an fd (same for successful file write).
-    // Write / writev (TODO)
-    FailedFileWrite {
-        fd: i32,
-        syscall_name: String,
-    },
-    // Stat doesn't have an fd, fstat literally takes an fd
-    // Fstat doesn't have a path as a parameter, thus the option
-    // Access, stat, fstat, newfstatat64
-    FailedMetadataAccess {
-        fd: Option<i32>,
-        path: Option<PathBuf>,
-        syscall_name: String,
-    },
-    // Want to know what they wrote to stderr.
-    Stderr(String),
-    // Want to know what they wrote to stdout.
-    Stdout(String),
-    // Creat, open, openat.
-    SuccessfulFileCreate {
-        fd: i32,
-        inode: u64,
-        path: PathBuf,
-        syscall_name: String,
-    },
-    // Open, openat.
-    SuccessfulFileOpen {
-        fd: i32,
-        inode: u64,
-        open_mode: OpenMode,
-        path: PathBuf,
-        syscall_name: String,
-    },
-    // Read, pread64.
-    SuccessfulFileRead {
-        fd: i32,
-        inode: u64,
-        path: PathBuf,
-        syscall_name: String,
-    },
-    // Write, writev (TODO).
-    SuccessfulFileWrite {
-        fd: i32,
-        inode: u64,
-        path: PathBuf,
-        syscall_name: String,
-    },
-    // Access, stat, fstat, newfstatat64
-    SuccessfulMetadataAccess {
-        fd: Option<i32>,
-        inode: u64,
-        path: Option<PathBuf>,
+    Failure {
+        file_name: PathBuf,
+        full_path: PathBuf,
         syscall_name: String,
     },
 }
 
+#[derive(Debug)]
+pub enum IOFile {
+    InputFile(FileAccess),
+    OutputFile(FileAccess),
+}
+
+// #[derive(Debug)]
+// // TODO: differentiate between ABSOLUTE PATH and REL PATH?
+// pub enum FileAccess {
+//     // Open, openat
+//     FailedFileOpen {
+//         open_mode: OpenMode,
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+//     // Read's parameter is an fd (same for successful file read).
+//     // Read, pread64
+//     FailedFileRead {
+//         fd: i32,
+//         syscall_name: String,
+//     },
+//     // Stat doesn't have an fd, fstat literally takes an fd
+//     // Fstat doesn't have a path as a parameter, thus the option
+//     // Access, stat, fstat, newfstatat64
+//     FailedMetadataAccess {
+//         fd: Option<i32>,
+//         path: Option<PathBuf>,
+//         syscall_name: String,
+//     },
+//     // Open, openat.
+//     SuccessfulFileOpen {
+//         fd: i32,
+//         inode: u64,
+//         open_mode: OpenMode,
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+//     // Read, pread64.
+//     SuccessfulFileRead {
+//         fd: i32,
+//         inode: u64,
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+//     // Access, stat, fstat, newfstatat64
+//     SuccessfulMetadataAccess {
+//         fd: Option<i32>,
+//         inode: u64,
+//         path: Option<PathBuf>,
+//         syscall_name: String,
+//     },
+// }
+
+// #[derive(Debug)]
+// pub enum FileModification {
+//     // No need for open mode, we know it is WriteOnly.
+//     // Creat, open, openat (same for successful file create).
+//     FailedFileCreate {
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+//     // Write's parameter is an fd (same for successful file write).
+//     // Write / writev (TODO)
+//     FailedFileWrite {
+//         fd: i32,
+//         syscall_name: String,
+//     },
+//      // Want to know what they wrote to stderr.
+//     Stderr(String),
+//     // Want to know what they wrote to stdout.
+//     Stdout(String),
+//     // Creat, open, openat.
+//     SuccessfulFileCreate {
+//         fd: i32,
+//         inode: u64,
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+//     // Write, writev (TODO).
+//     SuccessfulFileWrite {
+//         fd: i32,
+//         inode: u64,
+//         path: PathBuf,
+//         syscall_name: String,
+//     },
+// }
+
 // Actual accesses to the file system performed by
 // a successful execution.
-// TODO: stderr and stdout are going to be much more
-// complicated than this. Pipes, dup, formatting,
-// the execution writing more than once, ahhh there's
-// a lotta stuff that can happen!
+// TODO: Handle stderr and stdout. I don't want to right
+// now it's hard and my simplest example does not
+// cover it.
 #[derive(Debug)]
 pub struct ExecAccesses {
-    files_accessed: Vec<FileAccess>,
-    stderr: String,
-    stdout: String,
+    input_files: Vec<IOFile>,
+    output_files: Vec<IOFile>,
 }
 
 impl ExecAccesses {
     pub fn new() -> ExecAccesses {
         ExecAccesses {
-            files_accessed: Vec::new(),
-            stderr: String::new(),
-            stdout: String::new(),
+            input_files: Vec::new(),
+            output_files: Vec::new(),
         }
     }
 
     // Add new access to the struct.
-    fn add_new_access(&mut self, file_access: FileAccess) {
+    // Stuff that doesn't acutally change the contents.
+    pub fn add_new_file_event(&mut self, file_access: IOFile) {
         match file_access {
-            FileAccess::Stderr(stderr) => self.stderr.push_str(&stderr),
-            FileAccess::Stdout(stdout) => self.stdout.push_str(&stdout),
-            _ => self.files_accessed.push(file_access),
+            IOFile::InputFile(_) => self.input_files.push(file_access),
+            IOFile::OutputFile(_) => self.output_files.push(file_access),
         }
     }
 }
@@ -170,6 +195,10 @@ impl ExecMetadata {
         self.env_vars = env_vars;
         self.executable = executable;
     }
+
+    fn get_cwd(&self) -> PathBuf {
+        self.cwd.clone()
+    }
 }
 
 #[derive(Debug)]
@@ -219,15 +248,20 @@ impl Execution {
         }
     }
 
-    pub fn add_new_access(&mut self, file_access: FileAccess) {
+    pub fn add_new_file_event(&mut self, file: IOFile) {
         match self {
-            Execution::Successful(_, accesses, _) => accesses.add_new_access(file_access),
-            _ => panic!("Should not be adding an access to a failed exec!"),
+            Execution::Successful(_, accesses, _) => accesses.add_new_file_event(file),
+            _ => panic!("Should not be adding file event to pending or failed execution!"),
         }
     }
 
-    pub fn successful_exec_call(&self) -> bool {
-        matches!(self, Execution::Successful(_, _, _))
+    pub fn get_cwd(&self) -> PathBuf {
+        match self {
+            Execution::Successful(metadata, _, _) | Execution::Failed(metadata, _) => {
+                metadata.get_cwd()
+            }
+            _ => panic!("Should not be getting cwd from pending execution!"),
+        }
     }
 }
 // Rc stands for reference counted.
@@ -265,12 +299,12 @@ impl RcExecution {
             .add_identifiers(args, cwd, env_vars, executable);
     }
 
-    pub fn add_new_access(&self, file_access: FileAccess) {
-        self.execution.borrow_mut().add_new_access(file_access);
+    pub fn add_new_file_event(&self, file: IOFile) {
+        self.execution.borrow_mut().add_new_file_event(file);
     }
 
-    pub fn successful_exec_call(&self) -> bool {
-        self.execution.borrow().successful_exec_call()
+    pub fn get_cwd(&self) -> PathBuf {
+        self.execution.borrow().get_cwd()
     }
 }
 #[derive(Clone)]
