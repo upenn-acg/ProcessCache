@@ -87,7 +87,7 @@ impl Regs<Unmodified> {
     }
 
     /// Set registers as writeable.
-    // #[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn make_modified(self) -> Regs<Modified> {
         Regs {
             regs: self.regs,
