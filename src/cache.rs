@@ -334,12 +334,12 @@ impl GlobalExecutions {
 // ------ Hashing stuff ------
 
 /// Print digest result as hex string and name pair
-fn print_result(sum: &[u8], name: &str) {
-    for byte in sum {
-        print!("{:02x}", byte);
-    }
-    println!("\t{}", name);
-}
+// fn print_result(sum: &[u8], name: &str) {
+//     for byte in sum {
+//         print!("{:02x}", byte);
+//     }
+//     println!("\t{}", name);
+// }
 
 /// Compute digest value for given `Reader` and print it
 /// On any error simply return without doing anything
@@ -367,7 +367,7 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R, name: &str) -> anyhow::
     // print_result(&sh.finalize(), name);
 }
 
-fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
+pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
     let mut file = fs::File::open(&path)?;
     process::<Sha256, _>(&mut  file, &path)
 }
