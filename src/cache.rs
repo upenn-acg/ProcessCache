@@ -1,9 +1,9 @@
 use nix::unistd::Pid;
-use std::rc::Rc;
-use std::{cell::RefCell, path::PathBuf};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
+use std::rc::Rc;
+use std::{cell::RefCell, path::PathBuf};
 
 #[derive(Debug)]
 pub enum OpenMode {
@@ -343,7 +343,7 @@ impl GlobalExecutions {
 
 /// Compute digest value for given `Reader` and print it
 /// On any error simply return without doing anything
-fn process<D: Digest + Default, R: Read>(reader: &mut R, name: &str) -> anyhow::Result<Vec<u8>> {
+fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u8>> {
     const BUFFER_SIZE: usize = 1024;
     let mut sh = D::default();
     let mut buffer = [0u8; BUFFER_SIZE];
@@ -362,12 +362,10 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R, name: &str) -> anyhow::
     let final_array = &sh.finalize();
     let final_vec_hash = final_array.to_vec();
     Ok(final_vec_hash)
-    // let final = &sh.finalize();
-    // let whatever = final.as_slice();
     // print_result(&sh.finalize(), name);
 }
 
 pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
     let mut file = fs::File::open(&path)?;
-    process::<Sha256, _>(&mut  file, &path)
+    process::<Sha256, _>(&mut file)
 }

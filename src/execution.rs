@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    ExecAccesses, ExecMetadata, Execution, FileAccess, generate_hash, GlobalExecutions, IOFile, OpenMode,
-    RcExecution,
+    generate_hash, ExecAccesses, ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile,
+    OpenMode, RcExecution,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -505,10 +505,13 @@ fn handle_read(
             .file_name()
             .with_context(|| context!("Can't get path from path arg."))?;
         let file_name = PathBuf::from(file_name);
+
+        let path = full_path.clone().into_os_string().into_string().unwrap();
+        let hash = generate_hash(path)?;
         IOFile::InputFile(FileAccess::Success {
             file_name,
             full_path,
-            hash: Vec::new(),
+            hash,
             syscall_name,
         })
     } else {
@@ -541,7 +544,20 @@ fn handle_stat(
     let syscall_succeeded = ret_val == 0;
 
     let (file_name, full_path) = if syscall_name == "fstat" {
-        (PathBuf::new(), PathBuf::new())
+        if syscall_succeeded {
+            let fd = regs.arg1::<i32>();
+            // TODO: Do something about stdin, stderr, stdout???
+            if fd < 3 {
+                return Ok(());
+            }
+            debug!("THE FD IS: {}", fd);
+            let path = path_from_fd(tracer.curr_proc, fd)?;
+            let full_path = PathBuf::from(path);
+            let file_name = full_path.file_name().unwrap();
+            (PathBuf::from(file_name), full_path)
+        } else {
+            (PathBuf::new(), PathBuf::new())
+        }
     } else {
         // newstatat, stat
         // TODO: handle lstat? Or don't? I don't know? What **do** I know?
@@ -581,21 +597,33 @@ fn handle_stat(
         //     .read_value::<libc::stat>(regs.arg2())
         //     .with_context(|| context!("Can't read stat struct"))?;
         // let inode = stat_struct.st_ino;
-        IOFile::InputFile(FileAccess::Success {
-            file_name,
-            full_path,
-            // TODO: fix this obviously
-            hash: Vec::new(),
-            syscall_name,
-        })
+        let path = full_path.clone().into_os_string().into_string().unwrap();
+        debug!("PATH: {}", path);
+
+        let path_buf = PathBuf::from(path.clone());
+        if path_buf.is_dir() {
+            None
+        } else {
+            let hash = generate_hash(path)?;
+            Some(IOFile::InputFile(FileAccess::Success {
+                file_name,
+                full_path,
+                // TODO: fix this obviously
+                hash,
+                syscall_name,
+            }))
+        }
     } else {
-        IOFile::InputFile(FileAccess::Failure {
+        Some(IOFile::InputFile(FileAccess::Failure {
             file_name,
             full_path,
             syscall_name,
-        })
+        }))
     };
-    execution.add_new_file_event(file_event);
+
+    if let Some(event) = file_event {
+        execution.add_new_file_event(event);
+    }
     Ok(())
 }
 
