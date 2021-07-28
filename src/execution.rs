@@ -250,8 +250,6 @@ pub async fn trace_process(
                     }
                     "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
                     "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
-
-                    "getpid" => debug!("Got getpid posthook."),
                     _ => {}
                 }
             }
@@ -302,6 +300,7 @@ pub async fn trace_process(
             // Add exit code to the exec struct, if this is the
             // pid that exec'd the exec. execececececec.
             curr_execution.add_exit_code(exit_code, pid);
+            curr_execution.add_output_file_hashes()?;
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
@@ -346,8 +345,12 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         //     .with_context(|| context!("Cannot read tracee's stat struct."))?;
         // let inode = stat_struct.st_ino;
         // let path = PathBuf::from(register_path);
-        let path = full_path.clone().into_os_string().into_string().unwrap();
-        let hash = generate_hash(path)?;
+        let hash = if full_path.starts_with("/dev/") || full_path.is_dir() {
+            None
+        } else {
+            let path = full_path.clone().into_os_string().into_string().unwrap();
+            Some(generate_hash(path)?)
+        };
         IOFile::InputFile(FileAccess::Success {
             file_name,
             full_path,
@@ -386,6 +389,8 @@ fn handle_open(
     let ret_val = regs.retval::<i32>();
     let syscall_succeeded = ret_val > 0;
 
+    debug!("made it here");
+    debug!("success: {}", syscall_succeeded);
     let open_mode = if syscall_name == "creat" {
         // creat() uses write only as the mode
         OpenMode::WriteOnly
@@ -395,7 +400,6 @@ fn handle_open(
         } else {
             regs.arg3::<i32>()
         };
-        // let is_create = flags & O_CREAT != 0;
         match flags & O_ACCMODE {
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
@@ -418,11 +422,12 @@ fn handle_open(
     let file_event = if syscall_succeeded {
         // Successful, get full path
         // ret_val is the file descriptor if successful
+        println!("before path from fd");
         let full_path =
             path_from_fd(pid, ret_val).with_context(|| context!("Failed to readlink"))?;
-        let full_path = full_path.to_str().unwrap().to_owned();
+        println!("after path from fd");
+        let path = full_path.to_str().unwrap().to_owned();
         let full_path = PathBuf::from(full_path);
-
         // let stat_struct = stat(&full_path)
         //     .with_context(|| context!("Cannot read tracee's stat struct."))?;
         // let inode = stat_struct.st_ino;
@@ -431,12 +436,19 @@ fn handle_open(
             // If it's opened for READING we assume
             // you just wanna look at it but not touch.
             // God I really need to sleep.
-            OpenMode::ReadOnly => IOFile::InputFile(FileAccess::Success {
-                file_name,
-                full_path,
-                hash: Vec::new(),
-                syscall_name,
-            }),
+            OpenMode::ReadOnly => {
+                let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
+                    None
+                } else {
+                    Some(generate_hash(path)?)
+                };
+                IOFile::InputFile(FileAccess::Success {
+                    file_name,
+                    full_path,
+                    hash,
+                    syscall_name,
+                })
+            }
             // If it is opened for READ/WRITE or just WRITE,
             // we assume y'all tryin' to make some changes
             // to this here file.
@@ -444,7 +456,7 @@ fn handle_open(
             _ => IOFile::OutputFile(FileAccess::Success {
                 file_name,
                 full_path,
-                hash: Vec::new(),
+                hash: None, // Output file hashes are generated at the end of the execution.
                 syscall_name,
             }),
         }
@@ -507,7 +519,11 @@ fn handle_read(
         let file_name = PathBuf::from(file_name);
 
         let path = full_path.clone().into_os_string().into_string().unwrap();
-        let hash = generate_hash(path)?;
+        let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
+            None
+        } else {
+            Some(generate_hash(path)?)
+        };
         IOFile::InputFile(FileAccess::Success {
             file_name,
             full_path,
@@ -601,14 +617,15 @@ fn handle_stat(
         debug!("PATH: {}", path);
 
         let path_buf = PathBuf::from(path.clone());
-        if path_buf.is_dir() {
+        // Let's not hash directories or devices because that doesn't
+        // make any goddamn sense.
+        if path_buf.is_dir() || path_buf.starts_with("/dev/") {
             None
         } else {
-            let hash = generate_hash(path)?;
+            let hash = Some(generate_hash(path)?);
             Some(IOFile::InputFile(FileAccess::Success {
                 file_name,
                 full_path,
-                // TODO: fix this obviously
                 hash,
                 syscall_name,
             }))
@@ -669,10 +686,16 @@ fn handle_write(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptrac
             let full_path = cwd.join(file_name.clone());
             (file_name, full_path)
         };
+        let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
+            None
+        } else {
+            let path = full_path.clone().into_os_string().into_string().unwrap();
+            Some(generate_hash(path)?)
+        };
         IOFile::OutputFile(FileAccess::Success {
             file_name,
             full_path,
-            hash: Vec::new(), // TODO: bring on the HASH!
+            hash, // TODO: bring on the HASH!
             syscall_name,
         })
     } else {

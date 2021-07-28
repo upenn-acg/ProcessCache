@@ -20,7 +20,7 @@ pub enum FileAccess {
     Success {
         file_name: PathBuf,
         full_path: PathBuf,
-        hash: Vec<u8>,
+        hash: Option<Vec<u8>>,
         syscall_name: String,
     },
     Failure {
@@ -144,6 +144,59 @@ impl ExecAccesses {
             IOFile::OutputFile(_) => self.output_files.push(file_access),
         }
     }
+
+    // At the end of a successful execution, we get the hash of each output
+    // file.1
+    pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
+        for output in self.output_files.iter_mut() {
+            println!("looping in add_output_file_hashes");
+            println!("file name: {:?}", output);
+            if let IOFile::OutputFile(FileAccess::Success {
+                file_name: _,
+                full_path,
+                hash,
+                syscall_name: _,
+            }) = output
+            {
+                if full_path.starts_with("/dev/") || full_path.is_dir() {
+                    *hash = None;
+                } else {
+                    let path = full_path.clone().into_os_string().into_string().unwrap();
+                    let hash_value = generate_hash(path)?;
+                    *hash = Some(hash_value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // TODO:  make this try_map ?
+    // self.output_files = self
+    //     .output_files
+    //     .iter()
+    //     .map(|output| {
+    //         match output {
+    //             IOFile::OutputFile(FileAccess::Success {
+    //                 file_name,
+    //                 full_path,
+    //                 hash,
+    //                 syscall_name,
+    //             }) => {
+    //                 let hash = generate_hash(
+    //                     full_path.clone().into_os_string().into_string().unwrap(),
+    //                 )
+    //                 .unwrap();
+    //                 IOFile::OutputFile(FileAccess::Success {
+    //                     file_name,
+    //                     full_path,
+    //                     hash: Some(hash),
+    //                     syscall_name,
+    //                 })
+    //             }
+    //             f => f,
+    //         }
+    //     })
+    //     .collect();
 }
 
 // Info about the execution that we want to keep around
@@ -258,6 +311,14 @@ impl Execution {
         }
     }
 
+    pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
+        match self {
+            Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(),
+            // Should this be some fancy kinda error? Meh?
+            _ => Ok(()),
+        }
+    }
+
     pub fn get_cwd(&self) -> PathBuf {
         match self {
             Execution::Successful(metadata, _, _) | Execution::Failed(metadata, _) => {
@@ -304,6 +365,10 @@ impl RcExecution {
 
     pub fn add_new_file_event(&self, file: IOFile) {
         self.execution.borrow_mut().add_new_file_event(file);
+    }
+
+    pub fn add_output_file_hashes(&self) -> anyhow::Result<()> {
+        self.execution.borrow_mut().add_output_file_hashes()
     }
 
     pub fn get_cwd(&self) -> PathBuf {
@@ -357,6 +422,8 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u
         if n == 0 || n < BUFFER_SIZE {
             break;
         }
+        // println!("n is: {}", n);
+        // println!("in process() loop");
     }
 
     let final_array = &sh.finalize();
@@ -366,6 +433,7 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u
 }
 
 pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
+    println!("made it to generate_hash");
     let mut file = fs::File::open(&path)?;
     process::<Sha256, _>(&mut file)
 }
