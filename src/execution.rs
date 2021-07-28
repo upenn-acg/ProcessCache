@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
     generate_hash, ExecAccesses, ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile,
-    OpenMode, RcExecution,
+    OpenMode, Proc, RcExecution,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -166,13 +166,14 @@ pub async fn trace_process(
                                 // The execve succeeded!
                                 // Create a Successful Execution and add to global executions.
                                 // change_to_exit = true;
+                                // let pid = tracer.curr_proc.as_raw();
                                 s.in_scope(|| {
                                     debug!("Execve succeeded!");
                                 });
                                 RcExecution::new(Execution::Successful(
                                     ExecMetadata::new(),
                                     ExecAccesses::new(),
-                                    tracer.curr_proc,
+                                    Proc(tracer.curr_proc),
                                 ))
                             }
                             _ => {
@@ -183,7 +184,7 @@ pub async fn trace_process(
                                 });
                                 RcExecution::new(Execution::Failed(
                                     ExecMetadata::new(),
-                                    tracer.curr_proc,
+                                    Proc(tracer.curr_proc),
                                 ))
                             }
                         };
@@ -260,7 +261,8 @@ pub async fn trace_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                curr_execution.add_child_process(child);
+                // TODO: handle child executions
+                // curr_execution.add_child_process(child);
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),

@@ -1,11 +1,71 @@
 use nix::unistd::Pid;
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use serde::de::{self, Visitor};
+// use rmp_serde::{Deserializer, Serializer};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
+use std::fmt;
 
-#[derive(Debug)]
+// All this crazy stuff here.
+struct ProcVisitor;
+#[derive(Clone, Debug, PartialEq)]
+pub struct Proc(pub Pid);
+
+impl Default for Proc {
+    fn default() -> Proc {
+        Proc(Pid::from_raw(0))
+    }
+}
+
+impl Serialize for Proc {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // let Pid(actual_pid) = self.0;
+        let actual_pid = self.0.as_raw();
+        serializer.serialize_i32(actual_pid)
+    }
+}
+impl<'de> Deserialize<'de> for Proc {
+    fn deserialize<D>(deserializer: D) -> Result<Proc, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_i32(ProcVisitor)
+    }
+}
+
+impl<'de> Visitor<'de> for ProcVisitor {  
+    type Value = Proc;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an integer between -2^31 and 2^31")
+    }
+
+    fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Proc(Pid::from_raw(value)))
+    }
+
+}
+
+impl Proc {
+    // pub fn new(pid: i32) -> Proc {
+    //     Proc(pid)
+    // }
+
+    pub fn pid(&self) -> Pid {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum OpenMode {
     ReadOnly,
     ReadWrite,
@@ -15,7 +75,7 @@ pub enum OpenMode {
 // Success and failure variants of
 // input and output files.
 // TODO: HASH SHOULD NOT TO BE AN OPTION
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum FileAccess {
     Success {
         file_name: PathBuf,
@@ -30,7 +90,7 @@ pub enum FileAccess {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum IOFile {
     InputFile(FileAccess),
     OutputFile(FileAccess),
@@ -122,7 +182,7 @@ pub enum IOFile {
 // TODO: Handle stderr and stdout. I don't want to right
 // now it's hard and my simplest example does not
 // cover it.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecAccesses {
     input_files: Vec<IOFile>,
     output_files: Vec<IOFile>,
@@ -169,34 +229,6 @@ impl ExecAccesses {
         }
         Ok(())
     }
-
-    // TODO:  make this try_map ?
-    // self.output_files = self
-    //     .output_files
-    //     .iter()
-    //     .map(|output| {
-    //         match output {
-    //             IOFile::OutputFile(FileAccess::Success {
-    //                 file_name,
-    //                 full_path,
-    //                 hash,
-    //                 syscall_name,
-    //             }) => {
-    //                 let hash = generate_hash(
-    //                     full_path.clone().into_os_string().into_string().unwrap(),
-    //                 )
-    //                 .unwrap();
-    //                 IOFile::OutputFile(FileAccess::Success {
-    //                     file_name,
-    //                     full_path,
-    //                     hash: Some(hash),
-    //                     syscall_name,
-    //                 })
-    //             }
-    //             f => f,
-    //         }
-    //     })
-    //     .collect();
 }
 
 // Info about the execution that we want to keep around
@@ -204,10 +236,10 @@ impl ExecAccesses {
 // if we see it again, it would be some kinda error if
 // we expect it to fail... and it doesn't :o that's an
 // existential and/or metaphysical crisis for future kelly)
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecMetadata {
     args: Vec<String>,
-    child_processes: Vec<Pid>,
+    // child_processes: Vec<Pid>, TODO: deal with child / dependent executions
     cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
@@ -223,7 +255,7 @@ impl ExecMetadata {
     pub fn new() -> ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
-            child_processes: Vec::new(),
+            // child_processes: Vec::new(),
             cwd: PathBuf::new(),
             env_vars: Vec::new(),
             executable: String::new(),
@@ -231,9 +263,9 @@ impl ExecMetadata {
         }
     }
 
-    fn add_child_process(&mut self, child_pid: Pid) {
-        self.child_processes.push(child_pid);
-    }
+    // fn add_child_process(&mut self, child_pid: Pid) {
+    //     self.child_processes.push(child_pid);
+    // }
 
     fn add_exit_code(&mut self, code: i32) {
         self.exit_code = Some(code);
@@ -257,29 +289,31 @@ impl ExecMetadata {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Execution {
-    Failed(ExecMetadata, Pid),
+    Failed(ExecMetadata, Proc),
+
     Pending, // At time of creation, we don't know what the heck it is!
     // A successful execution has both metadata and
     // potentially file system accesses.
-    Successful(ExecMetadata, ExecAccesses, Pid),
+    Successful(ExecMetadata, ExecAccesses, Proc),
 }
 
 impl Execution {
-    pub fn add_child_process(&mut self, child_pid: Pid) {
-        match self {
-            Execution::Successful(metadata, _, _) => metadata.add_child_process(child_pid),
-            _ => panic!("Trying to add child process to failed or pending execution!"),
-        }
-    }
+    // pub fn add_child_process(&mut self, child_pid: Pid) {
+    //     match self {
+    //         Execution::Successful(metadata, _) => metadata.add_child_process(child_pid),
+    //         _ => panic!("Trying to add child process to failed or pending execution!"),
+    //     }
+    // }
 
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
             Execution::Failed(meta, exec_pid) | Execution::Successful(meta, _, exec_pid) => {
                 // Only want the exit code if this is the process
                 // that actually exec'd the process.
-                if *exec_pid == pid {
+                let exec_pid = exec_pid.pid();
+                if exec_pid == pid {
                     meta.add_exit_code(exit_code);
                 }
             }
@@ -331,7 +365,8 @@ impl Execution {
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
 // enum.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+
 pub struct RcExecution {
     execution: Rc<RefCell<Execution>>,
 }
@@ -343,9 +378,9 @@ impl RcExecution {
         }
     }
 
-    pub fn add_child_process(&self, child_pid: Pid) {
-        self.execution.borrow_mut().add_child_process(child_pid);
-    }
+    // pub fn add_child_process(&self, child_pid: Pid) {
+    //     self.execution.borrow_mut().add_child_process(child_pid);
+    // }
 
     pub fn add_exit_code(&self, code: i32, exec_pid: Pid) {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
@@ -375,7 +410,8 @@ impl RcExecution {
         self.execution.borrow().get_cwd()
     }
 }
-#[derive(Clone)]
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct GlobalExecutions {
     pub executions: Rc<RefCell<Vec<RcExecution>>>,
 }
