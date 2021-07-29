@@ -1,15 +1,24 @@
 use nix::unistd::Pid;
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
 use serde::de::{self, Visitor};
-// use rmp_serde::{Deserializer, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+// use std::borrow::Borrow;
+use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
-use std::fmt;
 
-// All this crazy stuff here.
+// All this crazy stuff here. There is a method to the madness!
+// Because we just **have** to use nix::unistd::Pid, which is weird
+// and doesn't implement Serialize or Deserialize, and even if I wanted
+// to just skip it for serialization (which I do, I don't care about the
+// persistent pid, it's gonna change anyway, I use it while creating the
+// structures so I add to the correct struct, as multiple processes and thus
+// multiple executions can be going on at once), it doesn't implement Default.
+// So I just wrapped that sucker in ANOTHER struct and that thing can do
+// Serialize, Deserialize, Default, whatever the heck you want. Are you happy
+// now serde?
 struct ProcVisitor;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -39,7 +48,7 @@ impl<'de> Deserialize<'de> for Proc {
     }
 }
 
-impl<'de> Visitor<'de> for ProcVisitor {  
+impl<'de> Visitor<'de> for ProcVisitor {
     type Value = Proc;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -52,17 +61,12 @@ impl<'de> Visitor<'de> for ProcVisitor {
     {
         Ok(Proc(Pid::from_raw(value)))
     }
-
 }
 
 impl Proc {
     // pub fn new(pid: i32) -> Proc {
     //     Proc(pid)
     // }
-
-    pub fn pid(&self) -> Pid {
-        self.0
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -249,6 +253,8 @@ pub struct ExecMetadata {
     // We don't know the exit code until it exits.
     // So while an execution is running this is None.
     exit_code: Option<i32>,
+    #[serde(skip)]
+    pid: Proc,
 }
 
 impl ExecMetadata {
@@ -260,6 +266,7 @@ impl ExecMetadata {
             env_vars: Vec::new(),
             executable: String::new(),
             exit_code: None,
+            pid: Proc::default(),
         }
     }
 
@@ -277,26 +284,34 @@ impl ExecMetadata {
         cwd: PathBuf,
         env_vars: Vec<String>,
         executable: String,
+        pid: Pid,
     ) {
         self.args = args;
         self.cwd = cwd;
         self.env_vars = env_vars;
         self.executable = executable;
+
+        let pid = Proc(pid);
+        self.pid = pid;
     }
 
     fn get_cwd(&self) -> PathBuf {
         self.cwd.clone()
     }
+
+    fn get_pid(&self) -> Pid {
+        let Proc(actual_pid) = self.pid;
+        actual_pid
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Execution {
-    Failed(ExecMetadata, Proc),
-
+    Failed(ExecMetadata),
     Pending, // At time of creation, we don't know what the heck it is!
     // A successful execution has both metadata and
     // potentially file system accesses.
-    Successful(ExecMetadata, ExecAccesses, Proc),
+    Successful(ExecMetadata, ExecAccesses),
 }
 
 impl Execution {
@@ -309,10 +324,10 @@ impl Execution {
 
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
-            Execution::Failed(meta, exec_pid) | Execution::Successful(meta, _, exec_pid) => {
+            Execution::Failed(meta) | Execution::Successful(meta, _) => {
                 // Only want the exit code if this is the process
                 // that actually exec'd the process.
-                let exec_pid = exec_pid.pid();
+                let exec_pid = meta.get_pid();
                 if exec_pid == pid {
                     meta.add_exit_code(exit_code);
                 }
@@ -329,10 +344,11 @@ impl Execution {
         cwd: PathBuf,
         env_vars: Vec<String>,
         executable: String,
+        pid: Pid,
     ) {
         match self {
-            Execution::Failed(metadata, _) | Execution::Successful(metadata, _, _) => {
-                metadata.add_identifiers(args, cwd, env_vars, executable)
+            Execution::Failed(metadata) | Execution::Successful(metadata, _) => {
+                metadata.add_identifiers(args, cwd, env_vars, executable, pid)
             }
             Execution::Pending => panic!("Should not be adding identifiers to pending exec!"),
         }
@@ -340,14 +356,14 @@ impl Execution {
 
     pub fn add_new_file_event(&mut self, file: IOFile) {
         match self {
-            Execution::Successful(_, accesses, _) => accesses.add_new_file_event(file),
+            Execution::Successful(_, accesses) => accesses.add_new_file_event(file),
             _ => panic!("Should not be adding file event to pending or failed execution!"),
         }
     }
 
     pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
         match self {
-            Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(),
+            Execution::Successful(_, accesses) => accesses.add_output_file_hashes(),
             // Should this be some fancy kinda error? Meh?
             _ => Ok(()),
         }
@@ -355,7 +371,7 @@ impl Execution {
 
     pub fn get_cwd(&self) -> PathBuf {
         match self {
-            Execution::Successful(metadata, _, _) | Execution::Failed(metadata, _) => {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
                 metadata.get_cwd()
             }
             _ => panic!("Should not be getting cwd from pending execution!"),
@@ -392,10 +408,11 @@ impl RcExecution {
         cwd: PathBuf,
         env_vars: Vec<String>,
         executable: String,
+        pid: Pid,
     ) {
         self.execution
             .borrow_mut()
-            .add_identifiers(args, cwd, env_vars, executable);
+            .add_identifiers(args, cwd, env_vars, executable, pid);
     }
 
     pub fn add_new_file_event(&self, file: IOFile) {
@@ -407,6 +424,7 @@ impl RcExecution {
     }
 
     pub fn get_cwd(&self) -> PathBuf {
+        // let execution = self.execution.borrow();
         self.execution.borrow().get_cwd()
     }
 }
@@ -472,4 +490,71 @@ pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
     println!("made it to generate_hash");
     let mut file = fs::File::open(&path)?;
     process::<Sha256, _>(&mut file)
+}
+
+pub fn serialize_execs(global_executions: GlobalExecutions) {
+    let original_output_files = global_executions
+    .executions
+    .borrow_mut()
+    .iter()
+    .flat_map(|ex| match *ex.execution.borrow() {
+        Execution::Successful(_, ref accesses) => accesses
+            .output_files
+            .iter()
+            .filter_map(|f| match f {
+                IOFile::OutputFile(
+                    FileAccess::Failure {
+                        full_path: _,
+                        syscall_name: _,
+                        file_name,
+                    }
+                    | FileAccess::Success {
+                        full_path: _,
+                        hash: _,
+                        syscall_name: _,
+                        file_name,
+                    },
+                ) => Some(file_name.to_str().unwrap().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<String>>(),
+        _ => vec![],
+    })
+    .collect::<Vec<String>>();
+    println!("Before serialize:  {:?}", original_output_files);
+    let serialized_execs = rmp_serde::to_vec(&global_executions).unwrap();
+    // let buf = rmp_serde::to_vec(&(42, "the Answer")).unwrap();
+
+    // println!("serialized execs: {:?}", serialized_execs);
+    let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
+    let final_output_files = global_execs
+    .executions
+    .borrow_mut()
+    .iter()
+    .flat_map(|ex| match *ex.execution.borrow() {
+        Execution::Successful(_, ref accesses) => accesses
+            .output_files
+            .iter()
+            .filter_map(|f| match f {
+                IOFile::OutputFile(
+                    FileAccess::Failure {
+                        full_path: _,
+                        syscall_name: _,
+                        file_name,
+                    }
+                    | FileAccess::Success {
+                        full_path: _,
+                        hash: _,
+                        syscall_name: _,
+                        file_name,
+                    },
+                ) => Some(file_name.to_str().unwrap().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<String>>(),
+        _ => vec![],
+    })
+    .collect::<Vec<String>>();
+    println!("Final output files:  {:?}", final_output_files);
+
 }

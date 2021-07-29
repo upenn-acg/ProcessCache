@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
     generate_hash, ExecAccesses, ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile,
-    OpenMode, Proc, RcExecution,
+    OpenMode, RcExecution, serialize_execs,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -58,6 +58,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     }
     let length = global_executions.get_execution_count();
     println!("Number of executions: {}", length);
+
+    serialize_execs(global_executions);
     Ok(())
 }
 
@@ -173,7 +175,6 @@ pub async fn trace_process(
                                 RcExecution::new(Execution::Successful(
                                     ExecMetadata::new(),
                                     ExecAccesses::new(),
-                                    Proc(tracer.curr_proc),
                                 ))
                             }
                             _ => {
@@ -184,7 +185,6 @@ pub async fn trace_process(
                                 });
                                 RcExecution::new(Execution::Failed(
                                     ExecMetadata::new(),
-                                    Proc(tracer.curr_proc),
                                 ))
                             }
                         };
@@ -193,7 +193,7 @@ pub async fn trace_process(
                         // execution to this new one.
                         // I *THINK* I want to update this whether it succeeds or fails.
                         // Because both of those technically are executions.
-                        new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name);
+                        new_execution.add_identifiers(args, cwd_pathbuf, envp, path_name, tracer.curr_proc);
                         global_executions.add_new_execution(new_execution.clone());
                         curr_execution = new_execution;
                         continue;
