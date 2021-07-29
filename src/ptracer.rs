@@ -197,7 +197,7 @@ impl Ptracer {
     /// # Safety
     ///
     /// A valid tracee pointer must be passed or garbage will be read.
-    #[allow(clippy::clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn read_c_string_array(
         &self,
         address: *const *const c_char,
