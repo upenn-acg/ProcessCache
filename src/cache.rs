@@ -371,9 +371,7 @@ impl Execution {
 
     pub fn get_cwd(&self) -> PathBuf {
         match self {
-            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
-                metadata.get_cwd()
-            }
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.get_cwd(),
             _ => panic!("Should not be getting cwd from pending execution!"),
         }
     }
@@ -492,69 +490,86 @@ pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
     process::<Sha256, _>(&mut file)
 }
 
-pub fn serialize_execs(global_executions: GlobalExecutions) {
-    let original_output_files = global_executions
-    .executions
-    .borrow_mut()
-    .iter()
-    .flat_map(|ex| match *ex.execution.borrow() {
-        Execution::Successful(_, ref accesses) => accesses
-            .output_files
-            .iter()
-            .filter_map(|f| match f {
-                IOFile::OutputFile(
-                    FileAccess::Failure {
-                        full_path: _,
-                        syscall_name: _,
-                        file_name,
-                    }
-                    | FileAccess::Success {
-                        full_path: _,
-                        hash: _,
-                        syscall_name: _,
-                        file_name,
-                    },
-                ) => Some(file_name.to_str().unwrap().to_owned()),
-                _ => None,
-            })
-            .collect::<Vec<String>>(),
-        _ => vec![],
-    })
-    .collect::<Vec<String>>();
-    println!("Before serialize:  {:?}", original_output_files);
+pub fn serialize_execs_to_cache(global_executions: GlobalExecutions) {
+    // For testing: let's you look at the files before you serialize them.
+    // let original_output_files = global_executions
+    // .executions
+    // .borrow_mut()
+    // .iter()
+    // .flat_map(|ex| match *ex.execution.borrow() {
+    //     Execution::Successful(_, ref accesses) => accesses
+    //         .output_files
+    //         .iter()
+    //         .filter_map(|f| match f {
+    //             IOFile::OutputFile(
+    //                 FileAccess::Failure {
+    //                     full_path: _,
+    //                     syscall_name: _,
+    //                     file_name,
+    //                 }
+    //                 | FileAccess::Success {
+    //                     full_path: _,
+    //                     hash: _,
+    //                     syscall_name: _,
+    //                     file_name,
+    //                 },
+    //             ) => Some(file_name.to_str().unwrap().to_owned()),
+    //             _ => None,
+    //         })
+    //         .collect::<Vec<String>>(),
+    //     _ => vec![],
+    // })
+    // .collect::<Vec<String>>();
+    // println!("Before serialize:  {:?}", original_output_files);
+
+    // Serialize the executions.
     let serialized_execs = rmp_serde::to_vec(&global_executions).unwrap();
+
+    // Write the serialized execs to a file.
+    // I am just writing them to /home/kelly/research/IOTracker/cache/cache
+    write_serialized_execs_to_cache(serialized_execs);
+
     // let buf = rmp_serde::to_vec(&(42, "the Answer")).unwrap();
 
+    // For testing: let's you look at the execs a
     // println!("serialized execs: {:?}", serialized_execs);
-    let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
-    let final_output_files = global_execs
-    .executions
-    .borrow_mut()
-    .iter()
-    .flat_map(|ex| match *ex.execution.borrow() {
-        Execution::Successful(_, ref accesses) => accesses
-            .output_files
-            .iter()
-            .filter_map(|f| match f {
-                IOFile::OutputFile(
-                    FileAccess::Failure {
-                        full_path: _,
-                        syscall_name: _,
-                        file_name,
-                    }
-                    | FileAccess::Success {
-                        full_path: _,
-                        hash: _,
-                        syscall_name: _,
-                        file_name,
-                    },
-                ) => Some(file_name.to_str().unwrap().to_owned()),
-                _ => None,
-            })
-            .collect::<Vec<String>>(),
-        _ => vec![],
-    })
-    .collect::<Vec<String>>();
-    println!("Final output files:  {:?}", final_output_files);
+    // let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
+    // let final_output_files = global_execs
+    // .executions
+    // .borrow_mut()
+    // .iter()
+    // .flat_map(|ex| match *ex.execution.borrow() {
+    //     Execution::Successful(_, ref accesses) => accesses
+    //         .output_files
+    //         .iter()
+    //         .filter_map(|f| match f {
+    //             IOFile::OutputFile(
+    //                 FileAccess::Failure {
+    //                     full_path: _,
+    //                     syscall_name: _,
+    //                     file_name,
+    //                 }
+    //                 | FileAccess::Success {
+    //                     full_path: _,
+    //                     hash: _,
+    //                     syscall_name: _,
+    //                     file_name,
+    //                 },
+    //             ) => Some(file_name.to_str().unwrap().to_owned()),
+    //             _ => None,
+    //         })
+    //         .collect::<Vec<String>>(),
+    //     _ => vec![],
+    // })
+    // .collect::<Vec<String>>();
+    // println!("Final output files:  {:?}", final_output_files);
+}
 
+fn write_serialized_execs_to_cache(serialized_execs: Vec<u8>) {
+    fs::write(
+        "/home/kelly/research/IOTracker/cache/cache",
+        serialized_execs,
+    )
+    .expect("Failed to write serialized executions to cache!");
+    // write("/home/kelly/research/IOTracker/cache/cache", serialized_execs).unwrap();
 }
