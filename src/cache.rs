@@ -565,11 +565,20 @@ pub fn serialize_execs_to_cache(global_executions: GlobalExecutions) {
     // println!("Final output files:  {:?}", final_output_files);
 }
 
+pub fn deserialize_execs_from_cache() -> GlobalExecutions {
+    // is read_to_end() needed?
+    let exec_struct_bytes = fs::read("/home/kelly/research/IOTracker/cache/cache").expect("failed");
+    if exec_struct_bytes.is_empty() {
+        GlobalExecutions::new()
+    } else {
+        rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
+    }
+}
+
 fn write_serialized_execs_to_cache(serialized_execs: Vec<u8>) {
     fs::write(
         "/home/kelly/research/IOTracker/cache/cache",
         serialized_execs,
     )
     .expect("Failed to write serialized executions to cache!");
-    // write("/home/kelly/research/IOTracker/cache/cache", serialized_execs).unwrap();
 }

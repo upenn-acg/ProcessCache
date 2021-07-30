@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_hash, serialize_execs_to_cache, ExecAccesses, ExecMetadata, Execution, FileAccess,
-    GlobalExecutions, IOFile, OpenMode, RcExecution,
+    deserialize_execs_from_cache, generate_hash, serialize_execs_to_cache, ExecAccesses,
+    ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile, OpenMode, RcExecution,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -41,7 +41,13 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // an exec event, meaning the execve succeeded, so it should be
     // added to global_executions.
     let first_execution = RcExecution::new(Execution::Pending);
-    let global_executions = GlobalExecutions::new();
+    // Here we must set up our global executions structure.
+    // - Read from the cache file.
+    // - If the file is EMPTY, create a new global execs structure.
+    // - Else, read the file in to a ... Vec<u8>...? and deserialize it.
+
+    // I am kinda assuming that if you read an empty file it'll give you this empty struct  ¯\_(ツ)_/¯
+    let global_executions = deserialize_execs_from_cache();
 
     let f = trace_process(
         async_runtime.clone(),
@@ -169,7 +175,6 @@ pub async fn trace_process(
                                 // The execve succeeded!
                                 // Create a Successful Execution and add to global executions.
                                 // change_to_exit = true;
-                                // let pid = tracer.curr_proc.as_raw();
                                 s.in_scope(|| {
                                     debug!("Execve succeeded!");
                                 });
