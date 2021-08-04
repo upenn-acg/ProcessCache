@@ -299,6 +299,10 @@ impl ExecMetadata {
         self.cwd.clone()
     }
 
+    fn get_execution_name(&self) -> String {
+        self.executable.clone()
+    }
+
     fn get_pid(&self) -> Pid {
         let Proc(actual_pid) = self.pid;
         actual_pid
@@ -375,6 +379,23 @@ impl Execution {
             _ => panic!("Should not be getting cwd from pending execution!"),
         }
     }
+
+    pub fn get_execution_name(&self) -> String {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
+                metadata.get_execution_name()
+            }
+            _ => panic!("Should not be getting execution name from pending execution!"),
+        }
+    }
+
+    fn is_successful(&self) -> bool {
+        matches!(self, Execution::Successful(_, _))
+        // match self {
+        //     Execution::Successful(_, _) => true,
+        //     _ => false,
+        // }
+    }
 }
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
@@ -425,6 +446,14 @@ impl RcExecution {
         // let execution = self.execution.borrow();
         self.execution.borrow().get_cwd()
     }
+
+    pub fn get_execution_name(&self) -> String {
+        self.execution.borrow().get_execution_name()
+    }
+
+    fn is_successful(&self) -> bool {
+        self.execution.borrow().is_successful()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -439,12 +468,44 @@ impl GlobalExecutions {
         }
     }
 
+    // Add new execution if it is not cached.
+    // Return true if we should skip the execution.
     pub fn add_new_execution(&self, execution: RcExecution) {
         self.executions.borrow_mut().push(execution);
     }
 
+    // Return number of execution structs in the global_executions
+    // struct currently.
     pub fn get_execution_count(&self) -> i32 {
         self.executions.borrow().len() as i32
+    }
+
+    // Get exec struct from cache. Return None if we have never seen it.
+    // pub fn retrieve_exec(&self, command_line_executable: String) -> Option<Execution> {
+    //     for exec in self.executions.borrow().iter() {
+    //         // Check if any execution struct existing in the cache matches this
+    //         // executable name. If so, return the struct.
+    //         // TODO: WAY better checking.
+    //         if exec.get_execution_name() == command_line_executable {
+    //             return Some(exec.get_execution_info());
+    //         }
+    //     }
+    //     None
+    // }
+
+    // Return bool whether the execution name shows up in the cache.
+    pub fn has_cached_success(&self, command_line_executable: String) -> bool {
+        for exec in self.executions.borrow().iter() {
+            // Check if any execution struct existing in the cache matches this
+            // We should skip it if:
+            // - it WAS in the cache before (we didn't add it now)
+            // - it was successful
+            // TODO: WAY better checking.
+            if exec.get_execution_name() == command_line_executable && exec.is_successful() {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -458,8 +519,7 @@ impl GlobalExecutions {
 //     println!("\t{}", name);
 // }
 
-/// Compute digest value for given `Reader` and print it
-/// On any error simply return without doing anything
+// Process the file and generate the hash.
 fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u8>> {
     const BUFFER_SIZE: usize = 1024;
     let mut sh = D::default();
@@ -491,37 +551,6 @@ pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
 }
 
 pub fn serialize_execs_to_cache(global_executions: GlobalExecutions) {
-    // For testing: let's you look at the files before you serialize them.
-    // let original_output_files = global_executions
-    // .executions
-    // .borrow_mut()
-    // .iter()
-    // .flat_map(|ex| match *ex.execution.borrow() {
-    //     Execution::Successful(_, ref accesses) => accesses
-    //         .output_files
-    //         .iter()
-    //         .filter_map(|f| match f {
-    //             IOFile::OutputFile(
-    //                 FileAccess::Failure {
-    //                     full_path: _,
-    //                     syscall_name: _,
-    //                     file_name,
-    //                 }
-    //                 | FileAccess::Success {
-    //                     full_path: _,
-    //                     hash: _,
-    //                     syscall_name: _,
-    //                     file_name,
-    //                 },
-    //             ) => Some(file_name.to_str().unwrap().to_owned()),
-    //             _ => None,
-    //         })
-    //         .collect::<Vec<String>>(),
-    //     _ => vec![],
-    // })
-    // .collect::<Vec<String>>();
-    // println!("Before serialize:  {:?}", original_output_files);
-
     // Serialize the executions.
     let serialized_execs = rmp_serde::to_vec(&global_executions).unwrap();
 
@@ -530,39 +559,6 @@ pub fn serialize_execs_to_cache(global_executions: GlobalExecutions) {
     write_serialized_execs_to_cache(serialized_execs);
 
     // let buf = rmp_serde::to_vec(&(42, "the Answer")).unwrap();
-
-    // For testing: let's you look at the execs a
-    // println!("serialized execs: {:?}", serialized_execs);
-    // let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
-    // let final_output_files = global_execs
-    // .executions
-    // .borrow_mut()
-    // .iter()
-    // .flat_map(|ex| match *ex.execution.borrow() {
-    //     Execution::Successful(_, ref accesses) => accesses
-    //         .output_files
-    //         .iter()
-    //         .filter_map(|f| match f {
-    //             IOFile::OutputFile(
-    //                 FileAccess::Failure {
-    //                     full_path: _,
-    //                     syscall_name: _,
-    //                     file_name,
-    //                 }
-    //                 | FileAccess::Success {
-    //                     full_path: _,
-    //                     hash: _,
-    //                     syscall_name: _,
-    //                     file_name,
-    //                 },
-    //             ) => Some(file_name.to_str().unwrap().to_owned()),
-    //             _ => None,
-    //         })
-    //         .collect::<Vec<String>>(),
-    //     _ => vec![],
-    // })
-    // .collect::<Vec<String>>();
-    // println!("Final output files:  {:?}", final_output_files);
 }
 
 pub fn deserialize_execs_from_cache() -> GlobalExecutions {
@@ -582,3 +578,67 @@ fn write_serialized_execs_to_cache(serialized_execs: Vec<u8>) {
     )
     .expect("Failed to write serialized executions to cache!");
 }
+
+// For testing: let's you look at the files before you serialize them.
+// let original_output_files = global_executions
+// .executions
+// .borrow_mut()
+// .iter()
+// .flat_map(|ex| match *ex.execution.borrow() {
+//     Execution::Successful(_, ref accesses) => accesses
+//         .output_files
+//         .iter()
+//         .filter_map(|f| match f {
+//             IOFile::OutputFile(
+//                 FileAccess::Failure {
+//                     full_path: _,
+//                     syscall_name: _,
+//                     file_name,
+//                 }
+//                 | FileAccess::Success {
+//                     full_path: _,
+//                     hash: _,
+//                     syscall_name: _,
+//                     file_name,
+//                 },
+//             ) => Some(file_name.to_str().unwrap().to_owned()),
+//             _ => None,
+//         })
+//         .collect::<Vec<String>>(),
+//     _ => vec![],
+// })
+// .collect::<Vec<String>>();
+// println!("Before serialize:  {:?}", original_output_files);
+
+// For testing: let's you look at the execs a
+// println!("serialized execs: {:?}", serialized_execs);
+// let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
+// let final_output_files = global_execs
+// .executions
+// .borrow_mut()
+// .iter()
+// .flat_map(|ex| match *ex.execution.borrow() {
+//     Execution::Successful(_, ref accesses) => accesses
+//         .output_files
+//         .iter()
+//         .filter_map(|f| match f {
+//             IOFile::OutputFile(
+//                 FileAccess::Failure {
+//                     full_path: _,
+//                     syscall_name: _,
+//                     file_name,
+//                 }
+//                 | FileAccess::Success {
+//                     full_path: _,
+//                     hash: _,
+//                     syscall_name: _,
+//                     file_name,
+//                 },
+//             ) => Some(file_name.to_str().unwrap().to_owned()),
+//             _ => None,
+//         })
+//         .collect::<Vec<String>>(),
+//     _ => vec![],
+// })
+// .collect::<Vec<String>>();
+// println!("Final output files:  {:?}", final_output_files);
