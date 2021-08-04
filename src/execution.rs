@@ -88,7 +88,7 @@ pub async fn trace_process(
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
 
-    // let mut change_to_exit = false;
+    let mut skip_execution = false;
 
     loop {
         let event = tracer
@@ -166,18 +166,26 @@ pub async fn trace_process(
                         let cwd = cwd_path.to_str().unwrap().to_owned();
                         let cwd_pathbuf = PathBuf::from(cwd);
 
+                        // TODO: LOOK THAT SHIT UP IN THE CACHE
+                        // First: is the execution name in the cache?
+                        // If it is -> have to check a bunch of stuff.
+                        // For now: let's just see if it's in the cache?
+
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
                             context!("Unable to get next event after execve prehook.")
                         })?;
 
+                        s.in_scope(|| debug!("Checking cache for execution"));
+
                         let new_execution = match next_event {
                             TraceEvent::Exec(_) => {
                                 // The execve succeeded!
-                                // Create a Successful Execution and add to global executions.
-                                // change_to_exit = true;
+                                // If it's in the cache, change the
+                                // skip_execution = true;
                                 s.in_scope(|| {
                                     debug!("Execve succeeded!");
                                 });
+
                                 RcExecution::new(Execution::Successful(
                                     ExecMetadata::new(),
                                     ExecAccesses::new(),
@@ -201,10 +209,17 @@ pub async fn trace_process(
                             args,
                             cwd_pathbuf,
                             envp,
-                            path_name,
+                            path_name.clone(),
                             tracer.curr_proc,
                         );
-                        global_executions.add_new_execution(new_execution.clone());
+
+                        if global_executions.has_cached_success(path_name) {
+                            // Skip me!
+                            skip_execution = true;
+                        } else {
+                            global_executions.add_new_execution(new_execution.clone());
+                        }
+
                         curr_execution = new_execution;
                         continue;
                     }
@@ -213,11 +228,11 @@ pub async fn trace_process(
                         continue;
                     }
                     _ => {
-                        // TESTING
-                        // I want to try to skip this execve!
-                        // Have to change:
+                        // Check if we should skip this execution.
+                        // If we are gonna skip, we have to change:
                         // rax, orig_rax, arg1
-                        // if change_to_exit {
+
+                        // if skip_execution {
                         //     debug!("Trying to change execve call into exit call!");
                         //     let regs = tracer
                         //         .get_registers()
@@ -235,6 +250,9 @@ pub async fn trace_process(
                         //     tracer.set_regs(&mut regs)?;
                         //     continue;
                         // }
+
+                        // TODO: Should skip_execution be changed to false?
+                        // TODO: Should curr_execution be changed to ... something else?
                     }
                 }
 
