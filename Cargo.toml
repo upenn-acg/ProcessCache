@@ -34,6 +34,10 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 # name = "serde_try"
 # path = "src/serde_try.rs"
 
-[[example]]
-name = "copy"
-path = "src/copy.rs"
+# [[example]]
+# name = "copy"
+# path = "src/copy.rs"
+
+# [[example]]
+# name = "file_name"
+# path = "src/file_name.rs"

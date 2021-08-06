@@ -1,3 +1,4 @@
+use libc::SYS_rt_sigprocmask;
 #[allow(unused_imports)]
 use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 #[allow(unused_imports)]
@@ -229,24 +230,24 @@ pub async fn trace_process(
                         // If we are gonna skip, we have to change:
                         // rax, orig_rax, arg1
 
-                        // if skip_execution {
-                        //     debug!("Trying to change execve call into exit call!");
-                        //     let regs = tracer
-                        //         .get_registers()
-                        //         .with_context(|| context!("Failed to get regs in stat event"))?;
-                        //     let mut regs = regs.make_modified();
-                        //     let exit_syscall_num = libc::SYS_exit as u64;
+                        if skip_execution {
+                            debug!("Trying to change execve call into exit call!");
+                            let regs = tracer
+                                .get_registers()
+                                .with_context(|| context!("Failed to get regs in stat event"))?;
+                            let mut regs = regs.make_modified();
+                            let exit_syscall_num = libc::SYS_exit as u64;
 
-                        //     // Change the arg1 to correct exit code?
-                        //     regs.write_arg1(0);
-                        //     // Change the orig rax val don't ask me why
-                        //     regs.write_syscall_number(exit_syscall_num);
-                        //     // Change the rax val
-                        //     regs.write_rax(exit_syscall_num);
+                            // Change the arg1 to correct exit code?
+                            regs.write_arg1(0);
+                            // Change the orig rax val don't ask me why
+                            regs.write_syscall_number(exit_syscall_num);
+                            // Change the rax val
+                            regs.write_rax(exit_syscall_num);
 
-                        //     tracer.set_regs(&mut regs)?;
-                        //     continue;
-                        // }
+                            tracer.set_regs(&mut regs)?;
+                            continue;
+                        }
 
                         // TODO: Should skip_execution be changed to false?
                         // TODO: Should curr_execution be changed to ... something else?
@@ -356,9 +357,12 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         .read_c_string(bytes)
         .with_context(|| context!("Cannot read `access` path."))?;
     let syscall_name = String::from("access");
+    debug!("register path: {}", register_path);
 
     let path_arg = PathBuf::from(register_path);
-    let full_path = get_full_path(PathArg::Path(path_arg), tracer.curr_proc)?;
+
+    let full_path = get_full_path(Some(PathArg::Path(path_arg)), tracer.curr_proc)?;
+    debug!("made it past get_full_path");
 
     let file_access = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
     if let Some(access) = file_access {
@@ -421,7 +425,13 @@ fn handle_open(
         .read_c_string(path_arg_bytes)
         .with_context(|| context!("Cannot read `open` path."))?;
     let file_name_arg = PathBuf::from(path_arg);
-    let full_path = get_full_path(PathArg::Path(file_name_arg), pid)?;
+    let path_arg = if syscall_succeeded {
+        Some(PathArg::Path(file_name_arg))
+    } else {
+        None
+    };
+
+    let full_path = get_full_path(path_arg, pid)?;
     let syscall_name = String::from(syscall_name);
 
     let file_event = generate_file_access(full_path, io, syscall_name, syscall_succeeded);
@@ -449,16 +459,16 @@ fn handle_stat(
     let ret_val: i32 = regs.retval();
     let syscall_succeeded = ret_val == 0;
 
-    let full_path = if syscall_name == "fstat" {
+    let full_path_arg = if syscall_name == "fstat" {
+        let fd = regs.arg1::<i32>();
         if syscall_succeeded {
-            let fd = regs.arg1::<i32>();
             // TODO: Do something about stdin, stderr, stdout???
             if fd < 3 {
                 return Ok(());
             }
-            get_full_path(PathArg::Fd(fd), tracer.curr_proc)?
+            Some(PathArg::Fd(3))
         } else {
-            PathBuf::new()
+            None
         }
     } else {
         // newstatat, stat
@@ -474,9 +484,11 @@ fn handle_stat(
         let path = tracer
             .read_c_string(arg)
             .with_context(|| context!("Can't get path from path arg."))?;
-        let path_arg = PathBuf::from(path);
-        get_full_path(PathArg::Path(path_arg), tracer.curr_proc)?
+        Some(PathArg::Path(PathBuf::from(path)))
     };
+
+    // Either way we are calling this function with a PathArg and it's **generic** over the PathArg enum :3
+    let full_path = get_full_path(full_path_arg, tracer.curr_proc)?;
 
     let syscall_name = String::from(syscall_name);
     let file_event = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
@@ -499,12 +511,20 @@ fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
 }
 
 // Take in the path arg, either a string path or the
-// fd the system call provides. Create the canonicalized
+// fd the system call provides.
+// If the the system call name is fstat (i.e. path arg = None),
+// full path = PathBuf::new().
+// Create the canonicalized
 // version of the path and return it.
-fn get_full_path(path_arg: PathArg, pid: Pid) -> anyhow::Result<PathBuf> {
+fn get_full_path(path_arg: Option<PathArg>, pid: Pid) -> anyhow::Result<PathBuf> {
+    debug!("in get_full_path");
     match path_arg {
-        PathArg::Fd(fd) => path_from_fd(pid, fd),
-        PathArg::Path(path) => Ok(fs::canonicalize(&path)?),
+        Some(PathArg::Fd(fd)) => path_from_fd(pid, fd),
+        Some(PathArg::Path(path)) => {
+            debug!("before canonicalize");
+            fs::canonicalize(&path).or(Ok(path))
+        }
+        None => Ok(PathBuf::new()),
     }
 }
 
@@ -517,33 +537,30 @@ fn generate_file_access(
     syscall_name: String,
     syscall_succeeded: bool,
 ) -> Option<FileAccess> {
-    // Why pass in the file name when there's a perfectly good file_name, in the full_path, just sittin' in the barn??
-    let file_name = full_path
-        .file_name()
-        .expect("Can't get file name in generate_file_access()!");
-    let file_name = PathBuf::from(file_name);
-    if !full_path.starts_with("/dev/pts") && !full_path.is_dir() {
-        if syscall_succeeded {
-            let path = full_path.clone().into_os_string().into_string().unwrap();
-            let hash = match io_type {
-                IO::Input => Some(generate_hash(path)),
-                // We generate the hash for the output at the end of the execution.
-                IO::Output => None,
-            };
-            Some(FileAccess::Success {
-                file_name,
-                full_path,
-                hash,
-                syscall_name,
-            })
+    // Why pass in the file name when there's a perfectly good file_name, just sittin' in the full_path??
+    // Who else likes Seinfeld? Just me? Alright.
+    // We generate the hash for the output at the end of the execution.
+
+    if syscall_succeeded {
+        let hash = if full_path.starts_with("/dev/pts")
+            || full_path.starts_with("/etc/")
+            || full_path.is_dir()
+            || io_type == IO::Output
+        {
+            None
         } else {
-            Some(FileAccess::Failure {
-                file_name,
-                full_path,
-                syscall_name,
-            })
-        }
+            let path = full_path.clone().into_os_string().into_string().unwrap();
+            Some(generate_hash(path))
+        };
+        Some(FileAccess::Success {
+            full_path,
+            hash,
+            syscall_name,
+        })
     } else {
-        None
+        Some(FileAccess::Failure {
+            full_path,
+            syscall_name,
+        })
     }
 }
