@@ -4,12 +4,13 @@ use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O
 use nix::fcntl::{readlink, OFlag};
 // use nix::sys::stat::stat;
 use nix::unistd::Pid;
+use std::fs;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
     deserialize_execs_from_cache, generate_hash, serialize_execs_to_cache, ExecAccesses,
-    ExecMetadata, Execution, FileAccess, GlobalExecutions, IOFile, OpenMode, RcExecution,
+    ExecMetadata, Execution, FileAccess, GlobalExecutions, OpenMode, RcExecution, IO,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -22,7 +23,6 @@ use crate::Ptracer;
 use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
-use std::ffi::OsString;
 
 pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
@@ -166,11 +166,6 @@ pub async fn trace_process(
                         let cwd = cwd_path.to_str().unwrap().to_owned();
                         let cwd_pathbuf = PathBuf::from(cwd);
 
-                        // TODO: LOOK THAT SHIT UP IN THE CACHE
-                        // First: is the execution name in the cache?
-                        // If it is -> have to check a bunch of stuff.
-                        // For now: let's just see if it's in the cache?
-
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
                             context!("Unable to get next event after execve prehook.")
                         })?;
@@ -215,8 +210,10 @@ pub async fn trace_process(
 
                         if global_executions.has_cached_success(path_name) {
                             // Skip me!
+                            debug!("Cached success found for execution!");
                             skip_execution = true;
                         } else {
+                            debug!("No entry for execution found in cache!");
                             global_executions.add_new_execution(new_execution.clone());
                         }
 
@@ -277,8 +274,8 @@ pub async fn trace_process(
                     "fstat" | "newfstatat" | "stat" => {
                         handle_stat(&curr_execution, &regs, name, &tracer)?
                     }
-                    "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
-                    "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
+                    // "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
+                    // "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
                     _ => {}
                 }
             }
@@ -329,8 +326,12 @@ pub async fn trace_process(
 
             // Add exit code to the exec struct, if this is the
             // pid that exec'd the exec. execececececec.
+            // TODO: Should these just be called from a function called
+            // like "do_exit_stuff" (obviously something better but you
+            // get me)
             curr_execution.add_exit_code(exit_code, pid);
             curr_execution.add_output_file_hashes()?;
+            curr_execution.copy_outputs_to_cache()?;
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
@@ -341,6 +342,7 @@ pub async fn trace_process(
     Ok(())
 }
 
+// Handling the access system call.
 fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     sys_span.in_scope(|| {
@@ -355,47 +357,13 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         .with_context(|| context!("Cannot read `access` path."))?;
     let syscall_name = String::from("access");
 
-    let file_name = PathBuf::from(register_path);
-    let (file_name, full_path) = if file_name.is_absolute() {
-        let full_path = file_name;
-        let file_name = full_path
-            .file_name()
-            .with_context(|| context!("Cannot get file name from full path"))?;
-        (PathBuf::from(file_name), full_path)
-    } else {
-        let cwd = execution.get_cwd();
-        let full_path = cwd.join(file_name.clone());
-        (file_name, full_path)
-    };
+    let path_arg = PathBuf::from(register_path);
+    let full_path = get_full_path(PathArg::Path(path_arg), tracer.curr_proc)?;
 
-    let file_access = if syscall_succeeded {
-        // If the call is successful we can
-        // get the inode.
-        // let stat_struct = stat(&file_name)
-        //     .with_context(|| context!("Cannot read tracee's stat struct."))?;
-        // let inode = stat_struct.st_ino;
-        // let path = PathBuf::from(register_path);
-        let hash = if full_path.starts_with("/dev/") || full_path.is_dir() {
-            None
-        } else {
-            let path = full_path.clone().into_os_string().into_string().unwrap();
-            Some(generate_hash(path)?)
-        };
-        IOFile::InputFile(FileAccess::Success {
-            file_name,
-            full_path,
-            hash, // TODO: actually do the hash
-            syscall_name,
-        })
-    } else {
-        IOFile::InputFile(FileAccess::Failure {
-            file_name,
-            full_path,
-            syscall_name,
-        })
-    };
-
-    execution.add_new_file_event(file_access);
+    let file_access = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
+    if let Some(access) = file_access {
+        execution.add_new_file_event(access, IO::Input);
+    }
     Ok(())
 }
 
@@ -437,138 +405,30 @@ fn handle_open(
             _ => panic!("Open flags do not match any mode!"),
         }
     };
-    let bytes = match syscall_name {
+
+    let io = match open_mode {
+        OpenMode::ReadOnly => IO::Input,
+        _ => IO::Output,
+    };
+
+    let path_arg_bytes = match syscall_name {
         "creat" | "open" => regs.arg1::<*const c_char>(),
         "openat" => regs.arg2::<*const c_char>(),
         _ => panic!("Not handling an appropriate system call from handle_open!"),
     };
 
     let path_arg = tracer
-        .read_c_string(bytes)
+        .read_c_string(path_arg_bytes)
         .with_context(|| context!("Cannot read `open` path."))?;
-    let file_name = PathBuf::from(path_arg);
+    let file_name_arg = PathBuf::from(path_arg);
+    let full_path = get_full_path(PathArg::Path(file_name_arg), pid)?;
     let syscall_name = String::from(syscall_name);
 
-    let file_event = if syscall_succeeded {
-        // Successful, get full path
-        // ret_val is the file descriptor if successful
-        println!("before path from fd");
-        let full_path =
-            path_from_fd(pid, ret_val).with_context(|| context!("Failed to readlink"))?;
-        println!("after path from fd");
-        let path = full_path.to_str().unwrap().to_owned();
-        let full_path = PathBuf::from(full_path);
-        // let stat_struct = stat(&full_path)
-        //     .with_context(|| context!("Cannot read tracee's stat struct."))?;
-        // let inode = stat_struct.st_ino;
+    let file_event = generate_file_access(full_path, io, syscall_name, syscall_succeeded);
 
-        match open_mode {
-            // If it's opened for READING we assume
-            // you just wanna look at it but not touch.
-            // God I really need to sleep.
-            OpenMode::ReadOnly => {
-                let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
-                    None
-                } else {
-                    Some(generate_hash(path)?)
-                };
-                IOFile::InputFile(FileAccess::Success {
-                    file_name,
-                    full_path,
-                    hash,
-                    syscall_name,
-                })
-            }
-            // If it is opened for READ/WRITE or just WRITE,
-            // we assume y'all tryin' to make some changes
-            // to this here file.
-            // "Who is Michael? I'm Caleb Crawdad..."
-            _ => IOFile::OutputFile(FileAccess::Success {
-                file_name,
-                full_path,
-                hash: None, // Output file hashes are generated at the end of the execution.
-                syscall_name,
-            }),
-        }
-    } else {
-        // Failed, no fd, get path the old fashioned way.
-        let (file_name, full_path) = if file_name.is_absolute() {
-            let full_path = file_name;
-            let file_name = full_path
-                .file_name()
-                .with_context(|| context!("Cannot get file name from full path (open call)!"))?;
-            (PathBuf::from(file_name), full_path)
-        } else {
-            let cwd = execution.get_cwd();
-            let full_path = cwd.join(file_name.clone());
-            (file_name, full_path)
-        };
-
-        match open_mode {
-            OpenMode::ReadOnly => IOFile::InputFile(FileAccess::Failure {
-                file_name,
-                full_path,
-                syscall_name,
-            }),
-            _ => IOFile::OutputFile(FileAccess::Failure {
-                file_name,
-                full_path,
-                syscall_name,
-            }),
-        }
-    };
-    execution.add_new_file_event(file_event);
-    Ok(())
-}
-
-/// Handle read and pread64.
-/// We consider a 'read' system call to be a contents access.
-/// So these are considered inputs.
-fn handle_read(
-    execution: &RcExecution,
-    regs: &Regs<Unmodified>,
-    syscall_name: &str,
-    tracer: &Ptracer,
-) -> Result<()> {
-    let _e = span!(Level::INFO, "handle_read", pid=?tracer.curr_proc).entered();
-    debug!("File read event via: {}", syscall_name);
-
-    // retval = 0 is end of file but success.
-    // retval > 0 is number of bytes read.
-    // retval < ERROR.
-    let fd: i32 = regs.arg1();
-    let syscall_succeeded = regs.retval::<i32>() >= 0;
-    let syscall_name = String::from(syscall_name);
-
-    let file_access = if syscall_succeeded {
-        let full_path = path_from_fd(tracer.curr_proc, fd)?;
-        let full_path = PathBuf::from(full_path);
-        let file_name = full_path
-            .file_name()
-            .with_context(|| context!("Can't get path from path arg."))?;
-        let file_name = PathBuf::from(file_name);
-
-        let path = full_path.clone().into_os_string().into_string().unwrap();
-        let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
-            None
-        } else {
-            Some(generate_hash(path)?)
-        };
-        IOFile::InputFile(FileAccess::Success {
-            file_name,
-            full_path,
-            hash,
-            syscall_name,
-        })
-    } else {
-        IOFile::InputFile(FileAccess::Failure {
-            file_name: PathBuf::new(),
-            full_path: PathBuf::new(),
-            syscall_name,
-        })
-    };
-
-    execution.add_new_file_event(file_access);
+    if let Some(event) = file_event {
+        execution.add_new_file_event(event, io);
+    }
     Ok(())
 }
 
@@ -589,20 +449,16 @@ fn handle_stat(
     let ret_val: i32 = regs.retval();
     let syscall_succeeded = ret_val == 0;
 
-    let (file_name, full_path) = if syscall_name == "fstat" {
+    let full_path = if syscall_name == "fstat" {
         if syscall_succeeded {
             let fd = regs.arg1::<i32>();
             // TODO: Do something about stdin, stderr, stdout???
             if fd < 3 {
                 return Ok(());
             }
-            debug!("THE FD IS: {}", fd);
-            let path = path_from_fd(tracer.curr_proc, fd)?;
-            let full_path = PathBuf::from(path);
-            let file_name = full_path.file_name().unwrap();
-            (PathBuf::from(file_name), full_path)
+            get_full_path(PathArg::Fd(fd), tracer.curr_proc)?
         } else {
-            (PathBuf::new(), PathBuf::new())
+            PathBuf::new()
         }
     } else {
         // newstatat, stat
@@ -619,129 +475,75 @@ fn handle_stat(
             .read_c_string(arg)
             .with_context(|| context!("Can't get path from path arg."))?;
         let path_arg = PathBuf::from(path);
-
-        // TODO: I am just going to assume that if you give me
-        // the damn relative path then you want it relative to the
-        // cwd. Because who is calling newfstatat? WHO?
-        if path_arg.is_absolute() {
-            let full_path = path_arg;
-            let file_name = full_path
-                .file_name()
-                .expect("Cannot get file name from full path (stat call)");
-            (PathBuf::from(file_name), full_path)
-        } else {
-            let cwd = execution.get_cwd();
-            let full_path = cwd.join(path_arg.clone());
-            let file_name = path_arg;
-            (file_name, full_path)
-        }
+        get_full_path(PathArg::Path(path_arg), tracer.curr_proc)?
     };
 
     let syscall_name = String::from(syscall_name);
-    let file_event = if syscall_succeeded {
-        // let stat_struct = tracer
-        //     .read_value::<libc::stat>(regs.arg2())
-        //     .with_context(|| context!("Can't read stat struct"))?;
-        // let inode = stat_struct.st_ino;
-        let path = full_path.clone().into_os_string().into_string().unwrap();
-        debug!("PATH: {}", path);
-
-        let path_buf = PathBuf::from(path.clone());
-        // Let's not hash directories or devices because that doesn't
-        // make any goddamn sense.
-        if path_buf.is_dir() || path_buf.starts_with("/dev/") {
-            None
-        } else {
-            let hash = Some(generate_hash(path)?);
-            Some(IOFile::InputFile(FileAccess::Success {
-                file_name,
-                full_path,
-                hash,
-                syscall_name,
-            }))
-        }
-    } else {
-        Some(IOFile::InputFile(FileAccess::Failure {
-            file_name,
-            full_path,
-            syscall_name,
-        }))
-    };
+    let file_event = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
 
     if let Some(event) = file_event {
-        execution.add_new_file_event(event);
+        execution.add_new_file_event(event, IO::Input);
     }
     Ok(())
 }
 
-fn handle_write(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
-    // Okay, so here we have to deal with:
-    // TODO: stderr (fd 2)
-    // TODO: stdout (fd 1)
-    // fd > 2 regular file write (for now just files)
-    // Don't care about stdin (fd 0)
-
-    let sys_span = span!(Level::INFO, "handle_write", pid=?tracer.curr_proc);
-    sys_span.in_scope(|| {
-        debug!("File contents write event: (write)");
-    });
-
-    // retval = 0 is end of file but success.
-    // retval > 0 is number of bytes read.
-    // retval < 0 is ERROR
-    let ret_val: i32 = regs.retval();
-    // TODO: Something with stdout and stderr
-    // I am just going to ignore them completely for now lol.
-    // They will show up as "failed" writes.
-    let syscall_succeeded = ret_val > 2;
-    // Fd is an arg.
-    let fd = regs.arg1::<i32>();
-    let syscall_name = String::from("write");
-
-    let file_event = if syscall_succeeded {
-        // Get the path from the fd because the call was successful.
-        let path_arg = path_from_fd(tracer.curr_proc, fd)
-            .with_context(|| context!("Can't get path from fd."))?;
-        let path_arg = PathBuf::from(path_arg);
-
-        let (file_name, full_path) = if path_arg.is_absolute() {
-            let full_path = path_arg;
-            let file_name = full_path
-                .file_name()
-                .expect("Could not get file name from full path (write call)!");
-            (PathBuf::from(file_name), full_path)
-        } else {
-            let file_name = path_arg;
-            let cwd = execution.get_cwd();
-            let full_path = cwd.join(file_name.clone());
-            (file_name, full_path)
-        };
-        let hash = if full_path.is_dir() || full_path.starts_with("/dev/") {
-            None
-        } else {
-            let path = full_path.clone().into_os_string().into_string().unwrap();
-            Some(generate_hash(path)?)
-        };
-        IOFile::OutputFile(FileAccess::Success {
-            file_name,
-            full_path,
-            hash, // TODO: bring on the HASH!
-            syscall_name,
-        })
-    } else {
-        IOFile::OutputFile(FileAccess::Failure {
-            file_name: PathBuf::new(),
-            full_path: PathBuf::new(),
-            syscall_name,
-        })
-    };
-
-    execution.add_new_file_event(file_event);
-
-    Ok(())
+enum PathArg {
+    Fd(i32),
+    Path(PathBuf),
 }
 
-fn path_from_fd(pid: Pid, fd: i32) -> nix::Result<OsString> {
+fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
     let proc_path = format!("/proc/{}/fd/{}", pid, fd);
-    readlink(proc_path.as_str())
+    let proc_path = readlink(proc_path.as_str())?;
+    Ok(PathBuf::from(proc_path))
+}
+
+// Take in the path arg, either a string path or the
+// fd the system call provides. Create the canonicalized
+// version of the path and return it.
+fn get_full_path(path_arg: PathArg, pid: Pid) -> anyhow::Result<PathBuf> {
+    match path_arg {
+        PathArg::Fd(fd) => path_from_fd(pid, fd),
+        PathArg::Path(path) => Ok(fs::canonicalize(&path)?),
+    }
+}
+
+// Generate file access if appropriate,
+// return None if direcotry or standard out
+// or whatever else that's not a real file.
+fn generate_file_access(
+    full_path: PathBuf,
+    io_type: IO,
+    syscall_name: String,
+    syscall_succeeded: bool,
+) -> Option<FileAccess> {
+    // Why pass in the file name when there's a perfectly good file_name, in the full_path, just sittin' in the barn??
+    let file_name = full_path
+        .file_name()
+        .expect("Can't get file name in generate_file_access()!");
+    let file_name = PathBuf::from(file_name);
+    if !full_path.starts_with("/dev/pts") && !full_path.is_dir() {
+        if syscall_succeeded {
+            let path = full_path.clone().into_os_string().into_string().unwrap();
+            let hash = match io_type {
+                IO::Input => Some(generate_hash(path)),
+                // We generate the hash for the output at the end of the execution.
+                IO::Output => None,
+            };
+            Some(FileAccess::Success {
+                file_name,
+                full_path,
+                hash,
+                syscall_name,
+            })
+        } else {
+            Some(FileAccess::Failure {
+                file_name,
+                full_path,
+                syscall_name,
+            })
+        }
+    } else {
+        None
+    }
 }

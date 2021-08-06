@@ -69,6 +69,12 @@ impl Proc {
     // }
 }
 
+#[derive(Clone, Copy)]
+pub enum IO {
+    Input,
+    Output,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum OpenMode {
     ReadOnly,
@@ -94,93 +100,6 @@ pub enum FileAccess {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum IOFile {
-    InputFile(FileAccess),
-    OutputFile(FileAccess),
-}
-
-// #[derive(Debug)]
-// // TODO: differentiate between ABSOLUTE PATH and REL PATH?
-// pub enum FileAccess {
-//     // Open, openat
-//     FailedFileOpen {
-//         open_mode: OpenMode,
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-//     // Read's parameter is an fd (same for successful file read).
-//     // Read, pread64
-//     FailedFileRead {
-//         fd: i32,
-//         syscall_name: String,
-//     },
-//     // Stat doesn't have an fd, fstat literally takes an fd
-//     // Fstat doesn't have a path as a parameter, thus the option
-//     // Access, stat, fstat, newfstatat64
-//     FailedMetadataAccess {
-//         fd: Option<i32>,
-//         path: Option<PathBuf>,
-//         syscall_name: String,
-//     },
-//     // Open, openat.
-//     SuccessfulFileOpen {
-//         fd: i32,
-//         inode: u64,
-//         open_mode: OpenMode,
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-//     // Read, pread64.
-//     SuccessfulFileRead {
-//         fd: i32,
-//         inode: u64,
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-//     // Access, stat, fstat, newfstatat64
-//     SuccessfulMetadataAccess {
-//         fd: Option<i32>,
-//         inode: u64,
-//         path: Option<PathBuf>,
-//         syscall_name: String,
-//     },
-// }
-
-// #[derive(Debug)]
-// pub enum FileModification {
-//     // No need for open mode, we know it is WriteOnly.
-//     // Creat, open, openat (same for successful file create).
-//     FailedFileCreate {
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-//     // Write's parameter is an fd (same for successful file write).
-//     // Write / writev (TODO)
-//     FailedFileWrite {
-//         fd: i32,
-//         syscall_name: String,
-//     },
-//      // Want to know what they wrote to stderr.
-//     Stderr(String),
-//     // Want to know what they wrote to stdout.
-//     Stdout(String),
-//     // Creat, open, openat.
-//     SuccessfulFileCreate {
-//         fd: i32,
-//         inode: u64,
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-//     // Write, writev (TODO).
-//     SuccessfulFileWrite {
-//         fd: i32,
-//         inode: u64,
-//         path: PathBuf,
-//         syscall_name: String,
-//     },
-// }
-
 // Actual accesses to the file system performed by
 // a successful execution.
 // TODO: Handle stderr and stdout. I don't want to right
@@ -188,8 +107,8 @@ pub enum IOFile {
 // cover it.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecAccesses {
-    input_files: Vec<IOFile>,
-    output_files: Vec<IOFile>,
+    input_files: Vec<FileAccess>,
+    output_files: Vec<FileAccess>,
 }
 
 impl ExecAccesses {
@@ -202,35 +121,53 @@ impl ExecAccesses {
 
     // Add new access to the struct.
     // Stuff that doesn't acutally change the contents.
-    pub fn add_new_file_event(&mut self, file_access: IOFile) {
-        match file_access {
-            IOFile::InputFile(_) => self.input_files.push(file_access),
-            IOFile::OutputFile(_) => self.output_files.push(file_access),
+    pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
+        match io_type {
+            IO::Input => self.input_files.push(file_access),
+            IO::Output => self.output_files.push(file_access),
         }
     }
 
     // At the end of a successful execution, we get the hash of each output
-    // file.1
+    // file.
     pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
         for output in self.output_files.iter_mut() {
             println!("looping in add_output_file_hashes");
             println!("file name: {:?}", output);
-            if let IOFile::OutputFile(FileAccess::Success {
+            if let FileAccess::Success {
                 file_name: _,
                 full_path,
                 hash,
                 syscall_name: _,
-            }) = output
+            } = output
             {
-                if full_path.starts_with("/dev/") || full_path.is_dir() {
-                    *hash = None;
-                } else {
-                    let path = full_path.clone().into_os_string().into_string().unwrap();
-                    let hash_value = generate_hash(path)?;
-                    *hash = Some(hash_value);
-                }
+                let path = full_path.clone().into_os_string().into_string().unwrap();
+                let hash_value = generate_hash(path);
+                *hash = Some(hash_value);
             }
         }
+        Ok(())
+    }
+
+    pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
+        // Only want to copy output files that had successful
+        // accesses to the cache.
+        for output in self.output_files.iter() {
+            if let FileAccess::Success {
+                file_name,
+                full_path,
+                hash: _,
+                syscall_name: _,
+            } = output
+            {
+                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker");
+                let cache_path = cache_dir.join(file_name);
+                println!("cache path: {:?}", cache_path);
+                println!("full_path: {:?}", full_path);
+                // fs::copy(full_path, cache_path)?;
+            }
+        }
+        println!("end of copy outputs");
         Ok(())
     }
 }
@@ -295,10 +232,6 @@ impl ExecMetadata {
         self.pid = pid;
     }
 
-    fn get_cwd(&self) -> PathBuf {
-        self.cwd.clone()
-    }
-
     fn get_execution_name(&self) -> String {
         self.executable.clone()
     }
@@ -358,9 +291,9 @@ impl Execution {
         }
     }
 
-    pub fn add_new_file_event(&mut self, file: IOFile) {
+    pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
         match self {
-            Execution::Successful(_, accesses) => accesses.add_new_file_event(file),
+            Execution::Successful(_, accesses) => accesses.add_new_file_event(file_access, io_type),
             _ => panic!("Should not be adding file event to pending or failed execution!"),
         }
     }
@@ -373,10 +306,11 @@ impl Execution {
         }
     }
 
-    pub fn get_cwd(&self) -> PathBuf {
+    pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
         match self {
-            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.get_cwd(),
-            _ => panic!("Should not be getting cwd from pending execution!"),
+            Execution::Successful(_, accesses) => accesses.copy_outputs_to_cache(),
+            // Should this be some fancy kinda error? Meh?
+            _ => Ok(()),
         }
     }
 
@@ -391,10 +325,6 @@ impl Execution {
 
     fn is_successful(&self) -> bool {
         matches!(self, Execution::Successful(_, _))
-        // match self {
-        //     Execution::Successful(_, _) => true,
-        //     _ => false,
-        // }
     }
 }
 // Rc stands for reference counted.
@@ -413,10 +343,6 @@ impl RcExecution {
         }
     }
 
-    // pub fn add_child_process(&self, child_pid: Pid) {
-    //     self.execution.borrow_mut().add_child_process(child_pid);
-    // }
-
     pub fn add_exit_code(&self, code: i32, exec_pid: Pid) {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
@@ -434,17 +360,18 @@ impl RcExecution {
             .add_identifiers(args, cwd, env_vars, executable, pid);
     }
 
-    pub fn add_new_file_event(&self, file: IOFile) {
-        self.execution.borrow_mut().add_new_file_event(file);
+    pub fn add_new_file_event(&self, file_access: FileAccess, io_type: IO) {
+        self.execution
+            .borrow_mut()
+            .add_new_file_event(file_access, io_type);
     }
 
     pub fn add_output_file_hashes(&self) -> anyhow::Result<()> {
         self.execution.borrow_mut().add_output_file_hashes()
     }
-
-    pub fn get_cwd(&self) -> PathBuf {
-        // let execution = self.execution.borrow();
-        self.execution.borrow().get_cwd()
+    pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
+        println!("in copy outputs");
+        self.execution.borrow().copy_outputs_to_cache()
     }
 
     pub fn get_execution_name(&self) -> String {
@@ -480,19 +407,6 @@ impl GlobalExecutions {
         self.executions.borrow().len() as i32
     }
 
-    // Get exec struct from cache. Return None if we have never seen it.
-    // pub fn retrieve_exec(&self, command_line_executable: String) -> Option<Execution> {
-    //     for exec in self.executions.borrow().iter() {
-    //         // Check if any execution struct existing in the cache matches this
-    //         // executable name. If so, return the struct.
-    //         // TODO: WAY better checking.
-    //         if exec.get_execution_name() == command_line_executable {
-    //             return Some(exec.get_execution_info());
-    //         }
-    //     }
-    //     None
-    // }
-
     // Return bool whether the execution name shows up in the cache.
     pub fn has_cached_success(&self, command_line_executable: String) -> bool {
         for exec in self.executions.borrow().iter() {
@@ -520,7 +434,7 @@ impl GlobalExecutions {
 // }
 
 // Process the file and generate the hash.
-fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u8>> {
+fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
     const BUFFER_SIZE: usize = 1024;
     let mut sh = D::default();
     let mut buffer = [0u8; BUFFER_SIZE];
@@ -529,7 +443,9 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u
         //     Ok(n) => n,
         //     Err(_) => return,
         // };
-        let n = reader.read(&mut buffer)?;
+        let n = reader
+            .read(&mut buffer)
+            .expect("Could not read buffer from reader processing hash!");
         sh.update(&buffer[..n]);
         if n == 0 || n < BUFFER_SIZE {
             break;
@@ -539,14 +455,13 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> anyhow::Result<Vec<u
     }
 
     let final_array = &sh.finalize();
-    let final_vec_hash = final_array.to_vec();
-    Ok(final_vec_hash)
+    final_array.to_vec()
     // print_result(&sh.finalize(), name);
 }
 
-pub fn generate_hash(path: String) -> anyhow::Result<Vec<u8>> {
+pub fn generate_hash(path: String) -> Vec<u8> {
     println!("made it to generate_hash");
-    let mut file = fs::File::open(&path)?;
+    let mut file = fs::File::open(&path).expect("Could not open file to generate hash");
     process::<Sha256, _>(&mut file)
 }
 
