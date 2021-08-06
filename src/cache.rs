@@ -69,7 +69,7 @@ impl Proc {
     // }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum IO {
     Input,
     Output,
@@ -88,13 +88,20 @@ pub enum OpenMode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum FileAccess {
     Success {
-        file_name: PathBuf,
+        // Some files we may not be able to get the full path.
+        // So the full path is just whatever we got in the argument.
+        // Example: /etc/ld.so.preload
         full_path: PathBuf,
+        // When it's an output file, we don't get the hash
+        // until the end of the execution, because the contents
+        // of the file may change.
         hash: Option<Vec<u8>>,
         syscall_name: String,
     },
     Failure {
-        file_name: PathBuf,
+        // Some files we may not be able to get the full path.
+        // Example: if fstat() fails, we can't get the full path.
+        // So we just leave it empty.
         full_path: PathBuf,
         syscall_name: String,
     },
@@ -135,7 +142,6 @@ impl ExecAccesses {
             println!("looping in add_output_file_hashes");
             println!("file name: {:?}", output);
             if let FileAccess::Success {
-                file_name: _,
                 full_path,
                 hash,
                 syscall_name: _,
@@ -154,12 +160,14 @@ impl ExecAccesses {
         // accesses to the cache.
         for output in self.output_files.iter() {
             if let FileAccess::Success {
-                file_name,
                 full_path,
                 hash: _,
                 syscall_name: _,
             } = output
             {
+                let file_name = full_path
+                    .file_name()
+                    .expect("Can't get file name in copy_outputs_to_cache()!");
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker");
                 let cache_path = cache_dir.join(file_name);
                 println!("cache path: {:?}", cache_path);
