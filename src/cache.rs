@@ -168,11 +168,12 @@ impl ExecAccesses {
                 let file_name = full_path
                     .file_name()
                     .expect("Can't get file name in copy_outputs_to_cache()!");
-                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker");
+                println!("the file name is: {:?}", file_name);
+                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cache_path = cache_dir.join(file_name);
                 println!("cache path: {:?}", cache_path);
                 println!("full_path: {:?}", full_path);
-                // fs::copy(full_path, cache_path)?;
+                fs::copy(full_path, cache_path)?;
             }
         }
         println!("end of copy outputs");
