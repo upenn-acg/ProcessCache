@@ -1,4 +1,3 @@
-use libc::SYS_rt_sigprocmask;
 #[allow(unused_imports)]
 use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 #[allow(unused_imports)]
@@ -203,22 +202,24 @@ pub async fn trace_process(
                         // Because both of those technically are executions.
                         new_execution.add_identifiers(
                             args,
-                            cwd_pathbuf,
+                            tracer.curr_proc,
                             envp,
                             path_name.clone(),
-                            tracer.curr_proc,
+                            cwd_pathbuf,
                         );
 
-                        if global_executions.has_cached_success(path_name) {
-                            // Skip me!
+                        let cached_exec =
+                            global_executions.get_cached_success(new_execution.clone());
+                        if let Some(exec) = cached_exec {
                             debug!("Cached success found for execution!");
                             skip_execution = true;
+                            curr_execution = exec;
                         } else {
-                            debug!("No entry for execution found in cache!");
+                            debug!("No cached success found for this execution!");
                             global_executions.add_new_execution(new_execution.clone());
+                            curr_execution = new_execution;
                         }
 
-                        curr_execution = new_execution;
                         continue;
                     }
                     "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
@@ -330,9 +331,18 @@ pub async fn trace_process(
             // TODO: Should these just be called from a function called
             // like "do_exit_stuff" (obviously something better but you
             // get me)
-            curr_execution.add_exit_code(exit_code, pid);
-            curr_execution.add_output_file_hashes()?;
-            curr_execution.copy_outputs_to_cache()?;
+            debug!("Skip execution is: {}", skip_execution);
+            if skip_execution {
+                // Woo! We are skipping thise execution.
+                // We need to serve the output files.
+                curr_execution.serve_outputs_from_cache()?;
+            } else {
+                // This is a new (or at least new version?) execution,
+                // add/update all the necessary stuff in the cache.
+                curr_execution.add_exit_code(exit_code, pid);
+                curr_execution.add_output_file_hashes()?;
+                curr_execution.copy_outputs_to_cache()?;
+            }
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",

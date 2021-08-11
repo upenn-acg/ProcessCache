@@ -8,7 +8,6 @@ use std::fs;
 use std::io::Read;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
-
 // All this crazy stuff here. There is a method to the madness!
 // Because we just **have** to use nix::unistd::Pid, which is weird
 // and doesn't implement Serialize or Deserialize, and even if I wanted
@@ -88,6 +87,7 @@ pub enum OpenMode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum FileAccess {
     Success {
+        // PathBuf here (in both cases) is the full path to the file.
         // Some files we may not be able to get the full path.
         // So the full path is just whatever we got in the argument.
         // Example: /etc/ld.so.preload
@@ -107,6 +107,41 @@ pub enum FileAccess {
     },
 }
 
+impl FileAccess {
+    fn full_path(&self) -> PathBuf {
+        match self {
+            FileAccess::Success {
+                full_path,
+                hash: _,
+                syscall_name: _,
+            } => full_path.clone(),
+            FileAccess::Failure {
+                full_path,
+                syscall_name: _,
+            } => full_path.clone(),
+        }
+    }
+
+    fn hash(&self) -> Vec<u8> {
+        match self {
+            FileAccess::Success {
+                full_path: _,
+                hash,
+                syscall_name: _,
+            } => {
+                if let Some(hash_vals) = hash {
+                    hash_vals.clone()
+                } else {
+                    Vec::new()
+                }
+            }
+            FileAccess::Failure {
+                full_path: _,
+                syscall_name: _,
+            } => panic!("No hash for failed file access!"),
+        }
+    }
+}
 // Actual accesses to the file system performed by
 // a successful execution.
 // TODO: Handle stderr and stdout. I don't want to right
@@ -130,6 +165,8 @@ impl ExecAccesses {
     // Stuff that doesn't acutally change the contents.
     pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
         match io_type {
+            // TODO: make this do nice error things
+            // IO::Input => self.input_files.insert(full_path, file_access).map_or(Ok(()), |_| Err(())),
             IO::Input => self.input_files.push(file_access),
             IO::Output => self.output_files.push(file_access),
         }
@@ -140,7 +177,7 @@ impl ExecAccesses {
     pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
         for output in self.output_files.iter_mut() {
             println!("looping in add_output_file_hashes");
-            println!("file name: {:?}", output);
+            println!("output: {:?}", output);
             if let FileAccess::Success {
                 full_path,
                 hash,
@@ -169,6 +206,7 @@ impl ExecAccesses {
                     .file_name()
                     .expect("Can't get file name in copy_outputs_to_cache()!");
                 println!("the file name is: {:?}", file_name);
+
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cache_path = cache_dir.join(file_name);
                 println!("cache path: {:?}", cache_path);
@@ -176,8 +214,46 @@ impl ExecAccesses {
                 fs::copy(full_path, cache_path)?;
             }
         }
-        println!("end of copy outputs");
+        println!("end of copy outputs to cache");
         Ok(())
+    }
+
+    pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
+        println!("beginning of serve_outputs_from_cache");
+        println!("size of inputs: {}", self.input_files.len());
+        println!("Size of outputs: {}", self.output_files.len());
+        for output in self.output_files.iter() {
+            println!("output: {:?}", output);
+            if let FileAccess::Success {
+                full_path,
+                hash: _,
+                syscall_name: _,
+            } = output
+            {
+                println!("hi i am here");
+                let file_name = full_path
+                    .file_name()
+                    .expect("Can't get file name for output file in serve_outputs_from_cache()!");
+                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
+                let cached_output_path = cache_dir.join(file_name);
+                // 1) Check if the output file is there.
+                if !full_path.exists() {
+                    // 2) It's not, great! Then copy the file from the cache.
+                    fs::copy(cached_output_path, full_path)?;
+                }
+                // Otherwise we don't need to do anything.
+                // A separate function outputs_match() checks that
+                // for each output:
+                // - if it IS there, hash it, compare it to cached hash.
+                // - if any of these checks fail, outputs_match() returns FALSE
+                //   and we don't end up here, because skip_execution would also be FALSE.S
+            }
+        }
+        Ok(())
+    }
+
+    fn inputs(&self) -> Vec<FileAccess> {
+        self.input_files.clone()
     }
 }
 
@@ -190,7 +266,10 @@ impl ExecAccesses {
 pub struct ExecMetadata {
     args: Vec<String>,
     // child_processes: Vec<Pid>, TODO: deal with child / dependent executions
-    cwd: PathBuf,
+    // The cwd can change during the execution, this is fine.
+    // I am tracking absolute paths anyways.
+    // This does need to match at the beginning of the execution though.
+    starting_cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
@@ -200,7 +279,7 @@ pub struct ExecMetadata {
     // So while an execution is running this is None.
     exit_code: Option<i32>,
     #[serde(skip)]
-    pid: Proc,
+    caller_pid: Proc,
 }
 
 impl ExecMetadata {
@@ -208,17 +287,13 @@ impl ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
             // child_processes: Vec::new(),
-            cwd: PathBuf::new(),
+            starting_cwd: PathBuf::new(),
             env_vars: Vec::new(),
             executable: String::new(),
             exit_code: None,
-            pid: Proc::default(),
+            caller_pid: Proc::default(),
         }
     }
-
-    // fn add_child_process(&mut self, child_pid: Pid) {
-    //     self.child_processes.push(child_pid);
-    // }
 
     fn add_exit_code(&mut self, code: i32) {
         self.exit_code = Some(code);
@@ -227,27 +302,35 @@ impl ExecMetadata {
     fn add_identifiers(
         &mut self,
         args: Vec<String>,
-        cwd: PathBuf,
+        caller_pid: Pid,
         env_vars: Vec<String>,
         executable: String,
-        pid: Pid,
+        starting_cwd: PathBuf,
     ) {
         self.args = args;
-        self.cwd = cwd;
+        self.starting_cwd = starting_cwd;
         self.env_vars = env_vars;
         self.executable = executable;
 
-        let pid = Proc(pid);
-        self.pid = pid;
+        let pid = Proc(caller_pid);
+        self.caller_pid = pid;
     }
 
-    fn get_execution_name(&self) -> String {
+    fn args(&self) -> Vec<String> {
+        self.args.clone()
+    }
+
+    fn caller_pid(&self) -> Pid {
+        let Proc(actual_pid) = self.caller_pid;
+        actual_pid
+    }
+
+    fn execution_name(&self) -> String {
         self.executable.clone()
     }
 
-    fn get_pid(&self) -> Pid {
-        let Proc(actual_pid) = self.pid;
-        actual_pid
+    fn starting_cwd(&self) -> PathBuf {
+        self.starting_cwd.clone()
     }
 }
 
@@ -261,19 +344,12 @@ pub enum Execution {
 }
 
 impl Execution {
-    // pub fn add_child_process(&mut self, child_pid: Pid) {
-    //     match self {
-    //         Execution::Successful(metadata, _) => metadata.add_child_process(child_pid),
-    //         _ => panic!("Trying to add child process to failed or pending execution!"),
-    //     }
-    // }
-
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
             Execution::Failed(meta) | Execution::Successful(meta, _) => {
                 // Only want the exit code if this is the process
                 // that actually exec'd the process.
-                let exec_pid = meta.get_pid();
+                let exec_pid = meta.caller_pid();
                 if exec_pid == pid {
                     meta.add_exit_code(exit_code);
                 }
@@ -287,14 +363,14 @@ impl Execution {
     pub fn add_identifiers(
         &mut self,
         args: Vec<String>,
-        cwd: PathBuf,
+        caller_pid: Pid,
         env_vars: Vec<String>,
         executable: String,
-        pid: Pid,
+        starting_cwd: PathBuf,
     ) {
         match self {
             Execution::Failed(metadata) | Execution::Successful(metadata, _) => {
-                metadata.add_identifiers(args, cwd, env_vars, executable, pid)
+                metadata.add_identifiers(args, caller_pid, env_vars, executable, starting_cwd)
             }
             Execution::Pending => panic!("Should not be adding identifiers to pending exec!"),
         }
@@ -315,6 +391,22 @@ impl Execution {
         }
     }
 
+    fn args(&self) -> Vec<String> {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.args(),
+            _ => panic!("Should not be getting args from pending execution!"),
+        }
+    }
+
+    fn caller_pid(&self) -> Pid {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
+                metadata.caller_pid()
+            }
+            _ => panic!("Should not be getting caller pid from pending execution!"),
+        }
+    }
+
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
         match self {
             Execution::Successful(_, accesses) => accesses.copy_outputs_to_cache(),
@@ -323,17 +415,50 @@ impl Execution {
         }
     }
 
-    pub fn get_execution_name(&self) -> String {
+    fn execution_name(&self) -> String {
         match self {
             Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
-                metadata.get_execution_name()
+                metadata.execution_name()
             }
             _ => panic!("Should not be getting execution name from pending execution!"),
         }
     }
 
+    fn inputs(&self) -> Vec<FileAccess> {
+        match self {
+            Execution::Successful(_, accesses) => accesses.inputs(),
+            Execution::Failed(_) => panic!("Should not be getting inputs of failed execution!"),
+            Execution::Pending => panic!("Should not be getting inputs of pending execution!"),
+        }
+    }
+
     fn is_successful(&self) -> bool {
         matches!(self, Execution::Successful(_, _))
+    }
+
+    fn metadata(&self) -> ExecMetadata {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.clone(),
+            _ => panic!("Should not be getting metadata of pending execution"),
+        }
+    }
+
+    fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
+        match self {
+            Execution::Successful(_, accesses) => accesses.serve_outputs_from_cache(),
+            // We shouldn't even get here if the execution is pending or failed, because
+            // skip_execution is only ever set to true for successful executions.
+            _ => Ok(()),
+        }
+    }
+
+    fn starting_cwd(&self) -> PathBuf {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
+                metadata.starting_cwd()
+            }
+            _ => panic!("Should not be getting starting cwd from pending execution!"),
+        }
     }
 }
 // Rc stands for reference counted.
@@ -359,14 +484,18 @@ impl RcExecution {
     pub fn add_identifiers(
         &self,
         args: Vec<String>,
-        cwd: PathBuf,
+        caller_pid: Pid,
         env_vars: Vec<String>,
         executable: String,
-        pid: Pid,
+        starting_cwd: PathBuf,
     ) {
-        self.execution
-            .borrow_mut()
-            .add_identifiers(args, cwd, env_vars, executable, pid);
+        self.execution.borrow_mut().add_identifiers(
+            args,
+            caller_pid,
+            env_vars,
+            executable,
+            starting_cwd,
+        );
     }
 
     pub fn add_new_file_event(&self, file_access: FileAccess, io_type: IO) {
@@ -378,17 +507,38 @@ impl RcExecution {
     pub fn add_output_file_hashes(&self) -> anyhow::Result<()> {
         self.execution.borrow_mut().add_output_file_hashes()
     }
+
+    fn args(&self) -> Vec<String> {
+        self.execution.borrow().args()
+    }
+
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
-        println!("in copy outputs");
+        println!("in copy outputs to cache");
         self.execution.borrow().copy_outputs_to_cache()
     }
 
-    pub fn get_execution_name(&self) -> String {
-        self.execution.borrow().get_execution_name()
+    pub fn execution_name(&self) -> String {
+        self.execution.borrow().execution_name()
+    }
+
+    fn inputs(&self) -> Vec<FileAccess> {
+        self.execution.borrow().inputs()
     }
 
     fn is_successful(&self) -> bool {
         self.execution.borrow().is_successful()
+    }
+
+    fn metadata(&self) -> ExecMetadata {
+        self.execution.borrow().metadata()
+    }
+
+    pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
+        self.execution.borrow().serve_outputs_from_cache()
+    }
+
+    pub fn starting_cwd(&self) -> PathBuf {
+        self.execution.borrow().starting_cwd()
     }
 }
 
@@ -417,21 +567,87 @@ impl GlobalExecutions {
     }
 
     // Return bool whether the execution name shows up in the cache.
-    pub fn has_cached_success(&self, command_line_executable: String) -> bool {
-        for exec in self.executions.borrow().iter() {
-            // Check if any execution struct existing in the cache matches this
-            // We should skip it if:
-            // - it WAS in the cache before (we didn't add it now)
-            // - it was successful
-            // TODO: WAY better checking.
-            if exec.get_execution_name() == command_line_executable && exec.is_successful() {
-                return true;
+    pub fn get_cached_success(&self, new_exec: RcExecution) -> Option<RcExecution> {
+        // Don't want to skip if it isn't successful.
+        // For now, really just want to deal with SUCCESS.
+        // TODO: What if the new execution is a failure?
+        // TODO: What if the cached execution is a failure?
+        // And all that other crap.
+        if new_exec.is_successful() {
+            for cached_exec in self.executions.borrow().iter() {
+                if exec_metadata_matches(cached_exec.clone(), new_exec.clone()) {
+                    // TODO: Check inputs
+                    // && inputs_match(cached_exec.clone()) {
+                    return Some(cached_exec.clone());
+                    // TODO: Check outputs
+                }
             }
+            None
+        } else {
+            // TODO: deal with failed executions...
+            None
         }
-        false
     }
 }
 
+// It's a lot of logic to do all the metadata checking
+fn exec_metadata_matches(cached_exec: RcExecution, new_exec: RcExecution) -> bool {
+    let new_executable = new_exec.execution_name();
+    let new_starting_cwd = new_exec.starting_cwd();
+    let new_args = new_exec.args();
+
+    // Check if any execution struct existing in the cache matches this
+    // We should skip it if:
+    // - it WAS in the cache before (loop)
+    // - it was successful
+    // - execution name matches
+    // - arguments match
+    // - starting cwd matches
+    // TODO: check env vars too
+    // Why do I fear environment variables?
+    cached_exec.execution_name() == new_executable
+        && cached_exec.is_successful()
+        && new_args == cached_exec.args()
+        && new_starting_cwd == cached_exec.starting_cwd()
+}
+
+// The inputs in the cached execution match the
+// new execution's inputs, the hashes match,
+// and they are in the correct absolute path locations.
+
+// Can't just pass in "new_exec" this has no info about the inputs!
+// We have to check the fs (cwd) for this stuff!
+// Bruh, why is this so much programming???
+fn inputs_match(cached_exec: RcExecution) -> bool {
+    let cached_inputs = cached_exec.inputs();
+    // First, they must share the same inputs.
+    // So get the keys of each and check that they are equal?
+    // TODO: Check hashes
+    for cached_inp in cached_inputs.into_iter() {
+        let full_path = cached_inp.full_path();
+        if !full_path.exists() {
+            return false;
+        } else {
+            // 1) Hash the file that is there right now.
+            let full_path = full_path.clone().into_os_string().into_string().unwrap();
+            println!("Checking input file full path hash: {}", full_path);
+            let new_hash = generate_hash(full_path);
+
+            // 2) Get the hash from the cached file access.
+            let thats_old_hash = cached_inp.hash();
+
+            // 3) Compare the new hash to the old hash.
+            if !(new_hash.iter().all(|x| thats_old_hash.contains(x))) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn outputs_match() {
+    // TODO: output files are not there OR are there and match hashes we have in the cache.
+}
 // ------ Hashing stuff ------
 
 /// Print digest result as hex string and name pair
@@ -502,67 +718,3 @@ fn write_serialized_execs_to_cache(serialized_execs: Vec<u8>) {
     )
     .expect("Failed to write serialized executions to cache!");
 }
-
-// For testing: let's you look at the files before you serialize them.
-// let original_output_files = global_executions
-// .executions
-// .borrow_mut()
-// .iter()
-// .flat_map(|ex| match *ex.execution.borrow() {
-//     Execution::Successful(_, ref accesses) => accesses
-//         .output_files
-//         .iter()
-//         .filter_map(|f| match f {
-//             IOFile::OutputFile(
-//                 FileAccess::Failure {
-//                     full_path: _,
-//                     syscall_name: _,
-//                     file_name,
-//                 }
-//                 | FileAccess::Success {
-//                     full_path: _,
-//                     hash: _,
-//                     syscall_name: _,
-//                     file_name,
-//                 },
-//             ) => Some(file_name.to_str().unwrap().to_owned()),
-//             _ => None,
-//         })
-//         .collect::<Vec<String>>(),
-//     _ => vec![],
-// })
-// .collect::<Vec<String>>();
-// println!("Before serialize:  {:?}", original_output_files);
-
-// For testing: let's you look at the execs a
-// println!("serialized execs: {:?}", serialized_execs);
-// let global_execs: GlobalExecutions = rmp_serde::from_read_ref(&serialized_execs).unwrap();
-// let final_output_files = global_execs
-// .executions
-// .borrow_mut()
-// .iter()
-// .flat_map(|ex| match *ex.execution.borrow() {
-//     Execution::Successful(_, ref accesses) => accesses
-//         .output_files
-//         .iter()
-//         .filter_map(|f| match f {
-//             IOFile::OutputFile(
-//                 FileAccess::Failure {
-//                     full_path: _,
-//                     syscall_name: _,
-//                     file_name,
-//                 }
-//                 | FileAccess::Success {
-//                     full_path: _,
-//                     hash: _,
-//                     syscall_name: _,
-//                     file_name,
-//                 },
-//             ) => Some(file_name.to_str().unwrap().to_owned()),
-//             _ => None,
-//         })
-//         .collect::<Vec<String>>(),
-//     _ => vec![],
-// })
-// .collect::<Vec<String>>();
-// println!("Final output files:  {:?}", final_output_files);
