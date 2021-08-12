@@ -225,6 +225,14 @@ impl ExecAccesses {
         Ok(())
     }
 
+    fn inputs(&self) -> Vec<FileAccess> {
+        self.input_files.clone()
+    }
+
+    fn outputs(&self) -> Vec<FileAccess> {
+        self.output_files.clone()
+    }
+
     pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
         println!("beginning of serve_outputs_from_cache");
         println!("size of inputs: {}", self.input_files.len());
@@ -257,10 +265,6 @@ impl ExecAccesses {
             }
         }
         Ok(())
-    }
-
-    fn inputs(&self) -> Vec<FileAccess> {
-        self.input_files.clone()
     }
 }
 
@@ -461,6 +465,14 @@ impl Execution {
         }
     }
 
+    fn outputs(&self) -> Vec<FileAccess> {
+        match self {
+            Execution::Successful(_, accesses) => accesses.outputs(),
+            Execution::Failed(_) => panic!("Should not be getting outputs of failed execution!"),
+            Execution::Pending => panic!("Should not be getting outputs of pending execution!"),
+        }
+    }
+
     fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
         match self {
             Execution::Successful(_, accesses) => accesses.serve_outputs_from_cache(),
@@ -555,6 +567,10 @@ impl RcExecution {
         self.execution.borrow().metadata()
     }
 
+    fn outputs(&self) -> Vec<FileAccess> {
+        self.execution.borrow().outputs()
+    }
+
     pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
         self.execution.borrow().serve_outputs_from_cache()
     }
@@ -599,11 +615,12 @@ impl GlobalExecutions {
             for cached_exec in self.executions.borrow().iter() {
                 let metadata_match = exec_metadata_matches(cached_exec.clone(), new_exec.clone());
                 let inputs_match = inputs_match(cached_exec.clone());
+                let outputs_match = outputs_match(cached_exec.clone());
                 println!("metadata match: {}", metadata_match);
                 println!("inputs_match: {}", inputs_match);
                 // TODO: Check outputs
 
-                if metadata_match && inputs_match {
+                if metadata_match && inputs_match && outputs_match {
                     return Some(cached_exec.clone());
                 }
             }
@@ -685,8 +702,38 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
     true
 }
 
-fn outputs_match() {
+fn outputs_match(curr_execution: RcExecution) -> bool {
     // TODO: output files are not there OR are there and match hashes we have in the cache.
+    let cached_outputs = curr_execution.outputs();
+
+    for output in cached_outputs.into_iter() {
+        if let FileAccess::Success {
+            full_path,
+            hash,
+            syscall_name: _,
+        } = output
+        {
+            // If the output file does indeed exist,
+
+            if full_path.exists() {
+                println!("I am the output and I exist");
+                if let Some(old_hash) = hash {
+                    let full_path = full_path.clone().into_os_string().into_string().unwrap();
+                    let new_hash = generate_hash(full_path.clone());
+
+                    // Compare the new hash to the old hash.
+                    if !(new_hash.iter().all(|x| old_hash.contains(x))) {
+                        println!("gonna return false b/c hashes don't match");
+                        return false;
+                    }
+                }
+            }
+            // If it doesn't exist, fantastic
+            // MOVE ON it doesn't exist.
+        }
+    }
+    println!("All outputs match!");
+    true
 }
 // ------ Hashing stuff ------
 
