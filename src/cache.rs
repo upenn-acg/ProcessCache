@@ -325,6 +325,10 @@ impl ExecMetadata {
         actual_pid
     }
 
+    fn env_vars(&self) -> Vec<String> {
+        self.env_vars.clone()
+    }
+
     fn execution_name(&self) -> String {
         self.executable.clone()
     }
@@ -412,6 +416,13 @@ impl Execution {
             Execution::Successful(_, accesses) => accesses.copy_outputs_to_cache(),
             // Should this be some fancy kinda error? Meh?
             _ => Ok(()),
+        }
+    }
+
+    fn env_vars(&self) -> Vec<String> {
+        match self {
+            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.env_vars(),
+            _ => panic!("Should not be getting execution name from pending execution!"),
         }
     }
 
@@ -517,6 +528,10 @@ impl RcExecution {
         self.execution.borrow().copy_outputs_to_cache()
     }
 
+    fn env_vars(&self) -> Vec<String> {
+        self.execution.borrow().env_vars()
+    }
+
     pub fn execution_name(&self) -> String {
         self.execution.borrow().execution_name()
     }
@@ -578,10 +593,12 @@ impl GlobalExecutions {
                 if exec_metadata_matches(cached_exec.clone(), new_exec.clone()) {
                     // TODO: Check inputs
                     // && inputs_match(cached_exec.clone()) {
+                    println!("Metadata matches!");
                     return Some(cached_exec.clone());
                     // TODO: Check outputs
                 }
             }
+            println!("Metadata doesn't match!");
             None
         } else {
             // TODO: deal with failed executions...
@@ -595,7 +612,7 @@ fn exec_metadata_matches(cached_exec: RcExecution, new_exec: RcExecution) -> boo
     let new_executable = new_exec.execution_name();
     let new_starting_cwd = new_exec.starting_cwd();
     let new_args = new_exec.args();
-
+    let new_env_vars = new_exec.env_vars();
     // Check if any execution struct existing in the cache matches this
     // We should skip it if:
     // - it WAS in the cache before (loop)
@@ -603,12 +620,15 @@ fn exec_metadata_matches(cached_exec: RcExecution, new_exec: RcExecution) -> boo
     // - execution name matches
     // - arguments match
     // - starting cwd matches
-    // TODO: check env vars too
-    // Why do I fear environment variables?
+    // - env vars match
     cached_exec.execution_name() == new_executable
         && cached_exec.is_successful()
+        // TODO: Is checking Vec<String> (args and env_vars)
+        // against another vector by just straight equals
+        // okay here?
         && new_args == cached_exec.args()
         && new_starting_cwd == cached_exec.starting_cwd()
+        && new_env_vars == cached_exec.env_vars()
 }
 
 // The inputs in the cached execution match the
