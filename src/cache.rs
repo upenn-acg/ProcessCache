@@ -95,6 +95,8 @@ pub enum FileAccess {
         // When it's an output file, we don't get the hash
         // until the end of the execution, because the contents
         // of the file may change.
+        // Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
+        // files, so they get no hash. 
         hash: Option<Vec<u8>>,
         syscall_name: String,
     },
@@ -122,18 +124,18 @@ impl FileAccess {
         }
     }
 
-    fn hash(&self) -> Vec<u8> {
-        match self {
+    // Returns an option because we may:
+    // - maybe haven't hashed yet because it is an output file
+    // - maybe we shouldn't try to hash because it's unhashable
+    //   (dirs, /etc/, /dev/pts are my current culprits)
+    fn hash(&self) -> Option<Vec<u8>> {
+        match *self {
             FileAccess::Success {
                 full_path: _,
                 hash,
                 syscall_name: _,
             } => {
-                if let Some(hash_vals) = hash {
-                    hash_vals.clone()
-                } else {
-                    Vec::new()
-                }
+                hash
             }
             FileAccess::Failure {
                 full_path: _,
@@ -590,12 +592,14 @@ impl GlobalExecutions {
         // And all that other crap.
         if new_exec.is_successful() {
             for cached_exec in self.executions.borrow().iter() {
-                if exec_metadata_matches(cached_exec.clone(), new_exec.clone()) {
-                    // TODO: Check inputs
-                    // && inputs_match(cached_exec.clone()) {
-                    println!("Metadata matches!");
-                    return Some(cached_exec.clone());
+                let metadata_match = exec_metadata_matches(cached_exec.clone(), new_exec.clone());
+                let inputs_match = inputs_match(cached_exec.clone());
+                println!("metadata match: {}", metadata_match);
+                println!("inputs_match: {}", inputs_match);
                     // TODO: Check outputs
+                
+                if metadata_match && inputs_match {
+                    return Some(cached_exec.clone());
                 }
             }
             println!("Metadata doesn't match!");
@@ -645,23 +649,33 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
     // TODO: Check hashes
     for cached_inp in cached_inputs.into_iter() {
         let full_path = cached_inp.full_path();
-        if !full_path.exists() {
-            return false;
-        } else {
-            // 1) Hash the file that is there right now.
-            let full_path = full_path.clone().into_os_string().into_string().unwrap();
-            println!("Checking input file full path hash: {}", full_path);
-            let new_hash = generate_hash(full_path);
+        println!("Checking cached input: {:?}", full_path.clone());
 
-            // 2) Get the hash from the cached file access.
-            let thats_old_hash = cached_inp.hash();
-
-            // 3) Compare the new hash to the old hash.
-            if !(new_hash.iter().all(|x| thats_old_hash.contains(x))) {
+        // Get the old hash
+        let thats_old_hash = cached_inp.hash();
+        // Only check these things if it's a true file.
+        // If the hash is None, we can just move on.
+        if let Some(old_hash) = thats_old_hash {
+            if !full_path.exists() {
+                println!("gonna return false b/c full path doesn't exist");
                 return false;
+            } else {
+                // 1) Hash the file that is there right now.
+                let full_path = full_path.clone().into_os_string().into_string().unwrap();
+                println!("Checking input file full path hash: {}", full_path.clone());
+                let new_hash = generate_hash(full_path.clone());
+    
+                // 3) Compare the new hash to the old hash.
+                if !(new_hash.iter().all(|x| old_hash.contains(x))) {
+                    println!("gonna return false b/c hashes don't match");
+                    return false;
+                }
             }
         }
+
+
     }
+    println!("All inputs match!");
     true
 }
 
