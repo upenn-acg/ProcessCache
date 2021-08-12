@@ -59,9 +59,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    for exec in global_executions.executions.borrow().iter() {
-        println!("Execution: {:?}", exec);
-    }
+    // for exec in global_executions.executions.borrow().iter() {
+    //     println!("Execution: {:?}", exec);
+    // }
     let length = global_executions.get_execution_count();
     println!("Number of executions: {}", length);
 
