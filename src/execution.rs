@@ -335,6 +335,7 @@ pub async fn trace_process(
             if skip_execution {
                 // Woo! We are skipping thise execution.
                 // We need to serve the output files.
+                // TODO: Put exit code.. somewhere?
                 curr_execution.serve_outputs_from_cache()?;
             } else {
                 // This is a new (or at least new version?) execution,
