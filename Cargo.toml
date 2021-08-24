@@ -26,6 +26,10 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 # name = "command_ls"
 # path = "src/command_ls.rs"
 
+[[example]]
+name = "hashes_are_equal"
+path = "src/hashes_are_equal.rs"
+
 # [[example]]
 # name = "hashslinger"
 # path = "src/hashslinger.rs"

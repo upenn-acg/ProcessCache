@@ -202,6 +202,8 @@ impl ExecAccesses {
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
         // Only want to copy output files that had successful
         // accesses to the cache.
+        // TODO: check if file is there, if it is, check against
+        // OG output hash
         for output in self.output_files.iter() {
             if let FileAccess::Success {
                 full_path,
@@ -218,6 +220,8 @@ impl ExecAccesses {
                 let cache_path = cache_dir.join(file_name);
                 println!("cache path: {:?}", cache_path);
                 println!("full_path: {:?}", full_path);
+
+                // TODO: What if it is already there?
                 fs::copy(full_path, cache_path)?;
             }
         }
@@ -251,8 +255,10 @@ impl ExecAccesses {
                     .expect("Can't get file name for output file in serve_outputs_from_cache()!");
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cached_output_path = cache_dir.join(file_name);
+                println!("before calling exists");
                 // 1) Check if the output file is there.
                 if !full_path.exists() {
+                    println!("after calling exists");
                     // 2) It's not, great! Then copy the file from the cache.
                     fs::copy(cached_output_path, full_path)?;
                 }
@@ -261,7 +267,7 @@ impl ExecAccesses {
                 // for each output:
                 // - if it IS there, hash it, compare it to cached hash.
                 // - if any of these checks fail, outputs_match() returns FALSE
-                //   and we don't end up here, because skip_execution would also be FALSE.S
+                //   and we don't end up here, because skip_execution would also be FALSE.
             }
         }
         Ok(())
@@ -690,7 +696,9 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
                     let new_hash = generate_hash(full_path.clone());
 
                     // Compare the new hash to the old hash.
-                    if !(new_hash.iter().all(|x| old_hash.contains(x))) {
+                    // LOL here is some logic to ACTUALLY do this correctly.
+                    // Instead of what used to be here which did not.
+                    if !new_hash.iter().eq(old_hash.iter()) {
                         println!("gonna return false b/c hashes don't match");
                         return false;
                     }
@@ -713,8 +721,9 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
             syscall_name: _,
         } = output
         {
-            // If the output file does indeed exist,
-
+            // If the output file does indeed exist and is in the correct spot
+            // already, check if the hash matches the old one.
+            // Then we won't have to copy this file over from the cache.
             if full_path.exists() {
                 println!("I am the output and I exist");
                 if let Some(old_hash) = hash {
@@ -722,7 +731,7 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
                     let new_hash = generate_hash(full_path.clone());
 
                     // Compare the new hash to the old hash.
-                    if !(new_hash.iter().all(|x| old_hash.contains(x))) {
+                    if !new_hash.iter().eq(old_hash.iter()) {
                         println!("gonna return false b/c hashes don't match");
                         return false;
                     }
