@@ -1,24 +1,12 @@
 use nix::unistd::Pid;
-use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 // use std::borrow::Borrow;
-use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
-// All this crazy stuff here. There is a method to the madness!
-// Because we just **have** to use nix::unistd::Pid, which is weird
-// and doesn't implement Serialize or Deserialize, and even if I wanted
-// to just skip it for serialization (which I do, I don't care about the
-// persistent pid, it's gonna change anyway, I use it while creating the
-// structures so I add to the correct struct, as multiple processes and thus
-// multiple executions can be going on at once), it doesn't implement Default.
-// So I just wrapped that sucker in ANOTHER struct and that thing can do
-// Serialize, Deserialize, Default, whatever the heck you want. Are you happy
-// now serde?
-struct ProcVisitor;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
 
@@ -26,46 +14,6 @@ impl Default for Proc {
     fn default() -> Proc {
         Proc(Pid::from_raw(0))
     }
-}
-
-impl Serialize for Proc {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // let Pid(actual_pid) = self.0;
-        let actual_pid = self.0.as_raw();
-        serializer.serialize_i32(actual_pid)
-    }
-}
-impl<'de> Deserialize<'de> for Proc {
-    fn deserialize<D>(deserializer: D) -> Result<Proc, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_i32(ProcVisitor)
-    }
-}
-
-impl<'de> Visitor<'de> for ProcVisitor {
-    type Value = Proc;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("an integer between -2^31 and 2^31")
-    }
-
-    fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Proc(Pid::from_raw(value)))
-    }
-}
-
-impl Proc {
-    // pub fn new(pid: i32) -> Proc {
-    //     Proc(pid)
-    // }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,72 +31,24 @@ pub enum OpenMode {
 
 // Success and failure variants of
 // input and output files.
-// TODO: HASH SHOULD NOT TO BE AN OPTION
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum FileAccess {
-    Success {
-        // PathBuf here (in both cases) is the full path to the file.
-        // Some files we may not be able to get the full path.
-        // So the full path is just whatever we got in the argument.
-        // Example: /etc/ld.so.preload
-        full_path: PathBuf,
-        // When it's an output file, we don't get the hash
-        // until the end of the execution, because the contents
-        // of the file may change.
-        // Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
-        // files, so they get no hash.
-        hash: Option<Vec<u8>>,
-        syscall_name: String,
-    },
-    Failure {
-        // Some files we may not be able to get the full path.
-        // Example: if fstat() fails, we can't get the full path.
-        // So we just leave it empty.
-        full_path: PathBuf,
-        syscall_name: String,
-    },
+    // PathBuf = full path to the file.
+    // Option<Vec<u8>> = hash.
+    // String = syscall name.
+    // Some files we may not be able to get the full path.
+    // So the full path is just whatever we got in the argument.
+    // Example: /etc/ld.so.preload
+    // When it's an output file, we don't get the hash
+    // until the end of the execution, because the contents
+    // of the file may change.
+    // Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
+    // files, so they get no hash.
+    // Failed accesses obviously don't get hashed.
+    Success(PathBuf, Option<Vec<u8>>, String),
+    Failure(PathBuf, String),
 }
 
-impl FileAccess {
-    fn full_path(&self) -> PathBuf {
-        match self {
-            FileAccess::Success {
-                full_path,
-                hash: _,
-                syscall_name: _,
-            } => full_path.clone(),
-            FileAccess::Failure {
-                full_path,
-                syscall_name: _,
-            } => full_path.clone(),
-        }
-    }
-
-    // Returns an option (None) because:
-    // - maybe haven't hashed yet because it is an output file
-    // - maybe we shouldn't try to hash because it's unhashable
-    //   (dirs, /etc/, /dev/pts are my current culprits)
-    fn hash(&self) -> Option<Vec<u8>> {
-        match self {
-            FileAccess::Success {
-                full_path: _,
-                hash,
-                syscall_name: _,
-            } => {
-                hash.clone()
-                // if let Some(actual_hash) = hash {
-                //     Some(actual_hash.clone())
-                // } else {
-                //     None
-                // }
-            }
-            FileAccess::Failure {
-                full_path: _,
-                syscall_name: _,
-            } => panic!("No hash for failed file access!"),
-        }
-    }
-}
 // Actual accesses to the file system performed by
 // a successful execution.
 // TODO: Handle stderr and stdout. I don't want to right
@@ -169,11 +69,8 @@ impl ExecAccesses {
     }
 
     // Add new access to the struct.
-    // Stuff that doesn't acutally change the contents.
     pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
         match io_type {
-            // TODO: make this do nice error things
-            // IO::Input => self.input_files.insert(full_path, file_access).map_or(Ok(()), |_| Err(())),
             IO::Input => self.input_files.push(file_access),
             IO::Output => self.output_files.push(file_access),
         }
@@ -183,14 +80,7 @@ impl ExecAccesses {
     // file.
     pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
         for output in self.output_files.iter_mut() {
-            println!("looping in add_output_file_hashes");
-            println!("output: {:?}", output);
-            if let FileAccess::Success {
-                full_path,
-                hash,
-                syscall_name: _,
-            } = output
-            {
+            if let FileAccess::Success(full_path, hash, _) = output {
                 let path = full_path.clone().into_os_string().into_string().unwrap();
                 let hash_value = generate_hash(path);
                 *hash = Some(hash_value);
@@ -199,27 +89,17 @@ impl ExecAccesses {
         Ok(())
     }
 
+    // Only want to copy output files that had successful
+    // accesses to the cache.
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
-        // Only want to copy output files that had successful
-        // accesses to the cache.
-        // TODO: check if file is there, if it is, check against
-        // OG output hash
         for output in self.output_files.iter() {
-            if let FileAccess::Success {
-                full_path,
-                hash: _,
-                syscall_name: _,
-            } = output
-            {
+            if let FileAccess::Success(full_path, _, _) = output {
                 let file_name = full_path
                     .file_name()
                     .expect("Can't get file name in copy_outputs_to_cache()!");
-                println!("the file name is: {:?}", file_name);
 
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cache_path = cache_dir.join(file_name);
-                println!("cache path: {:?}", cache_path);
-                println!("full_path: {:?}", full_path);
 
                 // TODO: What if it is already there?
                 fs::copy(full_path, cache_path)?;
@@ -237,28 +117,19 @@ impl ExecAccesses {
         self.output_files.clone()
     }
 
+    // Copy output files from the cache to the appropriate
+    // locations the program expects.
     pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
-        println!("beginning of serve_outputs_from_cache");
-        println!("size of inputs: {}", self.input_files.len());
-        println!("Size of outputs: {}", self.output_files.len());
         for output in self.output_files.iter() {
-            println!("output: {:?}", output);
-            if let FileAccess::Success {
-                full_path,
-                hash: _,
-                syscall_name: _,
-            } = output
-            {
-                println!("hi i am here");
+            if let FileAccess::Success(full_path, _, _) = output {
                 let file_name = full_path
                     .file_name()
                     .expect("Can't get file name for output file in serve_outputs_from_cache()!");
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cached_output_path = cache_dir.join(file_name);
-                println!("before calling exists");
+
                 // 1) Check if the output file is there.
                 if !full_path.exists() {
-                    println!("after calling exists");
                     // 2) It's not, great! Then copy the file from the cache.
                     fs::copy(cached_output_path, full_path)?;
                 }
@@ -282,10 +153,9 @@ impl ExecAccesses {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecMetadata {
     args: Vec<String>,
-    // child_processes: Vec<Pid>, TODO: deal with child / dependent executions
     // The cwd can change during the execution, this is fine.
     // I am tracking absolute paths anyways.
-    // This does need to match at the beginning of the execution though.
+    // This DOES need to match at the beginning of the execution though.
     starting_cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
@@ -295,6 +165,10 @@ pub struct ExecMetadata {
     // We don't know the exit code until it exits.
     // So while an execution is running this is None.
     exit_code: Option<i32>,
+    // I need the caller pid so I know which execution struct
+    // to add info to. But, I don't want this serialized with
+    // the rest of the metadata (obviously pids change from run
+    // to run).
     #[serde(skip)]
     caller_pid: Proc,
 }
@@ -303,7 +177,6 @@ impl ExecMetadata {
     pub fn new() -> ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
-            // child_processes: Vec::new(),
             starting_cwd: PathBuf::new(),
             env_vars: Vec::new(),
             executable: String::new(),
@@ -358,8 +231,9 @@ impl ExecMetadata {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Execution {
     Failed(ExecMetadata),
-    Pending, // At time of creation, we don't know what the heck it is!
-    // A successful execution has both metadata and
+    // At time of creation, we don't know what the heck it is!
+    Pending,
+    // A successful execution has metadata and
     // potentially file system accesses.
     Successful(ExecMetadata, ExecAccesses),
 }
@@ -419,15 +293,6 @@ impl Execution {
         }
     }
 
-    fn caller_pid(&self) -> Pid {
-        match self {
-            Execution::Successful(metadata, _) | Execution::Failed(metadata) => {
-                metadata.caller_pid()
-            }
-            _ => panic!("Should not be getting caller pid from pending execution!"),
-        }
-    }
-
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
         match self {
             Execution::Successful(_, accesses) => accesses.copy_outputs_to_cache(),
@@ -462,13 +327,6 @@ impl Execution {
 
     fn is_successful(&self) -> bool {
         matches!(self, Execution::Successful(_, _))
-    }
-
-    fn metadata(&self) -> ExecMetadata {
-        match self {
-            Execution::Successful(metadata, _) | Execution::Failed(metadata) => metadata.clone(),
-            _ => panic!("Should not be getting metadata of pending execution"),
-        }
     }
 
     fn outputs(&self) -> Vec<FileAccess> {
@@ -549,7 +407,6 @@ impl RcExecution {
     }
 
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
-        println!("in copy outputs to cache");
         self.execution.borrow().copy_outputs_to_cache()
     }
 
@@ -567,10 +424,6 @@ impl RcExecution {
 
     fn is_successful(&self) -> bool {
         self.execution.borrow().is_successful()
-    }
-
-    fn metadata(&self) -> ExecMetadata {
-        self.execution.borrow().metadata()
     }
 
     fn outputs(&self) -> Vec<FileAccess> {
@@ -599,7 +452,6 @@ impl GlobalExecutions {
     }
 
     // Add new execution if it is not cached.
-    // Return true if we should skip the execution.
     pub fn add_new_execution(&self, execution: RcExecution) {
         self.executions.borrow_mut().push(execution);
     }
@@ -610,27 +462,21 @@ impl GlobalExecutions {
         self.executions.borrow().len() as i32
     }
 
-    // Return bool whether the execution name shows up in the cache.
+    // Return the cached execution if there exists a cached success.
+    // Else return None.
     pub fn get_cached_success(&self, new_exec: RcExecution) -> Option<RcExecution> {
         // Don't want to skip if it isn't successful.
-        // For now, really just want to deal with SUCCESS.
-        // TODO: What if the new execution is a failure?
-        // TODO: What if the cached execution is a failure?
-        // And all that other crap.
+        // TODO: Panic if a failed execution is let to run and it succeeds.
         if new_exec.is_successful() {
             for cached_exec in self.executions.borrow().iter() {
                 let metadata_match = exec_metadata_matches(cached_exec.clone(), new_exec.clone());
                 let inputs_match = inputs_match(cached_exec.clone());
                 let outputs_match = outputs_match(cached_exec.clone());
-                println!("metadata match: {}", metadata_match);
-                println!("inputs_match: {}", inputs_match);
-                // TODO: Check outputs
 
                 if metadata_match && inputs_match && outputs_match {
                     return Some(cached_exec.clone());
                 }
             }
-            println!("Metadata doesn't match!");
             None
         } else {
             // TODO: deal with failed executions...
@@ -655,9 +501,6 @@ fn exec_metadata_matches(cached_exec: RcExecution, new_exec: RcExecution) -> boo
     // - env vars match
     cached_exec.execution_name() == new_executable
         && cached_exec.is_successful()
-        // TODO: Is checking Vec<String> (args and env_vars)
-        // against another vector by just straight equals
-        // okay here?
         && new_args == cached_exec.args()
         && new_starting_cwd == cached_exec.starting_cwd()
         && new_env_vars == cached_exec.env_vars()
@@ -667,103 +510,70 @@ fn exec_metadata_matches(cached_exec: RcExecution, new_exec: RcExecution) -> boo
 // new execution's inputs, the hashes match,
 // and they are in the correct absolute path locations.
 
-// Can't just pass in "new_exec" this has no info about the inputs!
-// We have to check the fs (cwd) for this stuff!
 // Bruh, why is this so much programming???
 fn inputs_match(cached_exec: RcExecution) -> bool {
     let cached_inputs = cached_exec.inputs();
     // First, they must share the same inputs.
     // So get the keys of each and check that they are equal?
-    // TODO: Check hashes
-    for cached_inp in cached_inputs.into_iter() {
-        if let FileAccess::Success {
-            full_path,
-            hash,
-            syscall_name: _,
-        } = cached_inp
-        {
-            println!("Checking cached input: {:?}", full_path.clone());
+    for input in cached_inputs.into_iter() {
+        if let FileAccess::Success(full_path, Some(old_hash), _) = input {
             // Only check these things if it's a true file.
             // If the hash is None, we can just move on.
-            if let Some(old_hash) = hash {
-                if !full_path.exists() {
-                    println!("gonna return false b/c full path doesn't exist");
-                    return false;
-                } else {
-                    // Hash the file that is there right now.
-                    let full_path = full_path.clone().into_os_string().into_string().unwrap();
-                    println!("Checking input file full path hash: {}", full_path.clone());
-                    let new_hash = generate_hash(full_path.clone());
+            if !full_path.exists() {
+                return false;
+            } else {
+                // Hash the file that is there right now.
+                let full_path = full_path.clone().into_os_string().into_string().unwrap();
+                let new_hash = generate_hash(full_path.clone());
 
-                    // Compare the new hash to the old hash.
-                    // LOL here is some logic to ACTUALLY do this correctly.
-                    // Instead of what used to be here which did not.
-                    if !new_hash.iter().eq(old_hash.iter()) {
-                        println!("gonna return false b/c hashes don't match");
-                        return false;
-                    }
+                // Compare the new hash to the old hash.
+                if !new_hash.iter().eq(old_hash.iter()) {
+                    return false;
                 }
             }
         }
     }
-    println!("All inputs match!");
     true
 }
 
+// Check that output files are either:
+// - Exist, in the right place, and the hash matches the hash we have in the cache.
+// - OR, the file doesn't exist, which is great, because we have it in our cache
+// and we can just copy it over.
 fn outputs_match(curr_execution: RcExecution) -> bool {
-    // TODO: output files are not there OR are there and match hashes we have in the cache.
     let cached_outputs = curr_execution.outputs();
 
     for output in cached_outputs.into_iter() {
-        if let FileAccess::Success {
-            full_path,
-            hash,
-            syscall_name: _,
-        } = output
-        {
+        if let FileAccess::Success(full_path, hash, _) = output {
             // If the output file does indeed exist and is in the correct spot
             // already, check if the hash matches the old one.
             // Then we won't have to copy this file over from the cache.
             if full_path.exists() {
-                println!("I am the output and I exist");
                 if let Some(old_hash) = hash {
                     let full_path = full_path.clone().into_os_string().into_string().unwrap();
                     let new_hash = generate_hash(full_path.clone());
 
                     // Compare the new hash to the old hash.
                     if !new_hash.iter().eq(old_hash.iter()) {
-                        println!("gonna return false b/c hashes don't match");
                         return false;
                     }
                 }
             }
             // If it doesn't exist, fantastic
             // MOVE ON it doesn't exist.
+            // "I'm sorry for your loss. Move on."
         }
     }
-    println!("All outputs match!");
     true
 }
+
 // ------ Hashing stuff ------
-
-/// Print digest result as hex string and name pair
-// fn print_result(sum: &[u8], name: &str) {
-//     for byte in sum {
-//         print!("{:02x}", byte);
-//     }
-//     println!("\t{}", name);
-// }
-
 // Process the file and generate the hash.
 fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
     const BUFFER_SIZE: usize = 1024;
     let mut sh = D::default();
     let mut buffer = [0u8; BUFFER_SIZE];
     loop {
-        // let n = match reader.read(&mut buffer) {
-        //     Ok(n) => n,
-        //     Err(_) => return,
-        // };
         let n = reader
             .read(&mut buffer)
             .expect("Could not read buffer from reader processing hash!");
@@ -771,34 +581,31 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
         if n == 0 || n < BUFFER_SIZE {
             break;
         }
-        // println!("n is: {}", n);
-        // println!("in process() loop");
     }
 
     let final_array = &sh.finalize();
     final_array.to_vec()
-    // print_result(&sh.finalize(), name);
 }
 
+// Wrapper for generating the hash.
+// Opens the file and calls process() to get the hash.
 pub fn generate_hash(path: String) -> Vec<u8> {
     println!("made it to generate_hash");
     let mut file = fs::File::open(&path).expect("Could not open file to generate hash");
     process::<Sha256, _>(&mut file)
 }
 
+// Serialize the execs and write them to the cache.
 pub fn serialize_execs_to_cache(global_executions: GlobalExecutions) {
     // Serialize the executions.
     let serialized_execs = rmp_serde::to_vec(&global_executions).unwrap();
 
     // Write the serialized execs to a file.
-    // I am just writing them to /home/kelly/research/IOTracker/cache/cache
+    // I am just writing them to /home/kelly/research/IOTracker/cache/cache.
     write_serialized_execs_to_cache(serialized_execs);
-
-    // let buf = rmp_serde::to_vec(&(42, "the Answer")).unwrap();
 }
 
 pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-    // is read_to_end() needed?
     let exec_struct_bytes = fs::read("/home/kelly/research/IOTracker/cache/cache").expect("failed");
     if exec_struct_bytes.is_empty() {
         GlobalExecutions::new()
