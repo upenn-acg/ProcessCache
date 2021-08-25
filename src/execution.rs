@@ -563,15 +563,8 @@ fn generate_file_access(
             let path = full_path.clone().into_os_string().into_string().unwrap();
             Some(generate_hash(path))
         };
-        Some(FileAccess::Success {
-            full_path,
-            hash,
-            syscall_name,
-        })
+        Some(FileAccess::Success(full_path, hash, syscall_name))
     } else {
-        Some(FileAccess::Failure {
-            full_path,
-            syscall_name,
-        })
+        Some(FileAccess::Failure(full_path, syscall_name))
     }
 }
