@@ -172,41 +172,14 @@ pub async fn trace_process(
 
                         s.in_scope(|| debug!("Checking cache for execution"));
 
-                        let new_execution = match next_event {
-                            TraceEvent::Exec(_) => {
-                                // The execve succeeded!
-                                // If it's in the cache, change the
-                                // skip_execution = true;
-                                s.in_scope(|| {
-                                    debug!("Execve succeeded!");
-                                });
-
-                                RcExecution::new(Execution::Successful(
-                                    ExecMetadata::new(),
-                                    ExecAccesses::new(),
-                                ))
-                            }
-                            _ => {
-                                // The execve failed!
-                                // Create a Failed Execution and add to global executions.
-                                s.in_scope(|| {
-                                    debug!("Execve failed.");
-                                });
-                                RcExecution::new(Execution::Failed(ExecMetadata::new()))
-                            }
-                        };
-
-                        // This is a NEW exec, we must update the current
-                        // execution to this new one.
-                        // I *THINK* I want to update this whether it succeeds or fails.
-                        // Because both of those technically are executions.
-                        new_execution.add_identifiers(
+                        let new_execution = create_new_execution(
                             args,
                             tracer.curr_proc,
                             envp,
-                            path_name.clone(),
+                            path_name,
+                            next_event,
                             cwd_pathbuf,
-                        );
+                        )?;
 
                         let cached_exec =
                             global_executions.get_cached_success(new_execution.clone());
@@ -219,7 +192,6 @@ pub async fn trace_process(
                             global_executions.add_new_execution(new_execution.clone());
                             curr_execution = new_execution;
                         }
-
                         continue;
                     }
                     "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
@@ -250,6 +222,7 @@ pub async fn trace_process(
                             continue;
                         }
 
+                        // For right now, don't really need to worry about these.
                         // TODO: Should skip_execution be changed to false?
                         // TODO: Should curr_execution be changed to ... something else?
                     }
@@ -276,8 +249,6 @@ pub async fn trace_process(
                     "fstat" | "newfstatat" | "stat" => {
                         handle_stat(&curr_execution, &regs, name, &tracer)?
                     }
-                    // "pread64" | "read" => handle_read(&curr_execution, &regs, name, &tracer)?,
-                    // "write" | "writev" => handle_write(&curr_execution, &regs, &tracer)?,
                     _ => {}
                 }
             }
@@ -380,6 +351,48 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         execution.add_new_file_event(access, IO::Input);
     }
     Ok(())
+}
+
+fn create_new_execution(
+    args: Vec<String>,
+    curr_pid: Pid,
+    envp: Vec<String>,
+    executable: String,
+    next_event: TraceEvent,
+    starting_cwd: PathBuf,
+) -> Result<RcExecution> {
+    let s = span!(Level::INFO, stringify!(trace_process), pid=?curr_pid);
+    let new_execution = match next_event {
+        TraceEvent::Exec(_) => {
+            // The execve succeeded!
+            // If it's in the cache, change the
+            // skip_execution = true;
+            s.in_scope(|| {
+                debug!("Execve succeeded!");
+            });
+
+            RcExecution::new(Execution::Successful(
+                ExecMetadata::new(),
+                ExecAccesses::new(),
+            ))
+        }
+        _ => {
+            // The execve failed!
+            // Create a Failed Execution and add to global executions.
+            s.in_scope(|| {
+                debug!("Execve failed.");
+            });
+            RcExecution::new(Execution::Failed(ExecMetadata::new()))
+        }
+    };
+
+    // This is a NEW exec, we must update the current
+    // execution to this new one.
+    // I *THINK* I want to update this whether it succeeds or fails.
+    // Because both of those technically are executions.
+    new_execution.add_identifiers(args, curr_pid, envp, executable, starting_cwd);
+
+    Ok(new_execution)
 }
 
 /// Open, openat, creat.
