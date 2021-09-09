@@ -2,15 +2,15 @@
 use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
-// use nix::sys::stat::stat;
 use nix::unistd::Pid;
+// use std::borrow::Borrow;
 use std::fs;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    deserialize_execs_from_cache, generate_hash, serialize_execs_to_cache, ExecAccesses,
-    ExecMetadata, Execution, FileAccess, GlobalExecutions, OpenMode, RcExecution, IO,
+    generate_hash, get_cached_root_execution, serialize_execs_to_cache, ExecAccesses,
+    ExecMetadata, Execution, FileAccess, OpenMode, RcExecution, IO,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -32,28 +32,14 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
 
-    // We need to pass an execution struct to trace_process(),
-    // because the function needs to be able to pass an execution
-    // struct to a child process. But, we don't actually ADD the
-    // execution struct to global_executions here, this happens
-    // in the prehook of an execve call, after we get the next event
-    // and verify it is not a posthook (would be a failed execve) but
-    // an exec event, meaning the execve succeeded, so it should be
-    // added to global_executions.
-    let first_execution = RcExecution::new(Execution::Pending);
-    // Here we must set up our global executions structure.
-    // - Read from the cache file.
-    // - If the file is EMPTY, create a new global execs structure.
-    // - Else, read the file in to a ... Vec<u8>...? and deserialize it.
-
-    // I am kinda assuming that if you read an empty file it'll give you this empty struct  ¯\_(ツ)_/¯
-    let global_executions = deserialize_execs_from_cache();
-
+    let curr_execution = RcExecution::new(Execution::PendingRoot);
+    // To start, the parent execution and the current execution are the same
+    // (only one process, so its its own grandpa... yeah sci fi reference)
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
-        first_execution,
-        global_executions.clone(),
+        curr_execution,
+        curr_execution,
     );
     async_runtime
         .run_task(first_proc, f)
@@ -62,11 +48,11 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // for exec in global_executions.executions.borrow().iter() {
     //     println!("Execution: {:?}", exec);
     // }
-    let length = global_executions.get_execution_count();
-    println!("Number of executions: {}", length);
+    // let length = global_executions.get_execution_count();
+    // println!("Number of executions: {}", length);
 
     // Serialize the execs to the cache!
-    serialize_execs_to_cache(global_executions);
+    serialize_execs_to_cache(curr_execution);
     Ok(())
 }
 
@@ -82,7 +68,8 @@ pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
-    global_executions: GlobalExecutions,
+    // We need to know who to add the child execution to? Maybe?
+    mut root_execution: RcExecution,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -152,8 +139,8 @@ pub async fn trace_process(
                             .get_registers()
                             .with_context(|| context!("Failed to get regs in exec event"))?;
                         let arg = regs.arg1();
-                        let path_name = tracer.read_c_string(arg)?;
-                        debug!("PATH NAME: {}", path_name);
+                        let executable = tracer.read_c_string(arg)?;
+                        debug!("PATH NAME: {}", executable);
 
                         let args = tracer
                             .read_c_string_array(regs.arg2())
@@ -164,32 +151,29 @@ pub async fn trace_process(
                         let cwd_path = readlink(cwd_link.as_str())
                             .with_context(|| context!("Failed to readlink (cwd)"))?;
                         let cwd = cwd_path.to_str().unwrap().to_owned();
-                        let cwd_pathbuf = PathBuf::from(cwd);
+                        let starting_cwd = PathBuf::from(cwd);
 
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
                             context!("Unable to get next event after execve prehook.")
                         })?;
 
+                        let make_root = curr_execution.is_pending_root();
+                        let new_execution = create_new_execution(args, tracer.curr_proc, envp, executable, make_root, next_event, starting_cwd)?;
+
                         s.in_scope(|| debug!("Checking cache for execution"));
-
-                        let new_execution = create_new_execution(
-                            args,
-                            tracer.curr_proc,
-                            envp,
-                            path_name,
-                            next_event,
-                            cwd_pathbuf,
-                        )?;
-
-                        let cached_exec =
-                            global_executions.get_cached_success(new_execution.clone());
-                        if let Some(exec) = cached_exec {
-                            debug!("Cached success found for execution!");
-                            skip_execution = true;
-                            curr_execution = exec;
+                        if curr_execution.is_pending_root() {
+                            if new_execution.is_successful() {
+                                if let Some(cached_exec) = get_cached_root_execution(new_execution.clone()) {
+                                    skip_execution = true;
+                                    curr_execution = cached_exec;
+                                } else {
+                                    root_execution = new_execution.clone();
+                                    curr_execution = new_execution;
+                                }
+                            }
                         } else {
-                            debug!("No cached success found for this execution!");
-                            global_executions.add_new_execution(new_execution.clone());
+                            // parent right now
+                            curr_execution.add_child_execution(new_execution.clone());
                             curr_execution = new_execution;
                         }
                         continue;
@@ -259,13 +243,16 @@ pub async fn trace_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                // TODO: handle child executions
-                // curr_execution.add_child_process(child);
+                // When a process forks, we pass the current execution struct to the
+                // child process' future as both the curr execution and the parent execution.
+                // If the child process then calls "execve",
+                // this new execution will replace the current execution for the child
+                // process' future and its parent execution 
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
                     curr_execution.clone(),
-                    global_executions.clone(),
+                    curr_execution.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -352,12 +339,19 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
     }
     Ok(())
 }
+fn exec_is_successful(next_event: TraceEvent) -> bool {
+    match next_event {
+        TraceEvent::Exec(_) => true,
+        _ => false,
+    }
+}
 
 fn create_new_execution(
     args: Vec<String>,
     curr_pid: Pid,
     envp: Vec<String>,
     executable: String,
+    is_pending_root: bool,
     next_event: TraceEvent,
     starting_cwd: PathBuf,
 ) -> Result<RcExecution> {
@@ -371,10 +365,19 @@ fn create_new_execution(
                 debug!("Execve succeeded!");
             });
 
-            RcExecution::new(Execution::Successful(
-                ExecMetadata::new(),
-                ExecAccesses::new(),
-            ))
+            if is_pending_root {
+                Execution::SuccessfulRoot(
+                    ExecMetadata::new(),
+                    ExecAccesses::new(),
+                    Vec::new(),
+                )
+            } else {
+                Execution::Successful(
+                    ExecMetadata::new(),
+                    ExecAccesses::new(),
+                    Vec::new(),
+                )
+            }
         }
         _ => {
             // The execve failed!
@@ -382,7 +385,11 @@ fn create_new_execution(
             s.in_scope(|| {
                 debug!("Execve failed.");
             });
-            RcExecution::new(Execution::Failed(ExecMetadata::new()))
+            if is_pending_root {
+                Execution::FailedRoot(ExecMetadata::new())
+            } else {
+                Execution::Failed(ExecMetadata::new())
+            }
         }
     };
 
@@ -391,8 +398,8 @@ fn create_new_execution(
     // I *THINK* I want to update this whether it succeeds or fails.
     // Because both of those technically are executions.
     new_execution.add_identifiers(args, curr_pid, envp, executable, starting_cwd);
-
-    Ok(new_execution)
+    
+    Ok(RcExecution::new(new_execution))
 }
 
 /// Open, openat, creat.
