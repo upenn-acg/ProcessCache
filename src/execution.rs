@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_hash, get_cached_root_execution, serialize_execs_to_cache, ExecAccesses,
-    ExecMetadata, Execution, FileAccess, OpenMode, RcExecution, IO,
+    generate_hash, get_cached_root_execution, serialize_execs_to_cache, ExecAccesses, ExecMetadata,
+    Execution, FileAccess, OpenMode, RcExecution, IO,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -38,8 +38,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
-        curr_execution,
-        curr_execution,
+        curr_execution.clone(),
+        curr_execution.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -52,6 +52,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // println!("Number of executions: {}", length);
 
     // Serialize the execs to the cache!
+    //
     serialize_execs_to_cache(curr_execution);
     Ok(())
 }
@@ -158,12 +159,22 @@ pub async fn trace_process(
                         })?;
 
                         let make_root = curr_execution.is_pending_root();
-                        let new_execution = create_new_execution(args, tracer.curr_proc, envp, executable, make_root, next_event, starting_cwd)?;
+                        let new_execution = create_new_execution(
+                            args,
+                            tracer.curr_proc,
+                            envp,
+                            executable,
+                            make_root,
+                            next_event,
+                            starting_cwd,
+                        )?;
 
                         s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
                             if new_execution.is_successful() {
-                                if let Some(cached_exec) = get_cached_root_execution(new_execution.clone()) {
+                                if let Some(cached_exec) =
+                                    get_cached_root_execution(new_execution.clone())
+                                {
                                     skip_execution = true;
                                     curr_execution = cached_exec;
                                 } else {
@@ -247,7 +258,7 @@ pub async fn trace_process(
                 // child process' future as both the curr execution and the parent execution.
                 // If the child process then calls "execve",
                 // this new execution will replace the current execution for the child
-                // process' future and its parent execution 
+                // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
@@ -356,7 +367,7 @@ fn create_new_execution(
     starting_cwd: PathBuf,
 ) -> Result<RcExecution> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?curr_pid);
-    let new_execution = match next_event {
+    let mut new_execution = match next_event {
         TraceEvent::Exec(_) => {
             // The execve succeeded!
             // If it's in the cache, change the
@@ -366,17 +377,9 @@ fn create_new_execution(
             });
 
             if is_pending_root {
-                Execution::SuccessfulRoot(
-                    ExecMetadata::new(),
-                    ExecAccesses::new(),
-                    Vec::new(),
-                )
+                Execution::SuccessfulRoot(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
             } else {
-                Execution::Successful(
-                    ExecMetadata::new(),
-                    ExecAccesses::new(),
-                    Vec::new(),
-                )
+                Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
             }
         }
         _ => {
@@ -398,7 +401,7 @@ fn create_new_execution(
     // I *THINK* I want to update this whether it succeeds or fails.
     // Because both of those technically are executions.
     new_execution.add_identifiers(args, curr_pid, envp, executable, starting_cwd);
-    
+
     Ok(RcExecution::new(new_execution))
 }
 
