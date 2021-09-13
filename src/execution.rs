@@ -153,13 +153,11 @@ pub async fn trace_process(
                             context!("Unable to get next event after execve prehook.")
                         })?;
 
-                        let make_root = curr_execution.is_pending_root();
                         let new_execution = create_new_execution(
                             args,
                             tracer.curr_proc,
                             envp,
                             executable,
-                            make_root,
                             next_event,
                             starting_cwd,
                         )?;
@@ -349,7 +347,6 @@ fn create_new_execution(
     curr_pid: Pid,
     envp: Vec<String>,
     executable: String,
-    is_pending_root: bool,
     next_event: TraceEvent,
     starting_cwd: PathBuf,
 ) -> Result<Execution> {
@@ -363,11 +360,7 @@ fn create_new_execution(
                 debug!("Execve succeeded!");
             });
 
-            if is_pending_root {
-                Execution::SuccessfulRoot(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
-            } else {
-                Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
-            }
+            Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
         }
         _ => {
             // The execve failed!
@@ -375,11 +368,7 @@ fn create_new_execution(
             s.in_scope(|| {
                 debug!("Execve failed.");
             });
-            if is_pending_root {
-                Execution::FailedRoot(ExecMetadata::new())
-            } else {
-                Execution::Failed(ExecMetadata::new())
-            }
+            Execution::Failed(ExecMetadata::new())
         }
     };
 
