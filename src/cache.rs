@@ -235,26 +235,23 @@ pub type ChildExecutions = Vec<RcExecution>;
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Execution {
     Failed(ExecMetadata),
-    Successful(ExecMetadata, ExecAccesses, ChildExecutions),
     // Before we find out if the root execution's "execve" call succeeds,
     // its kinda just pending. I want to know which one the root is
     // and doing it in the enum seems easiest.
     PendingRoot,
-    FailedRoot(ExecMetadata),
-    SuccessfulRoot(ExecMetadata, ExecAccesses, ChildExecutions),
+    Successful(ExecMetadata, ExecAccesses, ChildExecutions),
 }
 
 impl Execution {
     pub fn add_child_execution(&mut self, child_execution: RcExecution) {
         match self {
-            Execution::Failed(_) | Execution::FailedRoot(_) => {
+            Execution::Failed(_) => {
                 panic!("Trying to add a child process to a failed execution!")
             }
             Execution::PendingRoot => {
                 panic!("Trying to add a child process to a pending execution!")
             }
-            Execution::Successful(_, _, child_execs)
-            | Execution::SuccessfulRoot(_, _, child_execs) => {
+            Execution::Successful(_, _, child_execs) => {
                 child_execs.push(child_execution);
             }
         }
@@ -262,10 +259,7 @@ impl Execution {
 
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
-            Execution::Failed(meta)
-            | Execution::FailedRoot(meta)
-            | Execution::Successful(meta, _, _)
-            | Execution::SuccessfulRoot(meta, _, _) => {
+            Execution::Failed(meta) | Execution::Successful(meta, _, _) => {
                 // Only want the exit code if this is the process
                 // that actually exec'd the process.
                 let exec_pid = meta.caller_pid();
@@ -288,10 +282,7 @@ impl Execution {
         starting_cwd: PathBuf,
     ) {
         match self {
-            Execution::Failed(metadata)
-            | Execution::FailedRoot(metadata)
-            | Execution::Successful(metadata, _, _)
-            | Execution::SuccessfulRoot(metadata, _, _) => {
+            Execution::Failed(metadata) | Execution::Successful(metadata, _, _) => {
                 metadata.add_identifiers(args, caller_pid, env_vars, executable, starting_cwd)
             }
             _ => panic!("Should not be adding identifiers to pending exec!"),
@@ -324,10 +315,8 @@ impl Execution {
 
     fn child_executions(&self) -> Vec<RcExecution> {
         match self {
-            Execution::Successful(_, _, children) | Execution::SuccessfulRoot(_, _, children) => {
-                children.clone()
-            }
-            Execution::Failed(_) | Execution::FailedRoot(_) => {
+            Execution::Successful(_, _, children) => children.clone(),
+            Execution::Failed(_) => {
                 panic!("Should not be getting child execs from failed execution!")
             }
             Execution::PendingRoot => {
@@ -364,10 +353,8 @@ impl Execution {
 
     fn inputs(&self) -> Vec<FileAccess> {
         match self {
-            Execution::Successful(_, accesses, _) | Execution::SuccessfulRoot(_, accesses, _) => {
-                accesses.inputs()
-            }
-            Execution::Failed(_) | Execution::FailedRoot(_) => {
+            Execution::Successful(_, accesses, _) => accesses.inputs(),
+            Execution::Failed(_) => {
                 panic!("Should not be getting inputs of failed execution!")
             }
             Execution::PendingRoot => {
@@ -386,20 +373,15 @@ impl Execution {
 
     fn metadata(&self) -> ExecMetadata {
         match self {
-            Execution::Failed(meta)
-            | Execution::FailedRoot(meta)
-            | Execution::Successful(meta, _, _)
-            | Execution::SuccessfulRoot(meta, _, _) => meta.clone(),
+            Execution::Failed(meta) | Execution::Successful(meta, _, _) => meta.clone(),
             _ => panic!("Trying to get metadata from pending execution"),
         }
     }
 
     fn outputs(&self) -> Vec<FileAccess> {
         match self {
-            Execution::Successful(_, accesses, _) | Execution::SuccessfulRoot(_, accesses, _) => {
-                accesses.outputs()
-            }
-            Execution::Failed(_) | Execution::FailedRoot(_) => {
+            Execution::Successful(_, accesses, _) => accesses.outputs(),
+            Execution::Failed(_) => {
                 panic!("Should not be getting outputs of failed execution!")
             }
             Execution::PendingRoot => {
@@ -540,23 +522,30 @@ impl GlobalExecutions {
 // Return the cached execution if there exists a cached success.
 // Else return None.
 pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution> {
-    if !new_execution.is_successful() {
-        return None;
-    }
-    let new_root_metadata = new_execution.metadata();
-    // TODO: Panic if a failed execution is let to run and it succeeds.
-    let global_execs = deserialize_execs_from_cache();
-    // Have to find the root exec in the list of global execs
-    // in the cache.
-    // TODO use all()?
-    for cached_root_exec in global_execs.executions.iter() {
-        if exec_metadata_matches(cached_root_exec, new_root_metadata.clone())
-            && execution_matches(cached_root_exec)
-        {
-            return Some(cached_root_exec.clone());
+    println!("checking the damn cache");
+    let cache_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache");
+    if !cache_path.exists() {
+        println!("No cached exec bc cache doesn't exist");
+        None
+    } else if !new_execution.is_successful() {
+        println!("No cached exec bc exec failed");
+        None
+    } else {
+        let new_root_metadata = new_execution.metadata();
+        // TODO: Panic if a failed execution is let to run and it succeeds.
+        let global_execs = deserialize_execs_from_cache();
+        // Have to find the root exec in the list of global execs
+        // in the cache.
+        // TODO use all()?
+        for cached_root_exec in global_execs.executions.iter() {
+            if exec_metadata_matches(cached_root_exec, new_root_metadata.clone())
+                && execution_matches(cached_root_exec)
+            {
+                return Some(cached_root_exec.clone());
+            }
         }
+        None
     }
-    None
 }
 
 fn execution_matches(cached_root: &RcExecution) -> bool {
@@ -588,6 +577,7 @@ fn exec_metadata_matches(cached_exec: &RcExecution, new_exec_metadata: ExecMetad
     // - arguments match
     // - starting cwd matches
     // - env vars match
+    println!("CHECKING METADATA");
     cached_exec.execution_name() == new_executable
         && cached_exec.is_successful()
         && new_args == cached_exec.args()
@@ -609,6 +599,7 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
             // Only check these things if it's a true file.
             // If the hash is None, we can just move on.
             if !full_path.exists() {
+                println!("Inputs don't match");
                 return false;
             } else {
                 // Hash the file that is there right now.
@@ -617,6 +608,7 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
 
                 // Compare the new hash to the old hash.
                 if !new_hash.iter().eq(old_hash.iter()) {
+                    println!("Inputs don't match");
                     return false;
                 }
             }
@@ -644,6 +636,7 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
 
                     // Compare the new hash to the old hash.
                     if !new_hash.iter().eq(old_hash.iter()) {
+                        println!("Outputs don't match");
                         return false;
                     }
                 }
