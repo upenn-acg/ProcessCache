@@ -452,23 +452,6 @@ impl RcExecution {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
 
-    pub fn add_identifiers(
-        &self,
-        args: Vec<String>,
-        caller_pid: Pid,
-        env_vars: Vec<String>,
-        executable: String,
-        starting_cwd: PathBuf,
-    ) {
-        self.execution.borrow_mut().add_identifiers(
-            args,
-            caller_pid,
-            env_vars,
-            executable,
-            starting_cwd,
-        );
-    }
-
     pub fn add_new_file_event(&self, file_access: FileAccess, io_type: IO) {
         self.execution
             .borrow_mut()
@@ -511,10 +494,6 @@ impl RcExecution {
         self.execution.borrow().is_successful()
     }
 
-    pub fn metadata(&self) -> ExecMetadata {
-        self.execution.borrow().metadata()
-    }
-
     fn outputs(&self) -> Vec<FileAccess> {
         self.execution.borrow().outputs()
     }
@@ -528,6 +507,7 @@ impl RcExecution {
     }
 
     pub fn update_root(&self, new_root_exec: Execution) {
+        // TODO: only do this if the current execution is pending root?
         *self.execution.borrow_mut() = new_root_exec;
     }
 }
@@ -559,7 +539,10 @@ impl GlobalExecutions {
 
 // Return the cached execution if there exists a cached success.
 // Else return None.
-pub fn get_cached_root_execution(new_execution: RcExecution) -> Option<RcExecution> {
+pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution> {
+    if !new_execution.is_successful() {
+        return None;
+    }
     let new_root_metadata = new_execution.metadata();
     // TODO: Panic if a failed execution is let to run and it succeeds.
     let global_execs = deserialize_execs_from_cache();
@@ -567,7 +550,7 @@ pub fn get_cached_root_execution(new_execution: RcExecution) -> Option<RcExecuti
     // in the cache.
     // TODO use all()?
     for cached_root_exec in global_execs.executions.iter() {
-        if exec_metadata_matches(&cached_root_exec, new_root_metadata.clone())
+        if exec_metadata_matches(cached_root_exec, new_root_metadata.clone())
             && execution_matches(cached_root_exec)
         {
             return Some(cached_root_exec.clone());
@@ -577,15 +560,13 @@ pub fn get_cached_root_execution(new_execution: RcExecution) -> Option<RcExecuti
 }
 
 fn execution_matches(cached_root: &RcExecution) -> bool {
-    if !inputs_match(cached_root.clone()) {
-        return false;
-    } else if !outputs_match(cached_root.clone()) {
-        return false;
+    if !inputs_match(cached_root.clone()) || !outputs_match(cached_root.clone()) {
+        false
     } else {
         cached_root
             .child_executions()
             .iter()
-            .all(|child| execution_matches(&child))
+            .all(|child| execution_matches(child))
     }
 }
 
@@ -752,12 +733,4 @@ pub fn deserialize_execs_from_cache() -> GlobalExecutions {
     } else {
         rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
     }
-}
-
-fn write_serialized_execs_to_cache(serialized_execs: Vec<u8>) {
-    fs::write(
-        "/home/kelly/research/IOTracker/cache/cache",
-        serialized_execs,
-    )
-    .expect("Failed to write serialized executions to cache!");
 }

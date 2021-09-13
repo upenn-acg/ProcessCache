@@ -32,14 +32,12 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
 
-    let curr_execution = RcExecution::new(Execution::PendingRoot);
-    // To start, the parent execution and the current execution are the same
-    // (only one process, so its its own grandpa... yeah sci fi reference)
+    let first_execution = RcExecution::new(Execution::PendingRoot);
+
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
-        curr_execution.clone(),
-        curr_execution.clone(),
+        first_execution.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -53,7 +51,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 
     // Serialize the execs to the cache!
     //
-    serialize_execs_to_cache(curr_execution);
+    serialize_execs_to_cache(first_execution)?;
     Ok(())
 }
 
@@ -69,13 +67,10 @@ pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
-    // We need to know who to add the child execution to? Maybe?
-    mut root_execution: RcExecution,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
-
     let mut skip_execution = false;
 
     loop {
@@ -171,21 +166,20 @@ pub async fn trace_process(
 
                         s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
-                            if new_execution.is_successful() {
-                                if let Some(cached_exec) =
-                                    get_cached_root_execution(new_execution.clone())
-                                {
-                                    skip_execution = true;
-                                    curr_execution = cached_exec;
-                                } else {
-                                    root_execution = new_execution.clone();
-                                    curr_execution = new_execution;
-                                }
+                            if let Some(cached_exec) =
+                                get_cached_root_execution(new_execution.clone())
+                            {
+                                skip_execution = true;
+                                curr_execution = cached_exec;
+                            } else {
+                                curr_execution.update_root(new_execution);
                             }
                         } else {
                             // parent right now
-                            curr_execution.add_child_execution(new_execution.clone());
-                            curr_execution = new_execution;
+                            // TODO: check the pids
+                            let new_rcexecution = RcExecution::new(new_execution);
+                            curr_execution.add_child_execution(new_rcexecution.clone());
+                            curr_execution = new_rcexecution;
                         }
                         continue;
                     }
@@ -262,7 +256,6 @@ pub async fn trace_process(
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
-                    curr_execution.clone(),
                     curr_execution.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
@@ -350,12 +343,6 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
     }
     Ok(())
 }
-fn exec_is_successful(next_event: TraceEvent) -> bool {
-    match next_event {
-        TraceEvent::Exec(_) => true,
-        _ => false,
-    }
-}
 
 fn create_new_execution(
     args: Vec<String>,
@@ -365,7 +352,7 @@ fn create_new_execution(
     is_pending_root: bool,
     next_event: TraceEvent,
     starting_cwd: PathBuf,
-) -> Result<RcExecution> {
+) -> Result<Execution> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?curr_pid);
     let mut new_execution = match next_event {
         TraceEvent::Exec(_) => {
@@ -402,7 +389,7 @@ fn create_new_execution(
     // Because both of those technically are executions.
     new_execution.add_identifiers(args, curr_pid, envp, executable, starting_cwd);
 
-    Ok(RcExecution::new(new_execution))
+    Ok(new_execution)
 }
 
 /// Open, openat, creat.
