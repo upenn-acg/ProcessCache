@@ -43,11 +43,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // for exec in global_executions.executions.borrow().iter() {
-    //     println!("Execution: {:?}", exec);
-    // }
-    // let length = global_executions.get_execution_count();
-    // println!("Number of executions: {}", length);
+    println!("Execution: {:?}", first_execution);
 
     // Serialize the execs to the cache!
     //
@@ -415,7 +411,10 @@ fn handle_open(
         match flags & O_ACCMODE {
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
-            O_WRONLY => OpenMode::WriteOnly,
+            O_WRONLY => {
+                println!("write only");
+                OpenMode::WriteOnly
+            }
             _ => panic!("Open flags do not match any mode!"),
         }
     };
@@ -442,6 +441,7 @@ fn handle_open(
     };
 
     let full_path = get_full_path(path_arg, pid)?;
+    println!("full path: {:?}", full_path);
     let syscall_name = String::from(syscall_name);
 
     let file_event = generate_file_access(full_path, io, syscall_name, syscall_succeeded);
@@ -539,7 +539,7 @@ fn get_full_path(path_arg: Option<PathArg>, pid: Pid) -> anyhow::Result<PathBuf>
 }
 
 // Generate file access if appropriate,
-// return None if direcotry or standard out
+// return None if directory or standard out
 // or whatever else that's not a real file.
 fn generate_file_access(
     full_path: PathBuf,
@@ -552,17 +552,22 @@ fn generate_file_access(
     // We generate the hash for the output at the end of the execution.
 
     if syscall_succeeded {
-        let hash = if full_path.starts_with("/dev/pts")
-            || full_path.starts_with("/etc/")
-            || full_path.is_dir()
-            || io_type == IO::Output
-        {
-            None
-        } else {
-            let path = full_path.clone().into_os_string().into_string().unwrap();
-            Some(generate_hash(path))
-        };
-        Some(FileAccess::Success(full_path, hash, syscall_name))
+        match io_type {
+            IO::Output => None,
+            IO::Input => {
+                let hash = if full_path.starts_with("/dev/pts")
+                    || full_path.starts_with("/dev/null")
+                    || full_path.starts_with("/etc/")
+                    || full_path.is_dir()
+                {
+                    None
+                } else {
+                    let path = full_path.clone().into_os_string().into_string().unwrap();
+                    Some(generate_hash(path))
+                };
+                Some(FileAccess::Success(full_path, hash, syscall_name))
+            }
+        }
     } else {
         Some(FileAccess::Failure(full_path, syscall_name))
     }

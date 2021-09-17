@@ -85,6 +85,7 @@ impl ExecAccesses {
         for output in self.output_files.iter_mut() {
             if let FileAccess::Success(full_path, hash, _) = output {
                 let path = full_path.clone().into_os_string().into_string().unwrap();
+                println!("gonna generate an output hash");
                 let hash_value = generate_hash(path);
                 *hash = Some(hash_value);
             }
@@ -537,6 +538,12 @@ pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution
         // Have to find the root exec in the list of global execs
         // in the cache.
         // TODO use all()?
+        println!("do we get here?");
+        println!(
+            "number of cached executions: {}",
+            global_execs.executions.len()
+        );
+
         for cached_root_exec in global_execs.executions.iter() {
             if exec_metadata_matches(cached_root_exec, new_root_metadata.clone())
                 && execution_matches(cached_root_exec)
@@ -549,9 +556,14 @@ pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution
 }
 
 fn execution_matches(cached_root: &RcExecution) -> bool {
+    println!("checking inputs and outputs and children");
     if !inputs_match(cached_root.clone()) || !outputs_match(cached_root.clone()) {
         false
     } else {
+        println!(
+            "Number of cached children: {}",
+            cached_root.child_executions().len()
+        );
         cached_root
             .child_executions()
             .iter()
@@ -672,7 +684,7 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
 // Wrapper for generating the hash.
 // Opens the file and calls process() to get the hash.
 pub fn generate_hash(path: String) -> Vec<u8> {
-    println!("made it to generate_hash");
+    println!("made it to generate_hash for path: {}", path);
     let mut file = fs::File::open(&path).expect("Could not open file to generate hash");
     process::<Sha256, _>(&mut file)
 }
