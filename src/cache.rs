@@ -611,7 +611,10 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
             // Only check these things if it's a true file.
             // If the hash is None, we can just move on.
             if !full_path.exists() {
-                println!("Inputs don't match");
+                println!(
+                    "Inputs don't match because path doesn't exist: {:?}",
+                    full_path
+                );
                 return false;
             } else {
                 // Hash the file that is there right now.
@@ -620,7 +623,10 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
 
                 // Compare the new hash to the old hash.
                 if !new_hash.iter().eq(old_hash.iter()) {
-                    println!("Inputs don't match");
+                    println!(
+                        "Inputs don't match new hash and old hash don't match: {:?}",
+                        full_path
+                    );
                     return false;
                 }
             }
