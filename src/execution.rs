@@ -332,9 +332,7 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
     debug!("made it past get_full_path");
 
     let file_access = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
-    if let Some(access) = file_access {
-        execution.add_new_file_event(access, IO::Input);
-    }
+    execution.add_new_file_event(file_access, IO::Input);
     Ok(())
 }
 
@@ -412,7 +410,7 @@ fn handle_open(
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
             O_WRONLY => {
-                println!("write only");
+                println!("open at write only");
                 OpenMode::WriteOnly
             }
             _ => panic!("Open flags do not match any mode!"),
@@ -445,10 +443,8 @@ fn handle_open(
     let syscall_name = String::from(syscall_name);
 
     let file_event = generate_file_access(full_path, io, syscall_name, syscall_succeeded);
+    execution.add_new_file_event(file_event, io);
 
-    if let Some(event) = file_event {
-        execution.add_new_file_event(event, io);
-    }
     Ok(())
 }
 
@@ -502,10 +498,8 @@ fn handle_stat(
 
     let syscall_name = String::from(syscall_name);
     let file_event = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
+    execution.add_new_file_event(file_event, IO::Input);
 
-    if let Some(event) = file_event {
-        execution.add_new_file_event(event, IO::Input);
-    }
     Ok(())
 }
 
@@ -541,21 +535,25 @@ fn get_full_path(path_arg: Option<PathArg>, pid: Pid) -> anyhow::Result<PathBuf>
 // Generate file access if appropriate,
 // return None if directory or standard out
 // or whatever else that's not a real file.
+// ----------------------------------------
+// Idk why this was an Option<FileAccess>.
+// Inside the function, I may or may not want the hash,
+// but I do always want a FileAccess struct back,
+// successful or not!
 fn generate_file_access(
     full_path: PathBuf,
     io_type: IO,
     syscall_name: String,
     syscall_succeeded: bool,
-) -> Option<FileAccess> {
+) -> FileAccess {
     // Why pass in the file name when there's a perfectly good file_name, just sittin' in the full_path??
     // Who else likes Seinfeld? Just me? Alright.
     // We generate the hash for the output at the end of the execution.
 
     if syscall_succeeded {
-        match io_type {
-            IO::Output => None,
+        let hash = match io_type {
             IO::Input => {
-                let hash = if full_path.starts_with("/dev/pts")
+                if full_path.starts_with("/dev/pts")
                     || full_path.starts_with("/dev/null")
                     || full_path.starts_with("/etc/")
                     || full_path.is_dir()
@@ -564,11 +562,12 @@ fn generate_file_access(
                 } else {
                     let path = full_path.clone().into_os_string().into_string().unwrap();
                     Some(generate_hash(path))
-                };
-                Some(FileAccess::Success(full_path, hash, syscall_name))
+                }
             }
-        }
+            _ => None,
+        };
+        FileAccess::Success(full_path, hash, syscall_name)
     } else {
-        Some(FileAccess::Failure(full_path, syscall_name))
+        FileAccess::Failure(full_path, syscall_name)
     }
 }
