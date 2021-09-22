@@ -556,6 +556,7 @@ fn generate_file_access(
                 if full_path.starts_with("/dev/pts")
                     || full_path.starts_with("/dev/null")
                     || full_path.starts_with("/etc/")
+                    || full_path.starts_with("/proc/")
                     || full_path.is_dir()
                 {
                     None
