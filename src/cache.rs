@@ -52,6 +52,14 @@ pub enum FileAccess {
     Failure(PathBuf, String),
 }
 
+impl FileAccess {
+    pub fn full_path(&self) -> PathBuf {
+        match self {
+            FileAccess::Success(path, _, _) => path.clone(),
+            FileAccess::Failure(path, _) => path.clone(),
+        }
+    }
+}
 // Actual accesses to the file system performed by
 // a successful execution.
 // TODO: Handle stderr and stdout. I don't want to right
@@ -74,7 +82,18 @@ impl ExecAccesses {
     // Add new access to the struct.
     pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
         match io_type {
-            IO::Input => self.input_files.push(file_access),
+            IO::Input => {
+                if !self
+                    .output_files
+                    .iter()
+                    .any(|f| f.full_path() == file_access.full_path())
+                {
+                    println!("Adding access to inputs that was NOT in outputs");
+                    self.input_files.push(file_access);
+                } else {
+                    println!("Not adding access to inputs it is already in outputs");
+                }
+            }
             IO::Output => self.output_files.push(file_access),
         }
     }
@@ -119,33 +138,6 @@ impl ExecAccesses {
 
     fn outputs(&self) -> Vec<FileAccess> {
         self.output_files.clone()
-    }
-
-    // Copy output files from the cache to the appropriate
-    // locations the program expects.
-    pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
-        for output in self.output_files.iter() {
-            if let FileAccess::Success(full_path, _, _) = output {
-                let file_name = full_path
-                    .file_name()
-                    .expect("Can't get file name for output file in serve_outputs_from_cache()!");
-                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
-                let cached_output_path = cache_dir.join(file_name);
-
-                // 1) Check if the output file is there.
-                if !full_path.exists() {
-                    // 2) It's not, great! Then copy the file from the cache.
-                    fs::copy(cached_output_path, full_path)?;
-                }
-                // Otherwise we don't need to do anything.
-                // A separate function outputs_match() checks that
-                // for each output:
-                // - if it IS there, hash it, compare it to cached hash.
-                // - if any of these checks fail, outputs_match() returns FALSE
-                //   and we don't end up here, because skip_execution would also be FALSE.
-            }
-        }
-        Ok(())
     }
 }
 
@@ -391,15 +383,6 @@ impl Execution {
         }
     }
 
-    fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
-        match self {
-            Execution::Successful(_, accesses, _) => accesses.serve_outputs_from_cache(),
-            // We shouldn't even get here if the execution is pending or failed, because
-            // skip_execution is only ever set to true for successful executions.
-            _ => Ok(()),
-        }
-    }
-
     fn starting_cwd(&self) -> PathBuf {
         match self {
             Execution::Successful(metadata, _, _) | Execution::Failed(metadata) => {
@@ -479,10 +462,6 @@ impl RcExecution {
 
     fn outputs(&self) -> Vec<FileAccess> {
         self.execution.borrow().outputs()
-    }
-
-    pub fn serve_outputs_from_cache(&self) -> anyhow::Result<()> {
-        self.execution.borrow().serve_outputs_from_cache()
     }
 
     pub fn starting_cwd(&self) -> PathBuf {
@@ -665,6 +644,33 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
         }
     }
     true
+}
+
+// Take in the root execution.
+// Copy its outputs to the appropriate places.
+
+pub fn serve_outputs_from_cache(root_execution: &RcExecution) -> anyhow::Result<()> {
+    println!("serving outputs from cache");
+
+    for output in root_execution.outputs() {
+        if let FileAccess::Success(full_path, _, _) = output {
+            println!("successful file access going to serve: {:?}", full_path);
+            let file_name = full_path.file_name().unwrap();
+
+            let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
+            let cached_output_path = cache_dir.join(file_name);
+
+            if !full_path.exists() {
+                fs::copy(cached_output_path, full_path)?;
+            }
+        }
+    }
+
+    root_execution
+        .child_executions()
+        .iter()
+        .all(|child| serve_outputs_from_cache(child).is_ok());
+    Ok(())
 }
 
 // ------ Hashing stuff ------

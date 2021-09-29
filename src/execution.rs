@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_hash, get_cached_root_execution, serialize_execs_to_cache, ExecAccesses, ExecMetadata,
-    Execution, FileAccess, OpenMode, RcExecution, IO,
+    generate_hash, get_cached_root_execution, serialize_execs_to_cache, serve_outputs_from_cache,
+    ExecAccesses, ExecMetadata, Execution, FileAccess, OpenMode, RcExecution, IO,
 };
 use crate::context;
 use crate::regs::Regs;
@@ -46,8 +46,12 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     println!("Execution: {:?}", first_execution);
 
     // Serialize the execs to the cache!
-    //
-    serialize_execs_to_cache(first_execution)?;
+    // Only serialize to cache if not PendingRoot?
+    // PendingRoot == we skipped the execution because
+    // it had a cached match and was therefore skippable.
+    if !first_execution.is_pending_root() {
+        serialize_execs_to_cache(first_execution)?;
+    }
     Ok(())
 }
 
@@ -164,7 +168,10 @@ pub async fn trace_process(
                                 get_cached_root_execution(new_execution.clone())
                             {
                                 skip_execution = true;
-                                curr_execution = cached_exec;
+                                println!("cached exec: {:?}", cached_exec);
+                                // curr_execution = cached_exec;
+                                println!("serving outputs");
+                                serve_outputs_from_cache(&cached_exec)?;
                             } else {
                                 curr_execution.update_root(new_execution);
                             }
@@ -288,12 +295,14 @@ pub async fn trace_process(
             // like "do_exit_stuff" (obviously something better but you
             // get me)
             debug!("Skip execution is: {}", skip_execution);
-            if skip_execution {
-                // Woo! We are skipping thise execution.
-                // We need to serve the output files.
-                // TODO: Put exit code.. somewhere?
-                curr_execution.serve_outputs_from_cache()?;
-            } else {
+            // if skip_execution {
+            // Woo! We are skipping thise execution.
+            // We need to serve the output files.
+            // TODO: Put exit code.. somewhere?
+            // println!("serving outputs");
+            // curr_execution.serve_outputs_from_cache()?;
+            // } else {
+            if !skip_execution {
                 // This is a new (or at least new version?) execution,
                 // add/update all the necessary stuff in the cache.
                 curr_execution.add_exit_code(exit_code, pid);
