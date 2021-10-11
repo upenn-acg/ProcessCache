@@ -43,7 +43,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    println!("Execution: {:?}", first_execution);
+    // println!("Execution: {:?}", first_execution);
 
     // Serialize the execs to the cache!
     // Only serialize to cache if not PendingRoot?
@@ -165,13 +165,13 @@ pub async fn trace_process(
                         s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
                             if let Some(cached_exec) =
-                                get_cached_root_execution(new_execution.clone())
+                                get_cached_root_execution(tracer.curr_proc, new_execution.clone())
                             {
                                 skip_execution = true;
                                 println!("cached exec: {:?}", cached_exec);
                                 // curr_execution = cached_exec;
                                 println!("serving outputs");
-                                serve_outputs_from_cache(&cached_exec)?;
+                                serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
                             } else {
                                 curr_execution.update_root(new_execution);
                             }
@@ -306,7 +306,7 @@ pub async fn trace_process(
                 // This is a new (or at least new version?) execution,
                 // add/update all the necessary stuff in the cache.
                 curr_execution.add_exit_code(exit_code, pid);
-                curr_execution.add_output_file_hashes()?;
+                curr_execution.add_output_file_hashes(pid)?;
                 curr_execution.copy_outputs_to_cache()?;
             }
         }
@@ -340,8 +340,14 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
     let full_path = get_full_path(Some(PathArg::Path(path_arg)), tracer.curr_proc)?;
     debug!("made it past get_full_path");
 
-    let file_access = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
-    execution.add_new_file_event(file_access, IO::Input);
+    let file_access = generate_file_access(
+        full_path,
+        IO::Input,
+        tracer.curr_proc,
+        syscall_name,
+        syscall_succeeded,
+    );
+    execution.add_new_file_event(tracer.curr_proc, file_access, IO::Input);
     Ok(())
 }
 
@@ -451,8 +457,8 @@ fn handle_open(
     println!("full path: {:?}", full_path);
     let syscall_name = String::from(syscall_name);
 
-    let file_event = generate_file_access(full_path, io, syscall_name, syscall_succeeded);
-    execution.add_new_file_event(file_event, io);
+    let file_event = generate_file_access(full_path, io, pid, syscall_name, syscall_succeeded);
+    execution.add_new_file_event(tracer.curr_proc, file_event, io);
 
     Ok(())
 }
@@ -506,8 +512,14 @@ fn handle_stat(
     let full_path = get_full_path(full_path_arg, tracer.curr_proc)?;
 
     let syscall_name = String::from(syscall_name);
-    let file_event = generate_file_access(full_path, IO::Input, syscall_name, syscall_succeeded);
-    execution.add_new_file_event(file_event, IO::Input);
+    let file_event = generate_file_access(
+        full_path,
+        IO::Input,
+        tracer.curr_proc,
+        syscall_name,
+        syscall_succeeded,
+    );
+    execution.add_new_file_event(tracer.curr_proc, file_event, IO::Input);
 
     Ok(())
 }
@@ -552,6 +564,7 @@ fn get_full_path(path_arg: Option<PathArg>, pid: Pid) -> anyhow::Result<PathBuf>
 fn generate_file_access(
     full_path: PathBuf,
     io_type: IO,
+    pid: Pid,
     syscall_name: String,
     syscall_succeeded: bool,
 ) -> FileAccess {
@@ -571,7 +584,7 @@ fn generate_file_access(
                     None
                 } else {
                     let path = full_path.clone().into_os_string().into_string().unwrap();
-                    Some(generate_hash(path))
+                    Some(generate_hash(pid, path))
                 }
             }
             _ => None,
