@@ -10,6 +10,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[allow(unused_imports)]
+use tracing::{debug, error, info, span, trace, Level};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
 
@@ -80,7 +83,9 @@ impl ExecAccesses {
     }
 
     // Add new access to the struct.
-    pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(&mut self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
+        let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
+
         match io_type {
             IO::Input => {
                 if !self
@@ -88,27 +93,34 @@ impl ExecAccesses {
                     .iter()
                     .any(|f| f.full_path() == file_access.full_path())
                 {
-                    println!("Adding access to inputs that was NOT in outputs");
+                    s.in_scope(|| info!("Adding access to inputs that was NOT in outputs"));
                     self.input_files.push(file_access);
                 } else {
-                    println!("Not adding access to inputs it is already in outputs");
+                    s.in_scope(|| info!("Not adding access to inputs it is already in outputs"));
+                    // TODO check for truncate, creation of a file?
                 }
             }
             IO::Output => self.output_files.push(file_access),
         }
+
+        drop(s);
     }
 
     // At the end of a successful execution, we get the hash of each output
     // file.
-    pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
+    pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
+        let s = span!(Level::INFO, stringify!(add_output_file_hashes), pid=?caller_pid);
+
         for output in self.output_files.iter_mut() {
             if let FileAccess::Success(full_path, hash, _) = output {
                 let path = full_path.clone().into_os_string().into_string().unwrap();
-                println!("gonna generate an output hash");
-                let hash_value = generate_hash(path);
+                s.in_scope(|| info!("gonna generate an output hash"));
+                let hash_value = generate_hash(caller_pid, path);
                 *hash = Some(hash_value);
             }
         }
+
+        drop(s);
         Ok(())
     }
 
@@ -128,7 +140,6 @@ impl ExecAccesses {
                 fs::copy(full_path, cache_path)?;
             }
         }
-        println!("end of copy outputs to cache");
         Ok(())
     }
 
@@ -282,18 +293,18 @@ impl Execution {
         }
     }
 
-    pub fn add_new_file_event(&mut self, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(&mut self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
         match self {
             Execution::Successful(_, accesses, _) => {
-                accesses.add_new_file_event(file_access, io_type)
+                accesses.add_new_file_event(caller_pid, file_access, io_type)
             }
             _ => panic!("Should not be adding file event to pending or failed execution!"),
         }
     }
 
-    pub fn add_output_file_hashes(&mut self) -> anyhow::Result<()> {
+    pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
         match self {
-            Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(),
+            Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
             // Should this be some fancy kinda error? Meh?
             _ => Ok(()),
         }
@@ -418,14 +429,16 @@ impl RcExecution {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
 
-    pub fn add_new_file_event(&self, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(&self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
         self.execution
             .borrow_mut()
-            .add_new_file_event(file_access, io_type);
+            .add_new_file_event(caller_pid, file_access, io_type);
     }
 
-    pub fn add_output_file_hashes(&self) -> anyhow::Result<()> {
-        self.execution.borrow_mut().add_output_file_hashes()
+    pub fn add_output_file_hashes(&self, caller_pid: Pid) -> anyhow::Result<()> {
+        self.execution
+            .borrow_mut()
+            .add_output_file_hashes(caller_pid)
     }
 
     fn args(&self) -> Vec<String> {
@@ -501,14 +514,15 @@ impl GlobalExecutions {
 
 // Return the cached execution if there exists a cached success.
 // Else return None.
-pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution> {
-    println!("checking the damn cache");
+pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> Option<RcExecution> {
+    let s = span!(Level::INFO, stringify!(get_cached_root_execution), pid=?caller_pid);
+    let _ = s.enter();
     let cache_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache");
     if !cache_path.exists() {
-        println!("No cached exec bc cache doesn't exist");
+        s.in_scope(|| info!("No cached exec bc cache doesn't exist"));
         None
     } else if !new_execution.is_successful() {
-        println!("No cached exec bc exec failed");
+        s.in_scope(|| info!("No cached exec bc exec failed"));
         None
     } else {
         let new_root_metadata = new_execution.metadata();
@@ -516,17 +530,12 @@ pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution
         let global_execs = deserialize_execs_from_cache();
         // Have to find the root exec in the list of global execs
         // in the cache.
-        // TODO use all()?
-        println!("do we get here?");
-        println!(
-            "number of cached executions: {}",
-            global_execs.executions.len()
-        );
 
         for cached_root_exec in global_execs.executions.iter() {
-            if exec_metadata_matches(cached_root_exec, new_root_metadata.clone())
-                && execution_matches(cached_root_exec)
+            if exec_metadata_matches(cached_root_exec, caller_pid, new_root_metadata.clone())
+                && execution_matches(cached_root_exec, caller_pid)
             {
+                // TODO: don't short circuit
                 return Some(cached_root_exec.clone());
             }
         }
@@ -534,19 +543,27 @@ pub fn get_cached_root_execution(new_execution: Execution) -> Option<RcExecution
     }
 }
 
-fn execution_matches(cached_root: &RcExecution) -> bool {
-    println!("checking inputs and outputs and children");
-    if !inputs_match(cached_root.clone()) || !outputs_match(cached_root.clone()) {
+fn execution_matches(cached_root: &RcExecution, caller_pid: Pid) -> bool {
+    let s = span!(Level::INFO, stringify!(execution_matches), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Checking inputs and outputs of children"));
+
+    if !inputs_match(cached_root.clone(), caller_pid)
+        || !outputs_match(caller_pid, cached_root.clone())
+    {
         false
     } else {
-        println!(
-            "Number of cached children: {}",
-            cached_root.child_executions().len()
-        );
+        s.in_scope(|| {
+            info!(
+                "Number of cached children: {}",
+                cached_root.child_executions().len()
+            )
+        });
+
         cached_root
             .child_executions()
             .iter()
-            .all(|child| execution_matches(child))
+            .all(|child| execution_matches(child, caller_pid))
     }
 }
 
@@ -555,7 +572,14 @@ fn execution_matches(cached_root: &RcExecution) -> bool {
 // executions must be skippable as well so we just skip the whole
 // dang thing. This means we don't have to check the metadata of
 // the child executions or their child executions.
-fn exec_metadata_matches(cached_exec: &RcExecution, new_exec_metadata: ExecMetadata) -> bool {
+fn exec_metadata_matches(
+    cached_exec: &RcExecution,
+    caller_pid: Pid,
+    new_exec_metadata: ExecMetadata,
+) -> bool {
+    let s = span!(Level::INFO, stringify!(exec_metadata_matches), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Checking inputs and outputs of children"));
     let new_executable = new_exec_metadata.execution_name();
     let new_starting_cwd = new_exec_metadata.starting_cwd();
     let new_args = new_exec_metadata.args();
@@ -568,12 +592,19 @@ fn exec_metadata_matches(cached_exec: &RcExecution, new_exec_metadata: ExecMetad
     // - arguments match
     // - starting cwd matches
     // - env vars match
-    println!("CHECKING METADATA");
-    cached_exec.execution_name() == new_executable
-        && cached_exec.is_successful()
-        && new_args == cached_exec.args()
-        && new_starting_cwd == cached_exec.starting_cwd()
-        && new_env_vars == cached_exec.env_vars()
+    let executable_matches = cached_exec.execution_name() == new_executable;
+    s.in_scope(|| info!("Executable names match: {}", executable_matches));
+
+    let is_successful = cached_exec.is_successful();
+    s.in_scope(|| info!("Is successful: {}", is_successful));
+    let args_match = new_args == cached_exec.args();
+    s.in_scope(|| info!("Args match: {}", args_match));
+    let cwd_matches = new_starting_cwd == cached_exec.starting_cwd();
+    s.in_scope(|| info!("Cwd matches: {}", cwd_matches));
+    let env_vars_match = new_env_vars == cached_exec.env_vars();
+    s.in_scope(|| info!("Env vars match: {}", env_vars_match));
+
+    executable_matches && is_successful && args_match && cwd_matches && env_vars_match
 }
 
 // The inputs in the cached execution match the
@@ -581,7 +612,10 @@ fn exec_metadata_matches(cached_exec: &RcExecution, new_exec_metadata: ExecMetad
 // and they are in the correct absolute path locations.
 
 // Bruh, why is this so much programming???
-fn inputs_match(cached_exec: RcExecution) -> bool {
+fn inputs_match(cached_exec: RcExecution, caller_pid: Pid) -> bool {
+    let s = span!(Level::INFO, stringify!(inputs_match), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Checking inputs and outputs of children"));
     let cached_inputs = cached_exec.inputs();
     // First, they must share the same inputs.
     // So get the keys of each and check that they are equal?
@@ -590,22 +624,26 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
             // Only check these things if it's a true file.
             // If the hash is None, we can just move on.
             if !full_path.exists() {
-                println!(
-                    "Inputs don't match because path doesn't exist: {:?}",
-                    full_path
-                );
+                s.in_scope(|| {
+                    info!(
+                        "Inputs don't match because path doesn't exist: {:?}",
+                        full_path
+                    )
+                });
                 return false;
             } else {
                 // Hash the file that is there right now.
                 let full_path = full_path.clone().into_os_string().into_string().unwrap();
-                let new_hash = generate_hash(full_path.clone());
+                let new_hash = generate_hash(caller_pid, full_path.clone());
 
                 // Compare the new hash to the old hash.
                 if !new_hash.iter().eq(old_hash.iter()) {
-                    println!(
-                        "Inputs don't match new hash and old hash don't match: {:?}",
-                        full_path
-                    );
+                    s.in_scope(|| {
+                        info!(
+                            "Inputs don't match new hash and old hash don't match: {:?}",
+                            full_path
+                        )
+                    });
                     return false;
                 }
             }
@@ -618,7 +656,10 @@ fn inputs_match(cached_exec: RcExecution) -> bool {
 // - Exist, in the right place, and the hash matches the hash we have in the cache.
 // - OR, the file doesn't exist, which is great, because we have it in our cache
 // and we can just copy it over.
-fn outputs_match(curr_execution: RcExecution) -> bool {
+fn outputs_match(caller_pid: Pid, curr_execution: RcExecution) -> bool {
+    let s = span!(Level::INFO, stringify!(outputs_match), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Checking inputs and outputs of children"));
     let cached_outputs = curr_execution.outputs();
 
     for output in cached_outputs.into_iter() {
@@ -629,11 +670,16 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
             if full_path.exists() {
                 if let Some(old_hash) = hash {
                     let full_path = full_path.clone().into_os_string().into_string().unwrap();
-                    let new_hash = generate_hash(full_path.clone());
+                    let new_hash = generate_hash(caller_pid, full_path.clone());
 
                     // Compare the new hash to the old hash.
                     if !new_hash.iter().eq(old_hash.iter()) {
-                        println!("Outputs don't match");
+                        s.in_scope(|| {
+                            info!(
+                                "Output hashes don't match. Old :{:?}, New :{:?}",
+                                new_hash, old_hash
+                            )
+                        });
                         return false;
                     }
                 }
@@ -649,12 +695,22 @@ fn outputs_match(curr_execution: RcExecution) -> bool {
 // Take in the root execution.
 // Copy its outputs to the appropriate places.
 
-pub fn serve_outputs_from_cache(root_execution: &RcExecution) -> anyhow::Result<()> {
-    println!("serving outputs from cache");
+pub fn serve_outputs_from_cache(
+    caller_pid: Pid,
+    root_execution: &RcExecution,
+) -> anyhow::Result<()> {
+    let s = span!(Level::INFO, stringify!(serve_outputs_from_cache), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Serving outputs from cache."));
 
     for output in root_execution.outputs() {
         if let FileAccess::Success(full_path, _, _) = output {
-            println!("successful file access going to serve: {:?}", full_path);
+            s.in_scope(|| {
+                info!(
+                    "Cached successful output file access going to serve: {:?}",
+                    full_path
+                )
+            });
             let file_name = full_path.file_name().unwrap();
 
             let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
@@ -662,6 +718,13 @@ pub fn serve_outputs_from_cache(root_execution: &RcExecution) -> anyhow::Result<
 
             if !full_path.exists() {
                 fs::copy(cached_output_path, full_path)?;
+            } else {
+                s.in_scope(|| {
+                    info!(
+                        "Not copying from cache, file is already there: {:?}",
+                        full_path
+                    )
+                });
             }
         }
     }
@@ -669,7 +732,7 @@ pub fn serve_outputs_from_cache(root_execution: &RcExecution) -> anyhow::Result<
     root_execution
         .child_executions()
         .iter()
-        .all(|child| serve_outputs_from_cache(child).is_ok());
+        .all(|child| serve_outputs_from_cache(caller_pid, child).is_ok());
     Ok(())
 }
 
@@ -695,8 +758,10 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
 
 // Wrapper for generating the hash.
 // Opens the file and calls process() to get the hash.
-pub fn generate_hash(path: String) -> Vec<u8> {
-    println!("made it to generate_hash for path: {}", path);
+pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
+    let s = span!(Level::INFO, stringify!(generate_hash), pid=?caller_pid);
+    let _ = s.enter();
+    s.in_scope(|| info!("Made it to generate_hash for path: {}", path));
     let mut file = fs::File::open(&path).expect("Could not open file to generate hash");
     process::<Sha256, _>(&mut file)
 }
