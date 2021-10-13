@@ -154,6 +154,7 @@ pub async fn trace_process(
                         let new_execution = create_new_execution(
                             args,
                             tracer.curr_proc,
+                            &curr_execution,
                             envp,
                             executable,
                             next_event,
@@ -165,9 +166,23 @@ pub async fn trace_process(
                             if let Some(cached_exec) =
                                 get_cached_root_execution(tracer.curr_proc, new_execution.clone())
                             {
-                                skip_execution = true;
-                                s.in_scope(|| info!("Serving outputs"));
-                                serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
+                                let new_exec_succeeded = new_execution.is_successful();
+                                let cached_exec_succeeded = cached_exec.is_successful();
+
+                                // If we have that the execution failed when we had cached it, but this time it succeeded,
+                                // let's just panic for now. Later, I imagine we want to maybe replace the failed
+                                // cached execution with a successful one? Like we'd record this new run. But idk.
+                                if !cached_exec_succeeded && new_exec_succeeded {
+                                    panic!("Cached version failed, but running this time the execution succeeds!!");
+                                }
+
+                                // We don't skip if it failed. We just let it fail.
+                                if cached_exec_succeeded && new_exec_succeeded {
+                                    s.in_scope(|| info!("Initiating skip of execution!"));
+                                    skip_execution = true;
+                                    s.in_scope(|| info!("Serving outputs"));
+                                    serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
+                                }
                             } else {
                                 curr_execution.update_root(new_execution);
                             }
@@ -190,7 +205,7 @@ pub async fn trace_process(
                         // rax, orig_rax, arg1
 
                         if skip_execution {
-                            debug!("Trying to change execve call into exit call!");
+                            debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
                             let regs = tracer
                                 .get_registers()
                                 .with_context(|| context!("Failed to get regs in stat event"))?;
@@ -207,10 +222,6 @@ pub async fn trace_process(
                             tracer.set_regs(&mut regs)?;
                             continue;
                         }
-
-                        // For right now, don't really need to worry about these.
-                        // TODO: Should skip_execution be changed to false?
-                        // TODO: Should curr_execution be changed to ... something else?
                     }
                 }
 
@@ -341,43 +352,56 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
 
 fn create_new_execution(
     args: Vec<String>,
-    curr_pid: Pid,
+    caller_pid: Pid,
+    // Before we create a new execution, we should check that this
+    // process has not already done a successful execve. We are
+    // currently NOT handling single proc doing execve execve execve...
+    curr_exec: &RcExecution,
     envp: Vec<String>,
     executable: String,
     next_event: TraceEvent,
     starting_cwd: PathBuf,
 ) -> Result<Execution> {
-    let s = span!(Level::INFO, stringify!(trace_process), pid=?curr_pid);
+    let s = span!(Level::INFO, stringify!(trace_process), pid=?caller_pid);
     let _ = s.enter();
 
-    let mut new_execution = match next_event {
-        TraceEvent::Exec(_) => {
-            // The execve succeeded!
-            // If it's in the cache, change the
-            // skip_execution = true;
-            s.in_scope(|| {
-                debug!("Execve succeeded!");
-            });
+    // If the current execution is pending root, great,
+    // our root process is trying to do its first exec.
+    // If the curr execution struct's pid is different than the
+    // caller's pid, this means this is a child process who is
+    // doing its first exec! (the difference in pids is that the curr
+    // execution struct's pid is the parent of the caller pid)
+    if curr_exec.is_pending_root() || curr_exec.caller_pid() != caller_pid {
+        let mut new_execution = match next_event {
+            TraceEvent::Exec(_) => {
+                // The execve succeeded!
+                // If it's in the cache, change the
+                s.in_scope(|| {
+                    debug!("Execve succeeded!");
+                });
 
-            Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
-        }
-        _ => {
-            // The execve failed!
-            // Create a Failed Execution and add to global executions.
-            s.in_scope(|| {
-                debug!("Execve failed.");
-            });
-            Execution::Failed(ExecMetadata::new())
-        }
-    };
+                Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
+            }
+            _ => {
+                // The execve failed!
+                // Create a Failed Execution and add to global executions.
+                s.in_scope(|| {
+                    debug!("Execve failed.");
+                });
+                Execution::Failed(ExecMetadata::new())
+            }
+        };
 
-    // This is a NEW exec, we must update the current
-    // execution to this new one.
-    // I *THINK* I want to update this whether it succeeds or fails.
-    // Because both of those technically are executions.
-    new_execution.add_identifiers(args, curr_pid, envp, executable, starting_cwd);
+        // This is a NEW exec, we must update the current
+        // execution to this new one.
+        // I *THINK* I want to update this whether it succeeds or fails.
+        // Because both of those technically are executions.
+        new_execution.add_identifiers(args, caller_pid, envp, executable, starting_cwd);
 
-    Ok(new_execution)
+        Ok(new_execution)
+    } else {
+        panic!("Process has already exec'd and is trying to exec again!");
+    }
 }
 
 /// Open, openat, creat.
