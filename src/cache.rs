@@ -336,6 +336,13 @@ impl Execution {
         }
     }
 
+    fn caller_pid(&self) -> Pid {
+        match self {
+            Execution::Successful(meta, _, _) | Execution::Failed(meta) => meta.caller_pid(),
+            _ => panic!("Trying to get caller pid of pending root execution!"),
+        }
+    }
+
     fn child_executions(&self) -> Vec<RcExecution> {
         match self {
             Execution::Successful(_, _, children) => children.clone(),
@@ -392,13 +399,6 @@ impl Execution {
 
     pub fn is_successful(&self) -> bool {
         matches!(self, Execution::Successful(_, _, _))
-    }
-
-    fn metadata(&self) -> ExecMetadata {
-        match self {
-            Execution::Failed(meta) | Execution::Successful(meta, _, _) => meta.clone(),
-            _ => panic!("Trying to get metadata from pending execution"),
-        }
     }
 
     fn outputs(&self) -> Vec<FileAccess> {
@@ -462,6 +462,10 @@ impl RcExecution {
 
     fn args(&self) -> Vec<String> {
         self.execution.borrow().args()
+    }
+
+    pub fn caller_pid(&self) -> Pid {
+        self.execution.borrow().caller_pid()
     }
 
     fn child_executions(&self) -> Vec<RcExecution> {
@@ -544,14 +548,16 @@ pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> O
         s.in_scope(|| info!("No cached exec bc exec failed"));
         None
     } else {
-        let new_root_metadata = new_execution.metadata();
         // TODO: Panic if a failed execution is let to run and it succeeds.
         let global_execs = deserialize_execs_from_cache();
         // Have to find the root exec in the list of global execs
         // in the cache.
 
         for cached_root_exec in global_execs.executions.iter() {
-            if exec_metadata_matches(cached_root_exec, caller_pid, new_root_metadata.clone())
+            // We check that the metadata matches
+            // That the inputs and outputs match (all the way down the tree of child execs)
+            // And that success or failure matches
+            if exec_metadata_matches(cached_root_exec, caller_pid, &new_execution)
                 && execution_matches(cached_root_exec, caller_pid)
             {
                 // TODO: don't short circuit
@@ -591,18 +597,14 @@ fn execution_matches(cached_root: &RcExecution, caller_pid: Pid) -> bool {
 // executions must be skippable as well so we just skip the whole
 // dang thing. This means we don't have to check the metadata of
 // the child executions or their child executions.
-fn exec_metadata_matches(
-    cached_exec: &RcExecution,
-    caller_pid: Pid,
-    new_exec_metadata: ExecMetadata,
-) -> bool {
+fn exec_metadata_matches(cached_exec: &RcExecution, caller_pid: Pid, new_exec: &Execution) -> bool {
     let s = span!(Level::INFO, stringify!(exec_metadata_matches), pid=?caller_pid);
     let _ = s.enter();
     s.in_scope(|| info!("Checking inputs and outputs of children"));
-    let new_executable = new_exec_metadata.execution_name();
-    let new_starting_cwd = new_exec_metadata.starting_cwd();
-    let new_args = new_exec_metadata.args();
-    let new_env_vars = new_exec_metadata.env_vars();
+    let new_executable = new_exec.execution_name();
+    let new_starting_cwd = new_exec.starting_cwd();
+    let new_args = new_exec.args();
+    let new_env_vars = new_exec.env_vars();
     // Check if any execution struct existing in the cache matches this
     // We should skip it if:
     // - it WAS in the cache before (loop)
@@ -613,9 +615,8 @@ fn exec_metadata_matches(
     // - env vars match
     let executable_matches = cached_exec.execution_name() == new_executable;
     s.in_scope(|| info!("Executable names match: {}", executable_matches));
-
-    let is_successful = cached_exec.is_successful();
-    s.in_scope(|| info!("Is successful: {}", is_successful));
+    let success_failure_match = cached_exec.is_successful() == new_exec.is_successful();
+    s.in_scope(|| info!("Success/Failure match: {}", success_failure_match));
     let args_match = new_args == cached_exec.args();
     s.in_scope(|| info!("Args match: {}", args_match));
     let cwd_matches = new_starting_cwd == cached_exec.starting_cwd();
@@ -623,7 +624,7 @@ fn exec_metadata_matches(
     let env_vars_match = new_env_vars == cached_exec.env_vars();
     s.in_scope(|| info!("Env vars match: {}", env_vars_match));
 
-    executable_matches && is_successful && args_match && cwd_matches && env_vars_match
+    executable_matches && success_failure_match && args_match && cwd_matches && env_vars_match
 }
 
 // The inputs in the cached execution match the
