@@ -43,8 +43,6 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // println!("Execution: {:?}", first_execution);
-
     // Serialize the execs to the cache!
     // Only serialize to cache if not PendingRoot?
     // PendingRoot == we skipped the execution because
@@ -69,6 +67,7 @@ pub async fn trace_process(
     mut curr_execution: RcExecution,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
+    let _ = s.enter();
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
     let mut skip_execution = false;
@@ -136,7 +135,6 @@ pub async fn trace_process(
                             .with_context(|| context!("Failed to get regs in exec event"))?;
                         let arg = regs.arg1();
                         let executable = tracer.read_c_string(arg)?;
-                        debug!("PATH NAME: {}", executable);
 
                         let args = tracer
                             .read_c_string_array(regs.arg2())
@@ -168,9 +166,7 @@ pub async fn trace_process(
                                 get_cached_root_execution(tracer.curr_proc, new_execution.clone())
                             {
                                 skip_execution = true;
-                                println!("cached exec: {:?}", cached_exec);
-                                // curr_execution = cached_exec;
-                                println!("serving outputs");
+                                s.in_scope(|| info!("Serving outputs"));
                                 serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
                             } else {
                                 curr_execution.update_root(new_execution);
@@ -294,14 +290,6 @@ pub async fn trace_process(
             // TODO: Should these just be called from a function called
             // like "do_exit_stuff" (obviously something better but you
             // get me)
-            debug!("Skip execution is: {}", skip_execution);
-            // if skip_execution {
-            // Woo! We are skipping thise execution.
-            // We need to serve the output files.
-            // TODO: Put exit code.. somewhere?
-            // println!("serving outputs");
-            // curr_execution.serve_outputs_from_cache()?;
-            // } else {
             if !skip_execution {
                 // This is a new (or at least new version?) execution,
                 // add/update all the necessary stuff in the cache.
@@ -360,6 +348,8 @@ fn create_new_execution(
     starting_cwd: PathBuf,
 ) -> Result<Execution> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?curr_pid);
+    let _ = s.enter();
+
     let mut new_execution = match next_event {
         TraceEvent::Exec(_) => {
             // The execve succeeded!
@@ -403,6 +393,8 @@ fn handle_open(
 ) -> Result<()> {
     let pid = tracer.curr_proc;
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
     sys_span.in_scope(|| {
         debug!("File open event: ({})", syscall_name);
     });
@@ -410,8 +402,6 @@ fn handle_open(
     let ret_val = regs.retval::<i32>();
     let syscall_succeeded = ret_val > 0;
 
-    debug!("made it here");
-    debug!("success: {}", syscall_succeeded);
     let open_mode = if syscall_name == "creat" {
         // creat() uses write only as the mode
         OpenMode::WriteOnly
@@ -425,7 +415,9 @@ fn handle_open(
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
             O_WRONLY => {
-                println!("open at write only");
+                sys_span.in_scope(|| {
+                    debug!("Opening write only");
+                });
                 OpenMode::WriteOnly
             }
             _ => panic!("Open flags do not match any mode!"),
@@ -454,7 +446,7 @@ fn handle_open(
     };
 
     let full_path = get_full_path(path_arg, pid)?;
-    println!("full path: {:?}", full_path);
+    sys_span.in_scope(|| info!("Full path: {:?}", full_path));
     let syscall_name = String::from(syscall_name);
 
     let file_event = generate_file_access(full_path, io, pid, syscall_name, syscall_succeeded);
@@ -473,6 +465,7 @@ fn handle_stat(
     tracer: &Ptracer,
 ) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
     sys_span.in_scope(|| {
         debug!("File stat event: ({})", syscall_name);
     });
@@ -541,12 +534,18 @@ fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
 // full path = PathBuf::new().
 // Create the canonicalized
 // version of the path and return it.
-fn get_full_path(path_arg: Option<PathArg>, pid: Pid) -> anyhow::Result<PathBuf> {
-    debug!("in get_full_path");
+fn get_full_path(path_arg: Option<PathArg>, calling_pid: Pid) -> anyhow::Result<PathBuf> {
+    let sys_span = span!(Level::INFO, stringify!(get_full_path), pid=?calling_pid);
+    let _ = sys_span.enter();
+    sys_span.in_scope(|| {
+        debug!("Getting full path.");
+    });
     match path_arg {
-        Some(PathArg::Fd(fd)) => path_from_fd(pid, fd),
+        Some(PathArg::Fd(fd)) => path_from_fd(calling_pid, fd),
         Some(PathArg::Path(path)) => {
-            debug!("before canonicalize");
+            sys_span.in_scope(|| {
+                debug!("Going to canonicalize: {}", stringify!(&path));
+            });
             fs::canonicalize(&path).or(Ok(path))
         }
         None => Ok(PathBuf::new()),

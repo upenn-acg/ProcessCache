@@ -85,6 +85,7 @@ impl ExecAccesses {
     // Add new access to the struct.
     pub fn add_new_file_event(&mut self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
+        let _ = s.enter();
 
         match io_type {
             IO::Input => {
@@ -100,7 +101,17 @@ impl ExecAccesses {
                     // TODO check for truncate, creation of a file?
                 }
             }
-            IO::Output => self.output_files.push(file_access),
+            IO::Output => {
+                if self
+                    .output_files
+                    .iter()
+                    .any(|f| f.full_path() == file_access.full_path())
+                {
+                    panic!("Trying to add file to output files that is already there! (i.e. we have already written to this file! : {:?}", file_access.full_path())
+                } else {
+                    self.output_files.push(file_access);
+                }
+            }
         }
 
         drop(s);
@@ -110,6 +121,7 @@ impl ExecAccesses {
     // file.
     pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
         let s = span!(Level::INFO, stringify!(add_output_file_hashes), pid=?caller_pid);
+        let _ = s.enter();
 
         for output in self.output_files.iter_mut() {
             if let FileAccess::Success(full_path, hash, _) = output {
@@ -137,7 +149,11 @@ impl ExecAccesses {
                 let cache_path = cache_dir.join(file_name);
 
                 // TODO: What if it is already there?
-                fs::copy(full_path, cache_path)?;
+                if cache_path.exists() {
+                    panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_path);
+                } else {
+                    fs::copy(full_path, cache_path)?;
+                }
             }
         }
         Ok(())
@@ -298,7 +314,10 @@ impl Execution {
             Execution::Successful(_, accesses, _) => {
                 accesses.add_new_file_event(caller_pid, file_access, io_type)
             }
-            _ => panic!("Should not be adding file event to pending or failed execution!"),
+            Execution::PendingRoot => {
+                panic!("Should not be adding file event to pending execution!")
+            }
+            _ => panic!("Should not be adding file event to failed execution!"),
         }
     }
 
