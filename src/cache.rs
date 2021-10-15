@@ -1,7 +1,6 @@
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-// use std::borrow::Borrow;
 use std::fs;
 use std::io::Read;
 use std::rc::Rc;
@@ -65,9 +64,7 @@ impl FileAccess {
 }
 // Actual accesses to the file system performed by
 // a successful execution.
-// TODO: Handle stderr and stdout. I don't want to right
-// now it's hard and my simplest example does not
-// cover it.
+// TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecAccesses {
     input_files: Vec<FileAccess>,
@@ -113,8 +110,6 @@ impl ExecAccesses {
                 }
             }
         }
-
-        drop(s);
     }
 
     // At the end of a successful execution, we get the hash of each output
@@ -131,8 +126,6 @@ impl ExecAccesses {
                 *hash = Some(hash_value);
             }
         }
-
-        drop(s);
         Ok(())
     }
 
@@ -171,8 +164,7 @@ impl ExecAccesses {
 // Info about the execution that we want to keep around
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
-// we expect it to fail... and it doesn't :o that's an
-// existential and/or metaphysical crisis for future kelly)
+// we expect it to fail and it succeeds).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecMetadata {
     args: Vec<String>,
@@ -426,7 +418,6 @@ impl Execution {
 // This is the wrapper around the Execution
 // enum.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-
 pub struct RcExecution {
     execution: Rc<RefCell<Execution>>,
 }
@@ -505,8 +496,11 @@ impl RcExecution {
     }
 
     pub fn update_root(&self, new_root_exec: Execution) {
-        // TODO: only do this if the current execution is pending root?
-        *self.execution.borrow_mut() = new_root_exec;
+        if self.execution.borrow().is_pending_root() {
+            *self.execution.borrow_mut() = new_root_exec;
+        } else {
+            panic!("Trying to update an execution which is NOT the pending root execution!");
+        }
     }
 }
 
@@ -527,12 +521,6 @@ impl GlobalExecutions {
     pub fn add_new_execution(&mut self, new_execution: RcExecution) {
         self.executions.push(new_execution);
     }
-
-    // Return number of execution structs in the global_executions
-    // struct currently.
-    // pub fn get_execution_count(&self) -> i32 {
-    //     self.executions.borrow().len() as i32
-    // }
 }
 
 // Return the cached execution if there exists a cached success.
@@ -548,11 +536,9 @@ pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> O
         s.in_scope(|| info!("No cached exec bc exec failed"));
         None
     } else {
-        // TODO: Panic if a failed execution is let to run and it succeeds.
         let global_execs = deserialize_execs_from_cache();
         // Have to find the root exec in the list of global execs
         // in the cache.
-
         for cached_root_exec in global_execs.executions.iter() {
             // We check that the metadata matches
             // That the inputs and outputs match (all the way down the tree of child execs)
@@ -613,6 +599,7 @@ fn exec_metadata_matches(cached_exec: &RcExecution, caller_pid: Pid, new_exec: &
     // - arguments match
     // - starting cwd matches
     // - env vars match
+    // If it is failed exec but we have it cached, we also want to return that.
     let executable_matches = cached_exec.execution_name() == new_executable;
     s.in_scope(|| info!("Executable names match: {}", executable_matches));
     let success_failure_match = cached_exec.is_successful() == new_exec.is_successful();
@@ -630,8 +617,6 @@ fn exec_metadata_matches(cached_exec: &RcExecution, caller_pid: Pid, new_exec: &
 // The inputs in the cached execution match the
 // new execution's inputs, the hashes match,
 // and they are in the correct absolute path locations.
-
-// Bruh, why is this so much programming???
 fn inputs_match(cached_exec: RcExecution, caller_pid: Pid) -> bool {
     let s = span!(Level::INFO, stringify!(inputs_match), pid=?caller_pid);
     let _ = s.enter();
@@ -714,7 +699,6 @@ fn outputs_match(caller_pid: Pid, curr_execution: RcExecution) -> bool {
 
 // Take in the root execution.
 // Copy its outputs to the appropriate places.
-
 pub fn serve_outputs_from_cache(
     caller_pid: Pid,
     root_execution: &RcExecution,
@@ -788,7 +772,6 @@ pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
 
 // Serialize the execs and write them to the cache.
 pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<()> {
-    // OK. So.
     let cache_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache");
     let cache_copy_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache_copy");
 
