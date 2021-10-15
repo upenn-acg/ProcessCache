@@ -3,7 +3,6 @@ use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
-// use std::borrow::Borrow;
 use std::fs;
 use std::path::PathBuf;
 
@@ -187,7 +186,10 @@ pub async fn trace_process(
                                 curr_execution.update_root(new_execution);
                             }
                         } else {
-                            // parent right now
+                            // We panic in create_new_execution() if a process is trying to execve a second time.
+                            // So if we get here, it's not pending root, it's at least the parent after it's execve
+                            // call. And it's not parent doing a second execve, it must be the child doing an execve.
+                            // If we check the pid of the curr_exec vs new_rcexecution they should differ.
                             // TODO: check the pids
                             let new_rcexecution = RcExecution::new(new_execution);
                             curr_execution.add_child_execution(new_rcexecution.clone());
@@ -392,10 +394,6 @@ fn create_new_execution(
             }
         };
 
-        // This is a NEW exec, we must update the current
-        // execution to this new one.
-        // I *THINK* I want to update this whether it succeeds or fails.
-        // Because both of those technically are executions.
         new_execution.add_identifiers(args, caller_pid, envp, executable, starting_cwd);
 
         Ok(new_execution)
