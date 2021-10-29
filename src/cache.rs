@@ -104,7 +104,8 @@ impl ExecAccesses {
                     .iter()
                     .any(|f| f.full_path() == file_access.full_path())
                 {
-                    panic!("Trying to add file to output files that is already there! (i.e. we have already written to this file! : {:?}", file_access.full_path())
+                    debug!("Output file is already there");
+                    // panic!("Trying to add file to output files that is already there! (already written) : {:?}", file_access.full_path())
                 } else {
                     self.output_files.push(file_access);
                 }
@@ -141,7 +142,6 @@ impl ExecAccesses {
                 let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
                 let cache_path = cache_dir.join(file_name);
 
-                // TODO: What if it is already there?
                 if cache_path.exists() {
                     panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_path);
                 } else {
@@ -459,7 +459,7 @@ impl RcExecution {
         self.execution.borrow().caller_pid()
     }
 
-    fn child_executions(&self) -> Vec<RcExecution> {
+    pub fn child_executions(&self) -> Vec<RcExecution> {
         self.execution.borrow().child_executions()
     }
 
