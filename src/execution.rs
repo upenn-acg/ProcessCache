@@ -47,8 +47,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // PendingRoot == we skipped the execution because
     // it had a cached match and was therefore skippable.
     if !first_execution.is_pending_root() {
-        serialize_execs_to_cache(first_execution)?;
+        serialize_execs_to_cache(first_execution.clone())?;
     }
+    println!("number of child execs: {}", first_execution.child_executions().len());
     Ok(())
 }
 
@@ -348,7 +349,10 @@ fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptra
         syscall_name,
         syscall_succeeded,
     );
-    execution.add_new_file_event(tracer.curr_proc, file_access, IO::Input);
+
+    if let Some(access) = file_access {
+        execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
+    }
     Ok(())
 }
 
@@ -472,7 +476,10 @@ fn handle_open(
     let syscall_name = String::from(syscall_name);
 
     let file_event = generate_file_access(full_path, io, pid, syscall_name, syscall_succeeded);
-    execution.add_new_file_event(tracer.curr_proc, file_event, io);
+
+    if let Some(access) = file_event {
+        execution.add_new_file_event(tracer.curr_proc, access, io);
+    }
 
     Ok(())
 }
@@ -534,7 +541,10 @@ fn handle_stat(
         syscall_name,
         syscall_succeeded,
     );
-    execution.add_new_file_event(tracer.curr_proc, file_event, IO::Input);
+
+    if let Some(access) = file_event {
+        execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
+    }
 
     Ok(())
 }
@@ -588,30 +598,31 @@ fn generate_file_access(
     pid: Pid,
     syscall_name: String,
     syscall_succeeded: bool,
-) -> FileAccess {
+) -> Option<FileAccess> {
     // Why pass in the file name when there's a perfectly good file_name, just sittin' in the full_path??
     // Who else likes Seinfeld? Just me? Alright.
     // We generate the hash for the output at the end of the execution.
 
+    if full_path.starts_with("/dev/pts")
+        || full_path.starts_with("/dev/null")
+        || full_path.starts_with("/etc/")
+        || full_path.starts_with("/proc/")
+        || full_path.is_dir()
+    {
+        return None;
+    }
+
     if syscall_succeeded {
         let hash = match io_type {
             IO::Input => {
-                if full_path.starts_with("/dev/pts")
-                    || full_path.starts_with("/dev/null")
-                    || full_path.starts_with("/etc/")
-                    || full_path.starts_with("/proc/")
-                    || full_path.is_dir()
-                {
-                    None
-                } else {
-                    let path = full_path.clone().into_os_string().into_string().unwrap();
-                    Some(generate_hash(pid, path))
-                }
+                let path = full_path.clone().into_os_string().into_string().unwrap();
+                Some(generate_hash(pid, path))
             }
+
             _ => None,
         };
-        FileAccess::Success(full_path, hash, syscall_name)
+        Some(FileAccess::Success(full_path, hash, syscall_name))
     } else {
-        FileAccess::Failure(full_path, syscall_name)
+        Some(FileAccess::Failure(full_path, syscall_name))
     }
 }
