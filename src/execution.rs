@@ -49,7 +49,10 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     if !first_execution.is_pending_root() {
         serialize_execs_to_cache(first_execution.clone())?;
     }
-    println!("number of child execs: {}", first_execution.child_executions().len());
+    println!(
+        "number of child execs: {}",
+        first_execution.child_executions().len()
+    );
     Ok(())
 }
 
@@ -67,7 +70,6 @@ pub async fn trace_process(
     mut curr_execution: RcExecution,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
-    let _ = s.enter();
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
     let mut skip_execution = false;
@@ -368,7 +370,7 @@ fn create_new_execution(
     next_event: TraceEvent,
     starting_cwd: PathBuf,
 ) -> Result<Execution> {
-    let s = span!(Level::INFO, stringify!(trace_process), pid=?caller_pid);
+    let s = span!(Level::INFO, stringify!(create_new_execution), pid=?caller_pid);
     let _ = s.enter();
 
     // If the current execution is pending root, great,

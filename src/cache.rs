@@ -55,10 +55,10 @@ pub enum FileAccess {
 }
 
 impl FileAccess {
-    pub fn full_path(&self) -> PathBuf {
+    pub fn full_path(&self) -> &Path {
         match self {
-            FileAccess::Success(path, _, _) => path.clone(),
-            FileAccess::Failure(path, _) => path.clone(),
+            FileAccess::Success(path, _, _) => path,
+            FileAccess::Failure(path, _) => path,
         }
     }
 }
@@ -139,7 +139,7 @@ impl ExecAccesses {
                     .file_name()
                     .expect("Can't get file name in copy_outputs_to_cache()!");
 
-                let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
+                let cache_dir = PathBuf::from("./IOTracker/cache");
                 let cache_path = cache_dir.join(file_name);
 
                 if cache_path.exists() {
@@ -317,7 +317,12 @@ impl Execution {
         match self {
             Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
             // Should this be some fancy kinda error? Meh?
-            _ => Ok(()),
+            Execution::Failed(_) => {
+                panic!("Should not be adding output file hashes to failed execution!")
+            }
+            Execution::PendingRoot => {
+                panic!("Should not be adding output file hashes to pending root execution!")
+            }
         }
     }
 
@@ -528,7 +533,7 @@ impl GlobalExecutions {
 pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> Option<RcExecution> {
     let s = span!(Level::INFO, stringify!(get_cached_root_execution), pid=?caller_pid);
     let _ = s.enter();
-    let cache_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache");
+    let cache_path = PathBuf::from("./IOTracker/cache/cache");
     if !cache_path.exists() {
         s.in_scope(|| info!("No cached exec bc cache doesn't exist"));
         None
@@ -717,7 +722,7 @@ pub fn serve_outputs_from_cache(
             });
             let file_name = full_path.file_name().unwrap();
 
-            let cache_dir = PathBuf::from("/home/kelly/research/IOTracker/cache");
+            let cache_dir = PathBuf::from("./research/IOTracker/cache");
             let cached_output_path = cache_dir.join(file_name);
 
             if !full_path.exists() {
@@ -772,10 +777,10 @@ pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
 
 // Serialize the execs and write them to the cache.
 pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<()> {
-    let cache_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache");
-    let cache_copy_path = PathBuf::from("/home/kelly/research/IOTracker/cache/cache_copy");
+    let cache_path = PathBuf::from("./IOTracker/cache/cache");
+    let cache_copy_path = PathBuf::from("./IOTracker/cache/cache_copy");
 
-    if Path::new("/home/kelly/research/IOTracker/cache/cache").exists() {
+    if Path::new("./IOTracker/cache/cache").exists() {
         // If the cache file exists:
         // - make a copy of cache/cache at cache/cache_copy (just in case)
         fs::copy(&cache_path, &cache_copy_path)?;
@@ -802,17 +807,14 @@ pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<(
         // - and write the serialized_execs to the cache/cache file we are making
         //   right here because that's what the write() function here does, creates
         //   if it doesn't exist, and then writes.
-        fs::write(
-            "/home/kelly/research/IOTracker/cache/cache",
-            serialized_execs,
-        )?;
+        fs::write("./IOTracker/cache/cache", serialized_execs)?;
     }
     Ok(())
     // let serialized_execs = rmp_serde::to_vec(&root_exection).unwrap();
 }
 
 pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-    let exec_struct_bytes = fs::read("/home/kelly/research/IOTracker/cache/cache").expect("failed");
+    let exec_struct_bytes = fs::read("./research/IOTracker/cache/cache").expect("failed");
     if exec_struct_bytes.is_empty() {
         GlobalExecutions::new()
     } else {
