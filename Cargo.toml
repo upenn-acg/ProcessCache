@@ -21,27 +21,3 @@ tracing-subscriber = "0.2"
 # sha2 = "0.9"
 rmp-serde = "0.15.5"
 serde = { version = "1.0", features = ["derive", "rc"] }
-
-# [[bin]]
-# name = "command_ls"
-# path = "src/command_ls.rs"
-
-[[example]]
-name = "hashes_are_equal"
-path = "src/hashes_are_equal.rs"
-
-# [[example]]
-# name = "hashslinger"
-# path = "src/hashslinger.rs"
-
-# [[example]]
-# name = "serde_try"
-# path = "src/serde_try.rs"
-
-# [[example]]
-# name = "copy"
-# path = "src/copy.rs"
-
-# [[example]]
-# name = "file_name"
-# path = "src/file_name.rs"
