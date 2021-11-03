@@ -1,5 +1,8 @@
 #[allow(unused_imports)]
-use libc::{c_char, syscall, AT_SYMLINK_NOFOLLOW, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
+use libc::{
+    c_char, syscall, AT_SYMLINK_NOFOLLOW, CLONE_THREAD, O_ACCMODE, O_CREAT, O_RDONLY, O_RDWR,
+    O_WRONLY,
+};
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
@@ -254,7 +257,45 @@ pub async fn trace_process(
                     _ => {}
                 }
             }
-            TraceEvent::Fork(_) | TraceEvent::VFork(_) | TraceEvent::Clone(_) => {
+            TraceEvent::Clone(_) => {
+                // We treat clone differently from fork because clone has the dangerous
+                // CLONE_THREAD flag. Well it's not dangerous, but we don't handle threads
+                // so we want to panic if we detect a program trying to clone one.
+
+                let regs = tracer
+                    .get_registers()
+                    .with_context(|| context!("Failed to get regs in exec event"))?;
+
+                // From dettrace:
+                // kinda unsure why this is unsigned
+                // msg = "clone";
+                // unsigned long flags = (unsigned long)tracer.arg1();
+                // isThread = (flags & CLONE_THREAD) != 0;
+
+                // flags are the 3rd arg to clone.
+                let flags = regs.arg3::<i32>();
+                if (flags & CLONE_THREAD) != 0 {
+                    panic!("THREADSSSSSSSSSS!");
+                }
+
+                let child = Pid::from_raw(tracer.get_event_message()? as i32);
+                s.in_scope(|| {
+                    debug!("Fork Event. Creating task for new child: {:?}", child);
+                    debug!("Parent pid is: {}", tracer.curr_proc);
+                });
+                // When a process forks, we pass the current execution struct to the
+                // child process' future as both the curr execution and the parent execution.
+                // If the child process then calls "execve",
+                // this new execution will replace the current execution for the child
+                // process' future and its parent execution
+                let f = trace_process(
+                    async_runtime.clone(),
+                    Ptracer::new(child),
+                    curr_execution.clone(),
+                );
+                async_runtime.add_new_task(child, f)?;
+            }
+            TraceEvent::Fork(_) | TraceEvent::VFork(_) => {
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);

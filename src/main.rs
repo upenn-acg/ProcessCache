@@ -211,5 +211,9 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     // Raxml
     loader.let_pass(libc::SYS_clock_gettime)?;
 
+    // Hmmer
+    // TODO: handle times
+    loader.let_pass(libc::SYS_times)?;
+    loader.let_pass(libc::SYS_madvise)?;
     loader.load_to_kernel()
 }
