@@ -3,7 +3,7 @@ use libc::{c_long, c_void, PT_NULL};
 use nix::sys::ptrace;
 use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
-use std::mem;
+use std::{mem, slice};
 
 use byteorder::LittleEndian;
 use nix::sys::signal::Signal;
@@ -114,6 +114,37 @@ impl Ptracer {
 
         // trace!(read_string = ?string);
         Ok(string)
+    }
+
+    pub fn write_value<T: Copy>(&self, address: *const T, value: &T) -> anyhow::Result<()> {
+        use nix::sys::uio::{process_vm_writev, IoVec, RemoteIoVec};
+        use std::mem::size_of;
+
+        ensure!(!address.is_null(), context!("Address is null."));
+
+        // Ugh rust doesn't support this type as a const so I can't use a stack allocated
+        // array here.
+        let type_size: usize = size_of::<T>();
+        let remote = RemoteIoVec {
+            base: address as usize,
+            len: type_size,
+        };
+
+        // Get raw bytes from `value`
+        let p: *const T = value;
+        let p: *const u8 = p as *const u8;
+        // Representation of `value` as a slice of bytes.
+        let byte_repr: &[u8] = unsafe {
+            slice::from_raw_parts(p, mem::size_of::<T>())
+        };
+
+        // Local mutable burrow, buffer needs to by borrowed again later.
+        {
+            let local = IoVec::from_slice(byte_repr);
+            process_vm_writev(self.curr_proc, &[local], &[remote])
+                .with_context(|| context!("process_vm_writev() failed."))?;
+        }
+        Ok(())
     }
 
     pub fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
