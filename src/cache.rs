@@ -8,9 +8,11 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
 };
+use anyhow::Context;
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
+use crate::context;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -777,10 +779,12 @@ pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
 
 // Serialize the execs and write them to the cache.
 pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<()> {
-    let cache_path = PathBuf::from("./IOTracker/cache/cache");
-    let cache_copy_path = PathBuf::from("./IOTracker/cache/cache_copy");
+    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
 
-    if Path::new("./IOTracker/cache/cache").exists() {
+    let cache_path = PathBuf::from(CACHE_LOCATION);
+    let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
+
+    if Path::new(CACHE_LOCATION).exists() {
         // If the cache file exists:
         // - make a copy of cache/cache at cache/cache_copy (just in case)
         fs::copy(&cache_path, &cache_copy_path)?;
@@ -807,7 +811,8 @@ pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<(
         // - and write the serialized_execs to the cache/cache file we are making
         //   right here because that's what the write() function here does, creates
         //   if it doesn't exist, and then writes.
-        fs::write("./IOTracker/cache/cache", serialized_execs)?;
+        fs::write(CACHE_LOCATION, serialized_execs).
+            with_context(|| context!("Cannot write to cache location: \"{}\".", CACHE_LOCATION))?;
     }
     Ok(())
     // let serialized_execs = rmp_serde::to_vec(&root_exection).unwrap();
