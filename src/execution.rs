@@ -50,7 +50,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // PendingRoot == we skipped the execution because
     // it had a cached match and was therefore skippable.
     if !first_execution.is_pending_root() {
-        serialize_execs_to_cache(first_execution.clone())?;
+        serialize_execs_to_cache(first_execution.clone())
+            .with_context(|| context!("Unable to serialize execs to our cache file."))?;
     }
     println!(
         "number of child execs: {}",
