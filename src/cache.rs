@@ -1,3 +1,4 @@
+use anyhow::Context;
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,11 +9,13 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
 };
-use anyhow::Context;
 
+use crate::context;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
-use crate::context;
+
+const CACHE_FILE: &'static str = "cache.cache";
+const CACHE_COPY_FILE: &'static str = "cache_copy.cache";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -532,18 +535,26 @@ impl GlobalExecutions {
 
 // Return the cached execution if there exists a cached success.
 // Else return None.
-pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> Option<RcExecution> {
+pub fn get_cached_root_execution(
+    caller_pid: Pid,
+    cache_dir: &Path,
+    new_execution: Execution,
+) -> anyhow::Result<Option<RcExecution>> {
     let s = span!(Level::INFO, stringify!(get_cached_root_execution), pid=?caller_pid);
     let _ = s.enter();
-    let cache_path = PathBuf::from("./IOTracker/cache/cache");
+
+    let mut cache_path = cache_dir.to_path_buf();
+    cache_path.push(CACHE_FILE);
+
     if !cache_path.exists() {
-        s.in_scope(|| info!("No cached exec bc cache doesn't exist"));
-        None
+        s.in_scope(|| info!("No cached executions because cache file doesn't exist"));
+        Ok(None)
     } else if !new_execution.is_successful() {
         s.in_scope(|| info!("No cached exec bc exec failed"));
-        None
+        Ok(None)
     } else {
-        let global_execs = deserialize_execs_from_cache();
+        let global_execs = deserialize_execs_from_cache(cache_path)
+            .with_context(|| context!("Unable to deserialize cache."))?;
         // Have to find the root exec in the list of global execs
         // in the cache.
         for cached_root_exec in global_execs.executions.iter() {
@@ -554,10 +565,10 @@ pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> O
                 && execution_matches(cached_root_exec, caller_pid)
             {
                 // TODO: don't short circuit
-                return Some(cached_root_exec.clone());
+                return Ok(Some(cached_root_exec.clone()));
             }
         }
-        None
+        Ok(None)
     }
 }
 
@@ -777,23 +788,33 @@ pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
     process::<Sha256, _>(&mut file)
 }
 
-// Serialize the execs and write them to the cache.
-pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<()> {
-    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+/// Serialize the execs and write them to the cache.
+/// Creates necessary directory for cache if it doesn't exist.
+pub fn serialize_execs_to_cache(
+    root_execution: RcExecution,
+    cache_dir: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let mut cache_path = cache_dir.as_ref().to_path_buf();
+    let mut cache_copy_path = cache_path.to_path_buf();
 
-    let cache_path = PathBuf::from(CACHE_LOCATION);
-    let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
+    // Now we have
+    // cache_path = CWD/cache/cache
+    // cache_copy_path = CWD/cache/cache_copy
+    cache_path.push(CACHE_FILE);
+    cache_copy_path.push(CACHE_COPY_FILE);
 
-    if Path::new(CACHE_LOCATION).exists() {
+    if cache_path.exists() {
         // If the cache file exists:
         // - make a copy of cache/cache at cache/cache_copy (just in case)
         fs::copy(&cache_path, &cache_copy_path)?;
-        // - deserialize existing structure from cache/cache
-        let mut existing_global_execs = deserialize_execs_from_cache();
+        // - deserialize existing structure from cache/CACHE_FILE
+        let mut existing_global_execs = deserialize_execs_from_cache(&cache_path)
+            .with_context(|| context!("Unable to deserialize cache."))?;
         // - add the new root_execution to the vector
         existing_global_execs.add_new_execution(root_execution);
         // - serialize again
-        let serialized_execs = rmp_serde::to_vec(&existing_global_execs).unwrap();
+        let serialized_execs = rmp_serde::to_vec(&existing_global_execs)
+            .with_context(|| context!("Unable to serialize cache."))?;
         // - remove old cache/cache file
         fs::remove_file(&cache_path)?;
         // - make a new cache/cache file and write the updated serialized execs to it
@@ -807,22 +828,30 @@ pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<(
         // - put root_execution in it
         global_execs.add_new_execution(root_execution);
         // - serialize GlobalExecutions
-        let serialized_execs = rmp_serde::to_vec(&global_execs).unwrap();
+        let serialized_execs = rmp_serde::to_vec(&global_execs)
+            .with_context(|| context!("Unable to serialize cache."))?;
+
         // - and write the serialized_execs to the cache/cache file we are making
         //   right here because that's what the write() function here does, creates
         //   if it doesn't exist, and then writes.
-        fs::write(CACHE_LOCATION, serialized_execs).
-            with_context(|| context!("Cannot write to cache location: \"{}\".", CACHE_LOCATION))?;
+        fs::write(&cache_path, serialized_execs)
+            .with_context(|| context!("Cannot write to cache location: {:?}.", cache_path))?;
     }
     Ok(())
     // let serialized_execs = rmp_serde::to_vec(&root_exection).unwrap();
 }
 
-pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-    let exec_struct_bytes = fs::read("./research/IOTracker/cache/cache").expect("failed");
+/// Deserialize the cache pointed to by `cache_location`.
+pub fn deserialize_execs_from_cache(
+    cache_path: impl AsRef<Path>,
+) -> anyhow::Result<GlobalExecutions> {
+    let exec_struct_bytes = fs::read(&cache_path)
+        .with_context(|| context!("Unable to read cache file: {:?}", cache_path.as_ref()))?;
     if exec_struct_bytes.is_empty() {
-        GlobalExecutions::new()
+        Ok(GlobalExecutions::new())
     } else {
-        rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
+        let executions = rmp_serde::from_read_ref(&exec_struct_bytes)
+            .with_context(|| context!("Unable to deserialize cache from file."))?;
+        Ok(executions)
     }
 }
