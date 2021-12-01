@@ -8,6 +8,7 @@ use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
@@ -35,11 +36,18 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // within trace_process().
 
     let first_execution = RcExecution::new(Execution::PendingRoot);
+    // CWD of the root process + "/cache/"
+    let mut cache_dir = std::env::current_dir().with_context(|| context!("Cannot get CWD."))?;
+    cache_dir.push("cache/");
+
+    fs::create_dir_all(&cache_dir)
+        .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
 
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
         first_execution.clone(),
+        Rc::new(cache_dir.clone()),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -50,7 +58,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // PendingRoot == we skipped the execution because
     // it had a cached match and was therefore skippable.
     if !first_execution.is_pending_root() {
-        serialize_execs_to_cache(first_execution.clone())
+        serialize_execs_to_cache(first_execution.clone(), cache_dir)
             .with_context(|| context!("Unable to serialize execs to our cache file."))?;
     }
     println!(
@@ -72,6 +80,7 @@ pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
+    cache_dir: Rc<PathBuf>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -169,8 +178,12 @@ pub async fn trace_process(
 
                         s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
-                            if let Some(cached_exec) =
-                                get_cached_root_execution(tracer.curr_proc, new_execution.clone())
+                            if let Some(cached_exec) = get_cached_root_execution(
+                                tracer.curr_proc,
+                                &cache_dir,
+                                new_execution.clone(),
+                            )
+                            .with_context(|| context!("Unable to get cached root execution."))?
                             {
                                 let new_exec_succeeded = new_execution.is_successful();
                                 let cached_exec_succeeded = cached_exec.is_successful();
@@ -293,6 +306,7 @@ pub async fn trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
                     curr_execution.clone(),
+                    cache_dir.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -312,6 +326,7 @@ pub async fn trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
                     curr_execution.clone(),
+                    cache_dir.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
