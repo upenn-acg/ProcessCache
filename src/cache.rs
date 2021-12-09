@@ -2,6 +2,7 @@ use anyhow::Context;
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::rc::Rc;
@@ -13,9 +14,12 @@ use std::{
 use crate::context;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
+<<<<<<< HEAD
 
 const CACHE_FILE: &'static str = "cache.cache";
 const CACHE_COPY_FILE: &'static str = "cache_copy.cache";
+=======
+>>>>>>> 600efc1... working through opening files and creating files
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -24,12 +28,6 @@ impl Default for Proc {
     fn default() -> Proc {
         Proc(Pid::from_raw(0))
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum IO {
-    Input,
-    Output,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -42,130 +40,177 @@ pub enum OpenMode {
 // Success and failure variants of
 // input and output files.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum FileAccess {
-    // PathBuf = full path to the file.
-    // Option<Vec<u8>> = hash.
-    // String = syscall name.
-    // Some files we may not be able to get the full path.
-    // So the full path is just whatever we got in the argument.
-    // Example: /etc/ld.so.preload
-    // When it's an output file, we don't get the hash
-    // until the end of the execution, because the contents
-    // of the file may change.
-    // Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
-    // files, so they get no hash.
-    // Failed accesses obviously don't get hashed.
-    Success(PathBuf, Option<Vec<u8>>, String),
-    Failure(PathBuf, String),
+// PathBuf = full path to the file.
+// Option<Vec<u8>> = hash.
+// String = syscall name.
+// Some files we may not be able to get the full path.
+// So the full path is just whatever we got in the argument.
+// Example: /etc/ld.so.preload
+// When it's an output file, we don't get the hash
+// until the end of the execution, because the contents
+// of the file may change.
+// Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
+// files, so they get no hash.
+// Failed accesses obviously don't get hashed.
+
+pub enum AccessFailure {
+    AlreadyExists,
+    DoesNotExist,
+    Permissions,
 }
 
-impl FileAccess {
-    pub fn full_path(&self) -> &Path {
-        match self {
-            FileAccess::Success(path, _, _) => path,
-            FileAccess::Failure(path, _) => path,
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum FileAction {
+    Created,
+    Deleted,
+    Read,
+    Modified,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum FileAccess {
+    Successful(FileAction),
+    Failed(AccessFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct FileInfo {
+    accesses: Vec<FileAccess>,
+    final_hash: Option<Vec<u8>>,
+    starting_hash: Option<Vec<u8>>,
+}
+
+impl FileInfo {
+    fn new() -> FileInfo {
+        FileInfo {
+            accesses: Vec::new(),
+            final_hash: None,
+            starting_hash: None,
+        }
+    }
+
+    fn add_access(&mut self, file_access: FileAccess) {
+        self.accesses.push(file_access);
+    }
+
+    fn add_starting_hash(&mut self, hash: Vec<u8>) {
+        if self.starting_hash.is_none() {
+            self.starting_hash = Some(hash);
+        }
+    }
+
+    fn add_final_hash(&mut self, hash: Vec<u8>) {
+        if self.final_hash.is_none() {
+            self.final_hash = Some(hash);
         }
     }
 }
+
 // Actual accesses to the file system performed by
 // a successful execution.
+// Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct ExecAccesses {
-    input_files: Vec<FileAccess>,
-    output_files: Vec<FileAccess>,
+pub struct ExecFileAccesses {
+    accesses: HashMap<PathBuf, FileInfo>,
 }
 
-impl ExecAccesses {
-    pub fn new() -> ExecAccesses {
-        ExecAccesses {
-            input_files: Vec::new(),
-            output_files: Vec::new(),
+impl ExecFileAccesses {
+    pub fn new() -> ExecFileAccesses {
+        ExecFileAccesses {
+            accesses: HashMap::new(),
         }
     }
 
     // Add new access to the struct.
-    pub fn add_new_file_event(&mut self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(
+        &mut self,
+        caller_pid: Pid,
+        file_access: FileAccess,
+        full_path: PathBuf,
+    ) {
         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
         let _ = s.enter();
 
-        match io_type {
-            IO::Input => {
-                if !self
-                    .output_files
-                    .iter()
-                    .any(|f| f.full_path() == file_access.full_path())
-                {
-                    s.in_scope(|| info!("Adding access to inputs that was NOT in outputs"));
-                    self.input_files.push(file_access);
-                } else {
-                    s.in_scope(|| info!("Not adding access to inputs it is already in outputs"));
-                    // TODO check for truncate, creation of a file?
-                }
-            }
-            IO::Output => {
-                if self
-                    .output_files
-                    .iter()
-                    .any(|f| f.full_path() == file_access.full_path())
-                {
-                    debug!("Output file is already there");
-                    // panic!("Trying to add file to output files that is already there! (already written) : {:?}", file_access.full_path())
-                } else {
-                    self.output_files.push(file_access);
-                }
-            }
+        s.in_scope(|| "in add_new_file_event");
+        if let Some(file_info) = self.accesses.get_mut(&full_path) {
+            file_info.add_access(file_access);
+        } else {
+            let mut file_info = FileInfo::new();
+            file_info.add_access(file_access);
+            s.in_scope(|| "adding access");
+            self.accesses.insert(full_path, file_info);
         }
     }
 
     // At the end of a successful execution, we get the hash of each output
     // file.
-    pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
-        let s = span!(Level::INFO, stringify!(add_output_file_hashes), pid=?caller_pid);
-        let _ = s.enter();
+    // pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
+    //     // let s = span!(Level::INFO, stringify!(add_output_file_hashes), pid=?caller_pid);
+    //     // let _ = s.enter();
 
-        for output in self.output_files.iter_mut() {
-            if let FileAccess::Success(full_path, hash, _) = output {
-                let path = full_path.clone().into_os_string().into_string().unwrap();
-                s.in_scope(|| info!("gonna generate an output hash"));
-                let hash_value = generate_hash(caller_pid, path);
-                *hash = Some(hash_value);
-            }
+    //     // for output in self.output_files.iter_mut() {
+    //     //     if let FileAccess::Success(full_path, hash, _) = output {
+    //     //         let path = full_path.clone().into_os_string().into_string().unwrap();
+    //     //         s.in_scope(|| info!("gonna generate an output hash"));
+    //     //         let hash_value = generate_hash(caller_pid, path);
+    //     //         *hash = Some(hash_value);
+    //     //     }
+    //     // }
+    //     // Ok(())
+    //     unimplemented!();
+    // }
+
+    fn add_starting_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
+        if let Some(file_info) = self.accesses.get_mut(&full_path) {
+            file_info.add_starting_hash(hash);
+        } else {
+            panic!("Should not be adding starting hash when full path entry is not present!");
         }
-        Ok(())
+    }
+
+    fn add_final_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
+        if let Some(file_info) = self.accesses.get_mut(&full_path) {
+            file_info.add_final_hash(hash);
+        } else {
+            panic!("Should not be adding final hash when full path entry is not present!");
+        }
     }
 
     // Only want to copy output files that had successful
     // accesses to the cache.
     pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
-        for output in self.output_files.iter() {
-            if let FileAccess::Success(full_path, _, _) = output {
-                let file_name = full_path
-                    .file_name()
-                    .expect("Can't get file name in copy_outputs_to_cache()!");
+        // for output in self.output_files.iter() {
+        //     if let FileAccess::Success(full_path, _, _) = output {
+        //         let file_name = full_path
+        //             .file_name()
+        //             .expect("Can't get file name in copy_outputs_to_cache()!");
 
-                let cache_dir = PathBuf::from("./IOTracker/cache");
-                let cache_path = cache_dir.join(file_name);
+        //         let cache_dir = PathBuf::from("./IOTracker/cache");
+        //         let cache_path = cache_dir.join(file_name);
 
-                if cache_path.exists() {
-                    panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_path);
-                } else {
-                    fs::copy(full_path, cache_path)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn inputs(&self) -> Vec<FileAccess> {
-        self.input_files.clone()
-    }
-
-    fn outputs(&self) -> Vec<FileAccess> {
-        self.output_files.clone()
+        //         if cache_path.exists() {
+        //             panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_path);
+        //         } else {
+        //             fs::copy(full_path, cache_path)?;
+        //         }
+        //     }
+        // }
+        // Ok(())
+        unimplemented!();
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+enum FileState {
+    Deleted(PathBuf),
+    ExistsToStart(PathBuf),
+    DoesNotExistAtStart(PathBuf),
+    Renamed {
+        old_full_path: PathBuf,
+        new_full_path: PathBuf,
+    },
+}
 // Info about the execution that we want to keep around
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
@@ -256,7 +301,7 @@ pub enum Execution {
     // its kinda just pending. I want to know which one the root is
     // and doing it in the enum seems easiest.
     PendingRoot,
-    Successful(ExecMetadata, ExecAccesses, ChildExecutions),
+    Successful(ChildExecutions, ExecFileAccesses, ExecMetadata),
 }
 
 impl Execution {
@@ -268,7 +313,7 @@ impl Execution {
             Execution::PendingRoot => {
                 panic!("Trying to add a child process to a pending execution!")
             }
-            Execution::Successful(_, _, child_execs) => {
+            Execution::Successful(child_execs, _, _) => {
                 child_execs.push(child_execution);
             }
         }
@@ -276,7 +321,7 @@ impl Execution {
 
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
-            Execution::Failed(meta) | Execution::Successful(meta, _, _) => {
+            Execution::Failed(meta) | Execution::Successful(_, _, meta) => {
                 // Only want the exit code if this is the process
                 // that actually exec'd the process.
                 let exec_pid = meta.caller_pid();
@@ -299,17 +344,22 @@ impl Execution {
         starting_cwd: PathBuf,
     ) {
         match self {
-            Execution::Failed(metadata) | Execution::Successful(metadata, _, _) => {
+            Execution::Failed(metadata) | Execution::Successful(_, _, metadata) => {
                 metadata.add_identifiers(args, caller_pid, env_vars, executable, starting_cwd)
             }
             _ => panic!("Should not be adding identifiers to pending exec!"),
         }
     }
 
-    pub fn add_new_file_event(&mut self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(
+        &mut self,
+        caller_pid: Pid,
+        file_access: FileAccess,
+        full_path: PathBuf,
+    ) {
         match self {
             Execution::Successful(_, accesses, _) => {
-                accesses.add_new_file_event(caller_pid, file_access, io_type)
+                accesses.add_new_file_event(caller_pid, file_access, full_path);
             }
             Execution::PendingRoot => {
                 panic!("Should not be adding file event to pending execution!")
@@ -318,36 +368,67 @@ impl Execution {
         }
     }
 
-    pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
+    fn file_events(&self) -> ExecFileAccesses {
         match self {
-            Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
-            // Should this be some fancy kinda error? Meh?
+            Execution::Successful(_, accesses, _) => accesses.clone(),
+            Execution::Failed(_) => panic!("No file events for failed execution!"),
+            Execution::PendingRoot => panic!("No file events for pending root!"),
+        }
+    }
+    // pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
+    //     match self {
+    //         Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
+    //         // Should this be some fancy kinda error? Meh?
+    //         Execution::Failed(_) => {
+    //             panic!("Should not be adding output file hashes to failed execution!")
+    //         }
+    //         Execution::PendingRoot => {
+    //             panic!("Should not be adding output file hashes to pending root execution!")
+    //         }
+    //     }
+    // }
+
+    fn add_final_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
+        match self {
+            Execution::Successful(_, accesses, _) => accesses.add_final_hash(full_path, hash),
             Execution::Failed(_) => {
-                panic!("Should not be adding output file hashes to failed execution!")
+                panic!("Should not be adding final hash to failed execution!")
             }
             Execution::PendingRoot => {
-                panic!("Should not be adding output file hashes to pending root execution!")
+                panic!("Should not be adding final hash to pending root execution!")
+            }
+        }
+    }
+
+    fn add_starting_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
+        match self {
+            Execution::Successful(_, accesses, _) => accesses.add_starting_hash(full_path, hash),
+            Execution::Failed(_) => {
+                panic!("Should not be adding starting hash to failed execution!")
+            }
+            Execution::PendingRoot => {
+                panic!("Should not be adding starting hash to pending root execution!")
             }
         }
     }
 
     fn args(&self) -> Vec<String> {
         match self {
-            Execution::Successful(metadata, _, _) | Execution::Failed(metadata) => metadata.args(),
+            Execution::Successful(_, _, metadata) | Execution::Failed(metadata) => metadata.args(),
             _ => panic!("Should not be getting args from pending execution!"),
         }
     }
 
     fn caller_pid(&self) -> Pid {
         match self {
-            Execution::Successful(meta, _, _) | Execution::Failed(meta) => meta.caller_pid(),
+            Execution::Successful(_, _, meta) | Execution::Failed(meta) => meta.caller_pid(),
             _ => panic!("Trying to get caller pid of pending root execution!"),
         }
     }
 
     fn child_executions(&self) -> Vec<RcExecution> {
         match self {
-            Execution::Successful(_, _, children) => children.clone(),
+            Execution::Successful(children, _, _) => children.clone(),
             Execution::Failed(_) => {
                 panic!("Should not be getting child execs from failed execution!")
             }
@@ -367,7 +448,7 @@ impl Execution {
 
     fn env_vars(&self) -> Vec<String> {
         match self {
-            Execution::Successful(metadata, _, _) | Execution::Failed(metadata) => {
+            Execution::Successful(_, _, metadata) | Execution::Failed(metadata) => {
                 metadata.env_vars()
             }
             _ => panic!("Should not be getting execution name from pending execution!"),
@@ -376,22 +457,10 @@ impl Execution {
 
     fn execution_name(&self) -> String {
         match self {
-            Execution::Successful(metadata, _, _) | Execution::Failed(metadata) => {
+            Execution::Successful(_, _, metadata) | Execution::Failed(metadata) => {
                 metadata.execution_name()
             }
             _ => panic!("Should not be getting execution name from pending execution!"),
-        }
-    }
-
-    fn inputs(&self) -> Vec<FileAccess> {
-        match self {
-            Execution::Successful(_, accesses, _) => accesses.inputs(),
-            Execution::Failed(_) => {
-                panic!("Should not be getting inputs of failed execution!")
-            }
-            Execution::PendingRoot => {
-                panic!("Should not be getting inputs of pending root execution!")
-            }
         }
     }
 
@@ -403,21 +472,9 @@ impl Execution {
         matches!(self, Execution::Successful(_, _, _))
     }
 
-    fn outputs(&self) -> Vec<FileAccess> {
-        match self {
-            Execution::Successful(_, accesses, _) => accesses.outputs(),
-            Execution::Failed(_) => {
-                panic!("Should not be getting outputs of failed execution!")
-            }
-            Execution::PendingRoot => {
-                panic!("Should not be getting outputs of pending root execution!")
-            }
-        }
-    }
-
     fn starting_cwd(&self) -> PathBuf {
         match self {
-            Execution::Successful(metadata, _, _) | Execution::Failed(metadata) => {
+            Execution::Successful(_, _, metadata) | Execution::Failed(metadata) => {
                 metadata.starting_cwd()
             }
             _ => panic!("Should not be getting starting cwd from pending execution!"),
@@ -449,16 +506,26 @@ impl RcExecution {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
 
-    pub fn add_new_file_event(&self, caller_pid: Pid, file_access: FileAccess, io_type: IO) {
+    pub fn add_new_file_event(&self, caller_pid: Pid, file_access: FileAccess, full_path: PathBuf) {
         self.execution
             .borrow_mut()
-            .add_new_file_event(caller_pid, file_access, io_type);
+            .add_new_file_event(caller_pid, file_access, full_path);
     }
 
-    pub fn add_output_file_hashes(&self, caller_pid: Pid) -> anyhow::Result<()> {
+    // pub fn add_output_file_hashes(&self, caller_pid: Pid) -> anyhow::Result<()> {
+    //     self.execution
+    //         .borrow_mut()
+    //         .add_output_file_hashes(caller_pid)
+    // }
+
+    pub fn add_starting_hash(&self, full_path: PathBuf, hash: Vec<u8>) {
         self.execution
             .borrow_mut()
-            .add_output_file_hashes(caller_pid)
+            .add_starting_hash(full_path, hash)
+    }
+
+    pub fn add_final_hash(&self, full_path: PathBuf, hash: Vec<u8>) {
+        self.execution.borrow_mut().add_final_hash(full_path, hash)
     }
 
     fn args(&self) -> Vec<String> {
@@ -485,8 +552,8 @@ impl RcExecution {
         self.execution.borrow().execution_name()
     }
 
-    fn inputs(&self) -> Vec<FileAccess> {
-        self.execution.borrow().inputs()
+    pub fn file_events(&self) -> ExecFileAccesses {
+        self.execution.borrow().file_events()
     }
 
     pub fn is_pending_root(&self) -> bool {
@@ -495,10 +562,6 @@ impl RcExecution {
 
     pub fn is_successful(&self) -> bool {
         self.execution.borrow().is_successful()
-    }
-
-    fn outputs(&self) -> Vec<FileAccess> {
-        self.execution.borrow().outputs()
     }
 
     pub fn starting_cwd(&self) -> PathBuf {
@@ -535,66 +598,59 @@ impl GlobalExecutions {
 
 // Return the cached execution if there exists a cached success.
 // Else return None.
-pub fn get_cached_root_execution(
-    caller_pid: Pid,
-    cache_dir: &Path,
-    new_execution: Execution,
-) -> anyhow::Result<Option<RcExecution>> {
-    let s = span!(Level::INFO, stringify!(get_cached_root_execution), pid=?caller_pid);
-    let _ = s.enter();
+// pub fn get_cached_root_execution(caller_pid: Pid, new_execution: Execution) -> Option<RcExecution> {
+//     let s = span!(Level::INFO, stringify!(get_cached_root_execution), pid=?caller_pid);
+//     let _ = s.enter();
+//     let cache_path = PathBuf::from("./IOTracker/cache/cache");
+//     if !cache_path.exists() {
+//         s.in_scope(|| info!("No cached exec bc cache doesn't exist"));
+//         None
+//     } else if !new_execution.is_successful() {
+//         s.in_scope(|| info!("No cached exec bc exec failed"));
+//         None
+//     } else {
+//         let global_execs = deserialize_execs_from_cache();
+//         // Have to find the root exec in the list of global execs
+//         // in the cache.
+//         for cached_root_exec in global_execs.executions.iter() {
+//             // We check that the metadata matches
+//             // That the inputs and outputs match (all the way down the tree of child execs)
+//             // And that success or failure matches
+//             if exec_metadata_matches(cached_root_exec, caller_pid, &new_execution)
+//                 && execution_matches(cached_root_exec, caller_pid)
+//             {
+//                 // TODO: don't short circuit
+//                 return Some(cached_root_exec.clone());
+//             }
+//         }
+//         None
+//     }
+// }
 
-    let mut cache_path = cache_dir.to_path_buf();
-    cache_path.push(CACHE_FILE);
+// fn execution_matches(cached_root: &RcExecution, caller_pid: Pid) -> bool {
+// unimplemented!();
+// let s = span!(Level::INFO, stringify!(execution_matches), pid=?caller_pid);
+// let _ = s.enter();
+// s.in_scope(|| info!("Checking inputs and outputs of children"));
 
-    if !cache_path.exists() {
-        s.in_scope(|| info!("No cached executions because cache file doesn't exist"));
-        Ok(None)
-    } else if !new_execution.is_successful() {
-        s.in_scope(|| info!("No cached exec bc exec failed"));
-        Ok(None)
-    } else {
-        let global_execs = deserialize_execs_from_cache(cache_path)
-            .with_context(|| context!("Unable to deserialize cache."))?;
-        // Have to find the root exec in the list of global execs
-        // in the cache.
-        for cached_root_exec in global_execs.executions.iter() {
-            // We check that the metadata matches
-            // That the inputs and outputs match (all the way down the tree of child execs)
-            // And that success or failure matches
-            if exec_metadata_matches(cached_root_exec, caller_pid, &new_execution)
-                && execution_matches(cached_root_exec, caller_pid)
-            {
-                // TODO: don't short circuit
-                return Ok(Some(cached_root_exec.clone()));
-            }
-        }
-        Ok(None)
-    }
-}
+// if !inputs_match(cached_root.clone(), caller_pid)
+//     || !outputs_match(caller_pid, cached_root.clone())
+// {
+//     false
+// } else {
+//     s.in_scope(|| {
+//         info!(
+//             "Number of cached children: {}",
+//             cached_root.child_executions().len()
+//         )
+//     });
 
-fn execution_matches(cached_root: &RcExecution, caller_pid: Pid) -> bool {
-    let s = span!(Level::INFO, stringify!(execution_matches), pid=?caller_pid);
-    let _ = s.enter();
-    s.in_scope(|| info!("Checking inputs and outputs of children"));
-
-    if !inputs_match(cached_root.clone(), caller_pid)
-        || !outputs_match(caller_pid, cached_root.clone())
-    {
-        false
-    } else {
-        s.in_scope(|| {
-            info!(
-                "Number of cached children: {}",
-                cached_root.child_executions().len()
-            )
-        });
-
-        cached_root
-            .child_executions()
-            .iter()
-            .all(|child| execution_matches(child, caller_pid))
-    }
-}
+//     cached_root
+//         .child_executions()
+//         .iter()
+//         .all(|child| execution_matches(child, caller_pid))
+// }
+// }
 
 // It's a lot of logic to do all the metadata checking.
 // Right now if an execution has child executions, all child
@@ -632,130 +688,136 @@ fn exec_metadata_matches(cached_exec: &RcExecution, caller_pid: Pid, new_exec: &
     executable_matches && success_failure_match && args_match && cwd_matches && env_vars_match
 }
 
+// TODO: Is this function relevant anymore?
 // The inputs in the cached execution match the
 // new execution's inputs, the hashes match,
 // and they are in the correct absolute path locations.
-fn inputs_match(cached_exec: RcExecution, caller_pid: Pid) -> bool {
-    let s = span!(Level::INFO, stringify!(inputs_match), pid=?caller_pid);
-    let _ = s.enter();
-    s.in_scope(|| info!("Checking inputs and outputs of children"));
-    let cached_inputs = cached_exec.inputs();
-    // First, they must share the same inputs.
-    // So get the keys of each and check that they are equal?
-    for input in cached_inputs.into_iter() {
-        if let FileAccess::Success(full_path, Some(old_hash), _) = input {
-            // Only check these things if it's a true file.
-            // If the hash is None, we can just move on.
-            if !full_path.exists() {
-                s.in_scope(|| {
-                    info!(
-                        "Inputs don't match because path doesn't exist: {:?}",
-                        full_path
-                    )
-                });
-                return false;
-            } else {
-                // Hash the file that is there right now.
-                let full_path = full_path.clone().into_os_string().into_string().unwrap();
-                let new_hash = generate_hash(caller_pid, full_path.clone());
+// fn inputs_match(cached_exec: RcExecution, caller_pid: Pid) -> bool {
+// unimplemented!();
+// let s = span!(Level::INFO, stringify!(inputs_match), pid=?caller_pid);
+// let _ = s.enter();
+// s.in_scope(|| info!("Checking inputs and outputs of children"));
+// let cached_inputs = cached_exec.inputs();
+// // First, they must share the same inputs.
+// // So get the keys of each and check that they are equal?
+// for input in cached_inputs.into_iter() {
+//     if let FileAccess::Success(full_path, Some(old_hash), _) = input {
+//         // Only check these things if it's a true file.
+//         // If the hash is None, we can just move on.
+//         if !full_path.exists() {
+//             s.in_scope(|| {
+//                 info!(
+//                     "Inputs don't match because path doesn't exist: {:?}",
+//                     full_path
+//                 )
+//             });
+//             return false;
+//         } else {
+//             // Hash the file that is there right now.
+//             let full_path = full_path.clone().into_os_string().into_string().unwrap();
+//             let new_hash = generate_hash(caller_pid, full_path.clone());
 
-                // Compare the new hash to the old hash.
-                if !new_hash.iter().eq(old_hash.iter()) {
-                    s.in_scope(|| {
-                        info!(
-                            "Inputs don't match new hash and old hash don't match: {:?}",
-                            full_path
-                        )
-                    });
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
+//             // Compare the new hash to the old hash.
+//             if !new_hash.iter().eq(old_hash.iter()) {
+//                 s.in_scope(|| {
+//                     info!(
+//                         "Inputs don't match new hash and old hash don't match: {:?}",
+//                         full_path
+//                     )
+//                 });
+//                 return false;
+//             }
+//         }
+//     }
+// }
+// true
+// }
 
+// TODO: Does this function even make sense anymore?
 // Check that output files are either:
 // - Exist, in the right place, and the hash matches the hash we have in the cache.
 // - OR, the file doesn't exist, which is great, because we have it in our cache
 // and we can just copy it over.
-fn outputs_match(caller_pid: Pid, curr_execution: RcExecution) -> bool {
-    let s = span!(Level::INFO, stringify!(outputs_match), pid=?caller_pid);
-    let _ = s.enter();
-    s.in_scope(|| info!("Checking inputs and outputs of children"));
-    let cached_outputs = curr_execution.outputs();
+// fn outputs_match(caller_pid: Pid, curr_execution: RcExecution) -> bool {
+// unimplemented!();
+// let s = span!(Level::INFO, stringify!(outputs_match), pid=?caller_pid);
+// let _ = s.enter();
+// s.in_scope(|| info!("Checking inputs and outputs of children"));
+// let cached_outputs = curr_execution.outputs();
 
-    for output in cached_outputs.into_iter() {
-        if let FileAccess::Success(full_path, hash, _) = output {
-            // If the output file does indeed exist and is in the correct spot
-            // already, check if the hash matches the old one.
-            // Then we won't have to copy this file over from the cache.
-            if full_path.exists() {
-                if let Some(old_hash) = hash {
-                    let full_path = full_path.clone().into_os_string().into_string().unwrap();
-                    let new_hash = generate_hash(caller_pid, full_path.clone());
+// for output in cached_outputs.into_iter() {
+//     if let FileAccess::Success(full_path, hash, _) = output {
+//         // If the output file does indeed exist and is in the correct spot
+//         // already, check if the hash matches the old one.
+//         // Then we won't have to copy this file over from the cache.
+//         if full_path.exists() {
+//             if let Some(old_hash) = hash {
+//                 let full_path = full_path.clone().into_os_string().into_string().unwrap();
+//                 let new_hash = generate_hash(caller_pid, full_path.clone());
 
-                    // Compare the new hash to the old hash.
-                    if !new_hash.iter().eq(old_hash.iter()) {
-                        s.in_scope(|| {
-                            info!(
-                                "Output hashes don't match. Old :{:?}, New :{:?}",
-                                new_hash, old_hash
-                            )
-                        });
-                        return false;
-                    }
-                }
-            }
-            // If it doesn't exist, fantastic
-            // MOVE ON it doesn't exist.
-            // "I'm sorry for your loss. Move on."
-        }
-    }
-    true
-}
+//                 // Compare the new hash to the old hash.
+//                 if !new_hash.iter().eq(old_hash.iter()) {
+//                     s.in_scope(|| {
+//                         info!(
+//                             "Output hashes don't match. Old :{:?}, New :{:?}",
+//                             new_hash, old_hash
+//                         )
+//                     });
+//                     return false;
+//                 }
+//             }
+//         }
+//         // If it doesn't exist, fantastic
+//         // MOVE ON it doesn't exist.
+//         // "I'm sorry for your loss. Move on."
+//     }
+// }
+// true
+// }
 
+// TODO: make this work with the other stuff
 // Take in the root execution.
 // Copy its outputs to the appropriate places.
 pub fn serve_outputs_from_cache(
     caller_pid: Pid,
     root_execution: &RcExecution,
 ) -> anyhow::Result<()> {
-    let s = span!(Level::INFO, stringify!(serve_outputs_from_cache), pid=?caller_pid);
-    let _ = s.enter();
-    s.in_scope(|| info!("Serving outputs from cache."));
+    unimplemented!();
+    // let s = span!(Level::INFO, stringify!(serve_outputs_from_cache), pid=?caller_pid);
+    // let _ = s.enter();
+    // s.in_scope(|| info!("Serving outputs from cache."));
 
-    for output in root_execution.outputs() {
-        if let FileAccess::Success(full_path, _, _) = output {
-            s.in_scope(|| {
-                info!(
-                    "Cached successful output file access going to serve: {:?}",
-                    full_path
-                )
-            });
-            let file_name = full_path.file_name().unwrap();
+    // for output in root_execution.outputs() {
+    //     if let FileAccess::Success(full_path, _, _) = output {
+    //         s.in_scope(|| {
+    //             info!(
+    //                 "Cached successful output file access going to serve: {:?}",
+    //                 full_path
+    //             )
+    //         });
+    //         let file_name = full_path.file_name().unwrap();
 
-            let cache_dir = PathBuf::from("./research/IOTracker/cache");
-            let cached_output_path = cache_dir.join(file_name);
+    //         let cache_dir = PathBuf::from("./research/IOTracker/cache");
+    //         let cached_output_path = cache_dir.join(file_name);
 
-            if !full_path.exists() {
-                fs::copy(cached_output_path, full_path)?;
-            } else {
-                s.in_scope(|| {
-                    info!(
-                        "Not copying from cache, file is already there: {:?}",
-                        full_path
-                    )
-                });
-            }
-        }
-    }
+    //         if !full_path.exists() {
+    //             fs::copy(cached_output_path, full_path)?;
+    //         } else {
+    //             s.in_scope(|| {
+    //                 info!(
+    //                     "Not copying from cache, file is already there: {:?}",
+    //                     full_path
+    //                 )
+    //             });
+    //         }
+    //     }
+    // }
 
-    root_execution
-        .child_executions()
-        .iter()
-        .all(|child| serve_outputs_from_cache(caller_pid, child).is_ok());
-    Ok(())
+    // root_execution
+    //     .child_executions()
+    //     .iter()
+    //     .all(|child| serve_outputs_from_cache(caller_pid, child).is_ok());
+    // Ok(())
 }
 
 // ------ Hashing stuff ------
@@ -834,8 +896,8 @@ pub fn serialize_execs_to_cache(
         // - and write the serialized_execs to the cache/cache file we are making
         //   right here because that's what the write() function here does, creates
         //   if it doesn't exist, and then writes.
-        fs::write(&cache_path, serialized_execs)
-            .with_context(|| context!("Cannot write to cache location: {:?}.", cache_path))?;
+        fs::write(CACHE_LOCATION, serialized_execs)
+            .with_context(|| context!("Cannot write to cache location: \"{}\".", CACHE_LOCATION))?;
     }
     Ok(())
     // let serialized_execs = rmp_serde::to_vec(&root_exection).unwrap();

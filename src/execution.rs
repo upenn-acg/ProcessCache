@@ -6,14 +6,15 @@ use libc::{
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
-use std::fs;
+use std::fs::{self, canonicalize};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_hash, get_cached_root_execution, serialize_execs_to_cache, serve_outputs_from_cache,
-    ExecAccesses, ExecMetadata, Execution, FileAccess, OpenMode, RcExecution, IO,
+    generate_hash, /*get_cached_root_execution,*/ serialize_execs_to_cache,
+    serve_outputs_from_cache, AccessFailure, ExecFileAccesses, ExecMetadata, Execution, FileAccess,
+    FileAction, OpenMode, RcExecution,
 };
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -57,14 +58,21 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // Only serialize to cache if not PendingRoot?
     // PendingRoot == we skipped the execution because
     // it had a cached match and was therefore skippable.
-    if !first_execution.is_pending_root() {
-        serialize_execs_to_cache(first_execution.clone(), cache_dir)
-            .with_context(|| context!("Unable to serialize execs to our cache file."))?;
-    }
-    println!(
-        "number of child execs: {}",
-        first_execution.child_executions().len()
-    );
+    // if !first_execution.is_pending_root() {
+    //     serialize_execs_to_cache(first_execution.clone())
+    //         .with_context(|| context!("Unable to serialize execs to our cache file."))?;
+    // }
+    // println!(
+    //     "number of child execs: {}",
+    //     first_execution.child_executions().len()
+    // );
+
+    // println!(
+    //     "file events: {:?}",
+    //     first_execution.file_events()
+    // );
+
+    println!("executions: {:?}", first_execution);
     Ok(())
 }
 
@@ -180,44 +188,36 @@ pub async fn trace_process(
 
                         s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
-                            if let Some(cached_exec) = get_cached_root_execution(
-                                tracer.curr_proc,
-                                &cache_dir,
-                                new_execution.clone(),
-                            )
-                            .with_context(|| context!("Unable to get cached root execution."))?
-                            {
-                                let new_exec_succeeded = new_execution.is_successful();
-                                let cached_exec_succeeded = cached_exec.is_successful();
+                            //     if let Some(cached_exec) =
+                            //         get_cached_root_execution(tracer.curr_proc, new_execution.clone())
+                            //     {
+                            //         let new_exec_succeeded = new_execution.is_successful();
+                            //         let cached_exec_succeeded = cached_exec.is_successful();
 
-                                // If we have that the execution failed when we had cached it, but this time it succeeded,
-                                // let's just panic for now. Later, I imagine we want to maybe replace the failed
-                                // cached execution with a successful one? Like we'd record this new run. But idk.
-                                if !cached_exec_succeeded && new_exec_succeeded {
-                                    panic!("Cached version failed, but running this time the execution succeeds!!");
-                                }
+                            //         // If we have that the execution failed when we had cached it, but this time it succeeded,
+                            //         // let's just panic for now. Later, I imagine we want to maybe replace the failed
+                            //         // cached execution with a successful one? Like we'd record this new run. But idk.
+                            //         if !cached_exec_succeeded && new_exec_succeeded {
+                            //             panic!("Cached version failed, but running this time the execution succeeds!!");
+                            //         }
 
-                                // We don't skip if it failed. We just let it fail.
-                                if cached_exec_succeeded && new_exec_succeeded {
-                                    s.in_scope(|| info!("Initiating skip of execution!"));
-                                    skip_execution = true;
-                                    s.in_scope(|| info!("Serving outputs"));
-                                    serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
-
-                                    // Update status if this is the root process before skipping.
-                                    if curr_execution.is_pending_root() {
-                                        curr_execution.update_root(new_execution);
-                                    }
-                                }
-                            } else {
-                                curr_execution.update_root(new_execution);
-                            }
-                        } else {
+                            //         // We don't skip if it failed. We just let it fail.
+                            //         if cached_exec_succeeded && new_exec_succeeded {
+                            //             s.in_scope(|| info!("Initiating skip of execution!"));
+                            //             skip_execution = true;
+                            //             s.in_scope(|| info!("Serving outputs"));
+                            //             serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
+                            //         }
+                            //     } else {
+                            //         curr_execution.update_root(new_execution);
+                            //     }
+                            // } else {
                             // We panic in create_new_execution() if a process is trying to execve a second time.
                             // So if we get here, it's not pending root, it's at least the parent after it's execve
                             // call. And it's not parent doing a second execve, it must be the child doing an execve.
                             // If we check the pid of the curr_exec vs new_rcexecution they should differ.
                             // TODO: check the pids
+                            curr_execution.update_root(new_execution.clone());
                             let new_rcexecution = RcExecution::new(new_execution);
                             curr_execution.add_child_execution(new_rcexecution.clone());
                             curr_execution = new_rcexecution;
@@ -287,13 +287,13 @@ pub async fn trace_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
 
                 match name {
-                    "access" => handle_access(&curr_execution, &regs, &tracer)?,
+                    // "access" => handle_access(&curr_execution, &regs, &tracer)?,
                     "creat" | "openat" | "open" => {
                         handle_open(&curr_execution, &regs, name, &tracer)?
                     }
-                    "fstat" | "newfstatat" | "stat" => {
-                        handle_stat(&curr_execution, &regs, name, &tracer)?
-                    }
+                    // "fstat" | "newfstatat" | "stat" => {
+                    //     handle_stat(&curr_execution, &regs, name, &tracer)?
+                    // }
                     _ => {}
                 }
             }
@@ -392,9 +392,10 @@ pub async fn trace_process(
             if !skip_execution {
                 // This is a new (or at least new version?) execution,
                 // add/update all the necessary stuff in the cache.
+                // TODO: ya know, properly cache
                 curr_execution.add_exit_code(exit_code, pid);
-                curr_execution.add_output_file_hashes(pid)?;
-                curr_execution.copy_outputs_to_cache()?;
+                // curr_execution.add_output_file_hashes(pid)?;
+                // curr_execution.copy_outputs_to_cache()?;
             }
         }
         other => bail!(
@@ -408,37 +409,38 @@ pub async fn trace_process(
 
 // Handling the access system call.
 fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
-    let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
-    sys_span.in_scope(|| {
-        debug!("File metadata event: (access)");
-    });
-    let ret_val = regs.retval::<i32>();
-    // retval = 0 is success for this syscall.
-    let syscall_succeeded = ret_val == 0;
-    let bytes = regs.arg1::<*const c_char>();
-    let register_path = tracer
-        .read_c_string(bytes)
-        .with_context(|| context!("Cannot read `access` path."))?;
-    let syscall_name = String::from("access");
-    debug!("register path: {}", register_path);
+    unimplemented!();
+    // let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
+    // sys_span.in_scope(|| {
+    //     debug!("File metadata event: (access)");
+    // });
+    // let ret_val = regs.retval::<i32>();
+    // // retval = 0 is success for this syscall.
+    // let syscall_succeeded = ret_val == 0;
+    // let bytes = regs.arg1::<*const c_char>();
+    // let register_path = tracer
+    //     .read_c_string(bytes)
+    //     .with_context(|| context!("Cannot read `access` path."))?;
+    // let syscall_name = String::from("access");
+    // debug!("register path: {}", register_path);
 
-    let path_arg = PathBuf::from(register_path);
+    // let path_arg = PathBuf::from(register_path);
 
-    let full_path = get_full_path(Some(PathArg::Path(path_arg)), tracer.curr_proc)?;
-    debug!("made it past get_full_path");
+    // let full_path = get_full_path(Some(PathArg::Path(path_arg)), tracer.curr_proc)?;
+    // debug!("made it past get_full_path");
 
-    let file_access = generate_file_access(
-        full_path,
-        IO::Input,
-        tracer.curr_proc,
-        syscall_name,
-        syscall_succeeded,
-    );
+    // let file_access = generate_file_access(
+    //     full_path,
+    //     IO::Input,
+    //     tracer.curr_proc,
+    //     syscall_name,
+    //     syscall_succeeded,
+    // );
 
-    if let Some(access) = file_access {
-        execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
-    }
-    Ok(())
+    // if let Some(access) = file_access {
+    //     execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
+    // }
+    // Ok(())
 }
 
 fn create_new_execution(
@@ -466,12 +468,11 @@ fn create_new_execution(
         let mut new_execution = match next_event {
             TraceEvent::Exec(_) => {
                 // The execve succeeded!
-                // If it's in the cache, change the
                 s.in_scope(|| {
                     debug!("Execve succeeded!");
                 });
 
-                Execution::Successful(ExecMetadata::new(), ExecAccesses::new(), Vec::new())
+                Execution::Successful(Vec::new(), ExecFileAccesses::new(), ExecMetadata::new())
             }
             _ => {
                 // The execve failed!
@@ -492,10 +493,13 @@ fn create_new_execution(
 }
 
 /// Open, openat, creat.
+/// I am gonna just handle open and openat for now, and only for opening and not for file creation.
 /// Opening for read/write, write,
 /// and creating files are all considered outputs,
 /// just opening a file for reading is considered
 /// an input.
+/// TODO!!!!! A function for generating file accesses that is implemented in cache.rs
+/// so that FileAction, FileAccess, AccessFailure don't have to be pub
 fn handle_open(
     execution: &RcExecution,
     regs: &Regs<Unmodified>,
@@ -506,23 +510,23 @@ fn handle_open(
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
-    sys_span.in_scope(|| {
-        debug!("File open event: ({})", syscall_name);
-    });
-
     let ret_val = regs.retval::<i32>();
-    let syscall_succeeded = ret_val > 0;
+    let syscall_outcome = if ret_val > 0 {
+        SyscallOutcome::Success
+    } else {
+        SyscallOutcome::Failure(ret_val)
+    };
 
-    let open_mode = if syscall_name == "creat" {
+    let (is_file_create, open_mode) = if syscall_name == "creat" {
         // creat() uses write only as the mode
-        OpenMode::WriteOnly
+        (true, OpenMode::WriteOnly)
     } else {
         let flags = if syscall_name == "open" {
             regs.arg2::<i32>()
         } else {
             regs.arg3::<i32>()
         };
-        match flags & O_ACCMODE {
+        let open_mode = match flags & O_ACCMODE {
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
             O_WRONLY => {
@@ -532,12 +536,10 @@ fn handle_open(
                 OpenMode::WriteOnly
             }
             _ => panic!("Open flags do not match any mode!"),
-        }
-    };
+        };
+        let is_file_create = ((flags & O_CREAT) == O_CREAT);
 
-    let io = match open_mode {
-        OpenMode::ReadOnly => IO::Input,
-        _ => IO::Output,
+        (is_file_create, open_mode)
     };
 
     let path_arg_bytes = match syscall_name {
@@ -550,93 +552,131 @@ fn handle_open(
         .read_c_string(path_arg_bytes)
         .with_context(|| context!("Cannot read `open` path."))?;
     let file_name_arg = PathBuf::from(path_arg);
-    let path_arg = if syscall_succeeded {
-        Some(PathArg::Path(file_name_arg))
+    // sys_span.in_scope(|| "made it to canonicalize");
+    // let full_path = get_full_path(path_arg, pid)?;
+    // let full_path = canonicalize(file_name_arg)?;
+
+    // If a path is absolute it will start with "/"
+    // and so we don't need to call get_full_path().
+    let exec_cwd = execution.starting_cwd();
+    let full_path = if !file_name_arg.starts_with("/") {
+        file_name_arg
+    } else {
+        let path_arg = if ret_val > 0 {
+            PathArg::ExistingFile(file_name_arg)
+        } else {
+            PathArg::NonExistingFile {
+                cwd: exec_cwd,
+                path: file_name_arg,
+            }
+        };
+        get_full_path(Some(path_arg), tracer.curr_proc)?
+    };
+    sys_span.in_scope(|| info!("Full path: {:?}", full_path));
+
+    // We need to check the current exec's map of files it has accessed,
+    // to see if the file has been accessed before.
+    // If it has, we just add to that vector of events.
+    // If it hasn't we need to add the full path -> file struct
+    // to the vector of files this exec has accessed.
+
+    // TODO: lol make this a function
+    let file_access = generate_file_access(
+        full_path.clone(),
+        is_file_create,
+        pid,
+        open_mode,
+        syscall_outcome,
+    );
+
+    let starting_hash = if full_path.exists() && file_access.is_some() {
+        Some(generate_hash(
+            pid,
+            full_path.clone().into_os_string().into_string().unwrap(),
+        ))
     } else {
         None
     };
 
-    let full_path = get_full_path(path_arg, pid)?;
-    sys_span.in_scope(|| info!("Full path: {:?}", full_path));
-    let syscall_name = String::from(syscall_name);
-
-    let file_event = generate_file_access(full_path, io, pid, syscall_name, syscall_succeeded);
-
-    if let Some(access) = file_event {
-        execution.add_new_file_event(tracer.curr_proc, access, io);
+    if let Some(access) = file_access {
+        execution.add_new_file_event(tracer.curr_proc, access, full_path.clone());
     }
 
+    if let Some(hash) = starting_hash {
+        execution.add_starting_hash(full_path, hash);
+    }
     Ok(())
 }
 
 // Currently: stat, fstat, newfstat64
 // We consider these syscalls to be inputs.
 // Well the files they are acting upon anyway!
-fn handle_stat(
-    execution: &RcExecution,
-    regs: &Regs<Unmodified>,
-    syscall_name: &str,
-    tracer: &Ptracer,
-) -> Result<()> {
-    let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
-    let _ = sys_span.enter();
-    sys_span.in_scope(|| {
-        debug!("File stat event: ({})", syscall_name);
-    });
-    // Return value == 0 means success
-    let ret_val: i32 = regs.retval();
-    let syscall_succeeded = ret_val == 0;
+// fn handle_stat(
+//     execution: &RcExecution,
+//     regs: &Regs<Unmodified>,
+//     syscall_name: &str,
+//     tracer: &Ptracer,
+// ) -> Result<()> {
+//     unimplemented!();
+// let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
+// let _ = sys_span.enter();
+// sys_span.in_scope(|| {
+//     debug!("File stat event: ({})", syscall_name);
+// });
+// // Return value == 0 means success
+// let ret_val: i32 = regs.retval();
+// let syscall_succeeded = ret_val == 0;
 
-    let full_path_arg = if syscall_name == "fstat" {
-        let fd = regs.arg1::<i32>();
-        if syscall_succeeded {
-            // TODO: Do something about stdin, stderr, stdout???
-            if fd < 3 {
-                return Ok(());
-            }
-            Some(PathArg::Fd(3))
-        } else {
-            None
-        }
-    } else {
-        // newstatat, stat
-        // TODO: handle lstat? Or don't? I don't know? What **do** I know?
-        // TODO: handle DIRFD in newfstatat
-        let arg: *const c_char = match syscall_name {
-            "stat" => regs.arg1(),
-            // newstatat
-            "newfstatat" => regs.arg2(),
-            other => bail!(context!("Unhandled syscall: {}", other)),
-        };
+// let full_path_arg = if syscall_name == "fstat" {
+//     let fd = regs.arg1::<i32>();
+//     if syscall_succeeded {
+//         // TODO: Do something about stdin, stderr, stdout???
+//         if fd < 3 {
+//             return Ok(());
+//         }
+//         Some(PathArg::Fd(3))
+//     } else {
+//         None
+//     }
+// } else {
+//     // newstatat, stat
+//     // TODO: handle lstat? Or don't? I don't know? What **do** I know?
+//     // TODO: handle DIRFD in newfstatat
+//     let arg: *const c_char = match syscall_name {
+//         "stat" => regs.arg1(),
+//         // newstatat
+//         "newfstatat" => regs.arg2(),
+//         other => bail!(context!("Unhandled syscall: {}", other)),
+//     };
 
-        let path = tracer
-            .read_c_string(arg)
-            .with_context(|| context!("Can't get path from path arg."))?;
-        Some(PathArg::Path(PathBuf::from(path)))
-    };
+//     let path = tracer
+//         .read_c_string(arg)
+//         .with_context(|| context!("Can't get path from path arg."))?;
+//     Some(PathArg::Path(PathBuf::from(path)))
+// };
 
-    // Either way we are calling this function with a PathArg and it's **generic** over the PathArg enum :3
-    let full_path = get_full_path(full_path_arg, tracer.curr_proc)?;
+// // Either way we are calling this function with a PathArg and it's **generic** over the PathArg enum :3
+// let full_path = get_full_path(full_path_arg, tracer.curr_proc)?;
 
-    let syscall_name = String::from(syscall_name);
-    let file_event = generate_file_access(
-        full_path,
-        IO::Input,
-        tracer.curr_proc,
-        syscall_name,
-        syscall_succeeded,
-    );
+// let syscall_name = String::from(syscall_name);
+// let file_event = generate_file_access(
+//     full_path,
+//     IO::Input,
+//     tracer.curr_proc,
+//     syscall_name,
+//     syscall_succeeded,
+// );
 
-    if let Some(access) = file_event {
-        execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
-    }
+// if let Some(access) = file_event {
+//     execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
+// }
 
-    Ok(())
-}
+// Ok(())
+// }
 
 enum PathArg {
-    Fd(i32),
-    Path(PathBuf),
+    ExistingFile(PathBuf),
+    NonExistingFile { cwd: PathBuf, path: PathBuf },
 }
 
 fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
@@ -647,28 +687,47 @@ fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
 
 // Take in the path arg, either a string path or the
 // fd the system call provides.
+// Optionally pass in the cwd (if the syscall failed because the file doesn't
+// exist, we can't use canonicalize())
 // If the the system call name is fstat (i.e. path arg = None),
 // full path = PathBuf::new().
 // Create the canonicalized
 // version of the path and return it.
+// TODO: If the path is already a full path just return it? maybe should check and not call this function instead?
 fn get_full_path(path_arg: Option<PathArg>, calling_pid: Pid) -> anyhow::Result<PathBuf> {
     let sys_span = span!(Level::INFO, stringify!(get_full_path), pid=?calling_pid);
     let _ = sys_span.enter();
     sys_span.in_scope(|| {
         debug!("Getting full path.");
     });
+
     match path_arg {
-        Some(PathArg::Fd(fd)) => path_from_fd(calling_pid, fd),
-        Some(PathArg::Path(path)) => {
+        // TODO: Evolve PathArg to include if it succeeded?
+        Some(PathArg::NonExistingFile { cwd, path }) => {
             sys_span.in_scope(|| {
-                debug!("Going to canonicalize: {}", stringify!(&path));
+                debug!(
+                    "Syscall failed, going to use cwd: {} to make full path for: {}!",
+                    stringify!(&cwd),
+                    stringify!(&path)
+                );
             });
-            fs::canonicalize(&path).or(Ok(path))
+            Ok(cwd.join(path))
+        }
+        Some(PathArg::ExistingFile(path)) => {
+            sys_span.in_scope(|| {
+                debug!("Going to call canonicalize: {}", stringify!(&path));
+            });
+            let full_path = canonicalize(path)?;
+            Ok(full_path)
         }
         None => Ok(PathBuf::new()),
     }
 }
 
+enum SyscallOutcome {
+    Success,
+    Failure(i32),
+}
 // Generate file access if appropriate,
 // return None if directory or standard out
 // or whatever else that's not a real file.
@@ -679,10 +738,10 @@ fn get_full_path(path_arg: Option<PathArg>, calling_pid: Pid) -> anyhow::Result<
 // successful or not!
 fn generate_file_access(
     full_path: PathBuf,
-    io_type: IO,
+    is_file_create: bool,
     pid: Pid,
-    syscall_name: String,
-    syscall_succeeded: bool,
+    open_mode: OpenMode,
+    syscall_outcome: SyscallOutcome,
 ) -> Option<FileAccess> {
     // Why pass in the file name when there's a perfectly good file_name, just sittin' in the full_path??
     // Who else likes Seinfeld? Just me? Alright.
@@ -697,17 +756,52 @@ fn generate_file_access(
         return None;
     }
 
-    if syscall_succeeded {
-        let hash = match io_type {
-            IO::Input => {
-                let path = full_path.clone().into_os_string().into_string().unwrap();
-                Some(generate_hash(pid, path))
-            }
+    // let path = full_
+    // if syscall_succeeded {
+    //     let hash = match io_type {
+    //         IO::Input => {
+    //             let path = full_path.clone().into_os_string().into_string().unwrap();
+    //             Some(generate_hash(pid, path))
+    //         }
 
-            _ => None,
-        };
-        Some(FileAccess::Success(full_path, hash, syscall_name))
-    } else {
-        Some(FileAccess::Failure(full_path, syscall_name))
+    //         _ => None,
+    //     };
+    //     Some(FileAccess::Success(full_path, hash, syscall_name))
+    // } else {
+    //     Some(FileAccess::Failure(full_path, syscall_name))
+    // }
+
+    // TODO: lol make this a function
+    match (is_file_create, open_mode, syscall_outcome) {
+        (true, OpenMode::ReadOnly, _) => panic!("File create and mode is read only!!"),
+        (false, OpenMode::ReadOnly, SyscallOutcome::Success) => {
+            Some(FileAccess::Successful(FileAction::Read))
+        }
+        // TODO: stuff other than "does not exist" (EACCES, ENOENT)
+        (false, OpenMode::ReadOnly, SyscallOutcome::Failure(ret_val)) => match ret_val {
+            -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
+            -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
+            e => panic!("Unrecognized error number for open!: {}", e),
+        },
+        (true, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
+            Some(FileAccess::Successful(FileAction::Created))
+        }
+        (false, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
+            Some(FileAccess::Successful(FileAction::Modified))
+        }
+        (true, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(_)) => {
+            // How can it fail to create a file?
+            // TODO: Figure all that out
+            // For now, let's just handle "the file already exists"
+            // I'll strace it in a sec
+            Some(FileAccess::Failed(AccessFailure::AlreadyExists))
+        }
+        (false, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(ret_val)) => {
+            match ret_val {
+                -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
+                -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
+                e => panic!("Unrecognized error number for open!: {}", e),
+            }
+        }
     }
 }
