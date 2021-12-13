@@ -14,12 +14,6 @@ use std::{
 use crate::context;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
-<<<<<<< HEAD
-
-const CACHE_FILE: &'static str = "cache.cache";
-const CACHE_COPY_FILE: &'static str = "cache_copy.cache";
-=======
->>>>>>> 600efc1... working through opening files and creating files
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -60,17 +54,23 @@ pub enum AccessFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum FileAction {
+pub enum FileEvent {
     Created,
+    // O_TRUNC + O_CREAT, if the file is there, overwrite it
+    // it stands out because it just blows away all the events
+    // previous to it
+    CreatedByOverwriting,
     Deleted,
     Read,
     Modified,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum FileAccess {
-    Successful(FileAction),
-    Failed(AccessFailure),
+pub enum FileEventResult {
+    Successful(FileEvent),
+    // FileEvent = What did they try to do?
+    // AccessFailure = Why did they fail to do it?
+    Failed(FileEvent, AccessFailure),
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

@@ -5,17 +5,20 @@ use libc::{
 };
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
+use nix::sys::socket::sockopt::AcceptConn;
 use nix::unistd::Pid;
-use std::fs::{self, canonicalize};
+use std::fs::{self, canonicalize, File};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
     generate_hash, /*get_cached_root_execution,*/ serialize_execs_to_cache,
-    serve_outputs_from_cache, AccessFailure, ExecFileAccesses, ExecMetadata, Execution, FileAccess,
-    FileAction, OpenMode, RcExecution,
+    serve_outputs_from_cache, AccessFailure, ExecFileAccesses, ExecMetadata, Execution, FileEvent,
+    FileEventResult, OpenMode, RcExecution,
 };
+
+use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::system_call_names::get_syscall_name;
@@ -145,14 +148,20 @@ pub async fn trace_process(
 
                 let sys_span = span!(Level::INFO, "Syscall", name);
                 let ee = sys_span.enter();
-                // Print system call event.
-                info!("");
+
+                // For file creation type events (creat, open, openat), we want to know if the file already existed
+                // before the syscall happens (i.e. in the prehook). 
+                let mut file_existed_at_start = false;
 
                 // Special cases, we won't get a posthook event. Instead we will get
                 // an execve event or a posthook if execve returns failure. We don't
                 // bother handling it, let the main loop take care of it.
                 // TODO: Handle them properly...
                 match name {
+                    "creat" | "open" | "openat" => {
+                        // let full_path = get_full_path();
+                        // let file_existed_at_start = full_path.exists();
+                    }
                     "execve" => {
                         let regs = tracer
                             .get_registers()
@@ -289,7 +298,7 @@ pub async fn trace_process(
                 match name {
                     // "access" => handle_access(&curr_execution, &regs, &tracer)?,
                     "creat" | "openat" | "open" => {
-                        handle_open(&curr_execution, &regs, name, &tracer)?
+                        // handle_open(&curr_execution, &regs, name, &tracer)?
                     }
                     // "fstat" | "newfstatat" | "stat" => {
                     //     handle_stat(&curr_execution, &regs, name, &tracer)?
@@ -492,23 +501,30 @@ fn create_new_execution(
     }
 }
 
-/// Open, openat, creat.
-/// I am gonna just handle open and openat for now, and only for opening and not for file creation.
-/// Opening for read/write, write,
-/// and creating files are all considered outputs,
-/// just opening a file for reading is considered
-/// an input.
-/// TODO!!!!! A function for generating file accesses that is implemented in cache.rs
-/// so that FileAction, FileAccess, AccessFailure don't have to be pub
+
+enum FilePrecondition {
+    FileExists, // weak
+    FileExistsWithContents(Vec<u8>), // stronk
+    DoesNotExist,
+}
+
 fn handle_open(
     execution: &RcExecution,
+    file_predcond: FilePrecondition,
     regs: &Regs<Unmodified>,
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
+    use libc::{O_APPEND, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY };
+
     let pid = tracer.curr_proc;
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
+
+    enum SyscallOutcome {
+        Success,
+        Failure(i32)
+    }
 
     let ret_val = regs.retval::<i32>();
     let syscall_outcome = if ret_val > 0 {
@@ -517,7 +533,7 @@ fn handle_open(
         SyscallOutcome::Failure(ret_val)
     };
 
-    let (is_file_create, open_mode) = if syscall_name == "creat" {
+    let (creat_flag, open_mode) = if syscall_name == "creat" {
         // creat() uses write only as the mode
         (true, OpenMode::WriteOnly)
     } else {
@@ -526,6 +542,8 @@ fn handle_open(
         } else {
             regs.arg3::<i32>()
         };
+        
+
         let open_mode = match flags & O_ACCMODE {
             O_RDONLY => OpenMode::ReadOnly,
             O_RDWR => OpenMode::ReadWrite,
@@ -583,7 +601,7 @@ fn handle_open(
     // TODO: lol make this a function
     let file_access = generate_file_access(
         full_path.clone(),
-        is_file_create,
+        full_path.clone(),
         pid,
         open_mode,
         syscall_outcome,
@@ -694,16 +712,20 @@ fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
 // Create the canonicalized
 // version of the path and return it.
 // TODO: If the path is already a full path just return it? maybe should check and not call this function instead?
-fn get_full_path(path_arg: Option<PathArg>, calling_pid: Pid) -> anyhow::Result<PathBuf> {
+fn get_full_path(file_predcond: Option<FilePrecondition>, calling_pid: Pid) -> anyhow::Result<PathBuf> {
     let sys_span = span!(Level::INFO, stringify!(get_full_path), pid=?calling_pid);
     let _ = sys_span.enter();
     sys_span.in_scope(|| {
         debug!("Getting full path.");
     });
 
-    match path_arg {
-        // TODO: Evolve PathArg to include if it succeeded?
-        Some(PathArg::NonExistingFile { cwd, path }) => {
+    match file_predcond {
+        // start here doing file precond cases
+        // make fileprecond also have path
+        // actually fuck it make all paths cwd + path fuck canonicalize
+        // or look up how canonicalize is implemented?? lol
+        
+        Some(FilePrecondition::NonExistingFile { cwd, path }) => {
             sys_span.in_scope(|| {
                 debug!(
                     "Syscall failed, going to use cwd: {} to make full path for: {}!",
@@ -724,29 +746,20 @@ fn get_full_path(path_arg: Option<PathArg>, calling_pid: Pid) -> anyhow::Result<
     }
 }
 
-enum SyscallOutcome {
-    Success,
-    Failure(i32),
-}
-// Generate file access if appropriate,
-// return None if directory or standard out
-// or whatever else that's not a real file.
+// If we have not accessed this full_path before,
+// generate its precondition.
 // ----------------------------------------
-// Idk why this was an Option<FileAccess>.
-// Inside the function, I may or may not want the hash,
-// but I do always want a FileAccess struct back,
-// successful or not!
-fn generate_file_access(
+// Returns an option because I don't want to record accesses
+// to stuff like /etc/.
+fn generate_file_event(
+    file_creation_outcome: Option<FileCreateOutcome>,
     full_path: PathBuf,
-    is_file_create: bool,
+    // is_file_create: bool,
     pid: Pid,
     open_mode: OpenMode,
     syscall_outcome: SyscallOutcome,
-) -> Option<FileAccess> {
-    // Why pass in the file name when there's a perfectly good file_name, just sittin' in the full_path??
-    // Who else likes Seinfeld? Just me? Alright.
-    // We generate the hash for the output at the end of the execution.
-
+) -> Option<FileEventResult> {
+    // Trust me Dewey, you don't want no part of this.
     if full_path.starts_with("/dev/pts")
         || full_path.starts_with("/dev/null")
         || full_path.starts_with("/etc/")
@@ -756,52 +769,255 @@ fn generate_file_access(
         return None;
     }
 
-    // let path = full_
-    // if syscall_succeeded {
-    //     let hash = match io_type {
-    //         IO::Input => {
-    //             let path = full_path.clone().into_os_string().into_string().unwrap();
-    //             Some(generate_hash(pid, path))
-    //         }
+    enum OffsetFlag {
+        Append,
+        Trunc,
+    }
 
-    //         _ => None,
-    //     };
-    //     Some(FileAccess::Success(full_path, hash, syscall_name))
-    // } else {
-    //     Some(FileAccess::Failure(full_path, syscall_name))
-    // }
+    enum OpenMode {
+        ReadOnly,
+        ReadWrite,
+        WriteOnly,
+    }
 
-    // TODO: lol make this a function
-    match (is_file_create, open_mode, syscall_outcome) {
-        (true, OpenMode::ReadOnly, _) => panic!("File create and mode is read only!!"),
-        (false, OpenMode::ReadOnly, SyscallOutcome::Success) => {
-            Some(FileAccess::Successful(FileAction::Read))
-        }
-        // TODO: stuff other than "does not exist" (EACCES, ENOENT)
-        (false, OpenMode::ReadOnly, SyscallOutcome::Failure(ret_val)) => match ret_val {
-            -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
-            -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
-            e => panic!("Unrecognized error number for open!: {}", e),
-        },
-        (true, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
-            Some(FileAccess::Successful(FileAction::Created))
-        }
-        (false, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
-            Some(FileAccess::Successful(FileAction::Modified))
-        }
-        (true, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(_)) => {
-            // How can it fail to create a file?
-            // TODO: Figure all that out
-            // For now, let's just handle "the file already exists"
-            // I'll strace it in a sec
-            Some(FileAccess::Failed(AccessFailure::AlreadyExists))
-        }
-        (false, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(ret_val)) => {
-            match ret_val {
-                -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
-                -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
-                e => panic!("Unrecognized error number for open!: {}", e),
+    let append_flag = false;
+    let creat_flag = false;
+    let excl_flag = false;
+    let file_existed_at_start = false;
+    let offset_flag = None;
+    let open_mode = OpenMode::ReadOnly;
+    let syscall_succeeded: Result<(), i32> = Ok(());
+    // TODO: !!!!
+    // In general, the behavior of O_EXCL is undefined if it is
+    //           used without O_CREAT.
+    // TODO: success of syscall?
+    // TODO: errors of syscalls?
+    match (creat_flag, excl_flag, file_existed_at_start, offset_flag, open_mode, syscall_succeeded) {
+        // with O_CREAT, O_RDONLY
+        (true, _, _, _, OpenMode::ReadOnly, _) => panic!("File used O_CREAT flag with O_RDONLY!!"),
+        
+        // The behavior of O_EXCL is undefined when not used with O_CREAT!!
+        (false, true, _, _, _, _) => panic!("O_EXCL flag used without O_CREAT!!"),
+        
+        // with O_CREAT, file didn't exist, open for append? well i guess if you don't know if 
+        // the file exists, you might open for append and create it if it didn't exist, else open what exists already for append, O_WRONLY
+        // syscall_succeeds == precond: file didn't exist
+        (true, false, false, Some(OffsetFlag::Append), OpenMode::WriteOnly, Ok(())) => Some(FileEventResult::Successful(FileEvent::Created)),
+        // syscall fails == precond: well the file didn't exist and we failed to make it prob EACCES?
+        (true, false, false, Some(OffsetFlag::Append), OpenMode::WriteOnly, Err(ret_val)) => {
+            if ret_val == -13 {
+                Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions))
+            } else {
+                panic!("with O_CREAT, file didn't exist, O_APPEND, O_WRONLY, error not recognized: {}", ret_val);
             }
         }
+
+        // with O_CREAT, file didn't exist, open for trunc (i.e. overwrite), O_WRONLY
+        // syscall_succeeds == precond: file didn't exist. But it doesn't matter because it's O_TRUNC
+        // syscall fails == precond: this just blows past whatever's there, so the only way it's gonna fail is if we don't have access so EACCES
+        (true, false, false, Some(OffsetFlag::Trunc), OpenMode::WriteOnly, Ok(())) => Some(FileEventResult::Successful(FileEvent::CreatedByOverwriting)),
+        (true, false, false, Some(OffsetFlag::Trunc), OpenMode::WriteOnly, Err(ret_val)) => {
+            if ret_val == -13 {
+                Some(FileEventResult::Failed(FileEvent::CreatedByOverwriting, AccessFailure::Permissions))
+            } else {
+                panic!("with O_CREAT, file didn't exist, O_TRUNC, O_WRONLY, error not recognized: {}", ret_val);
+            }
+        },
+
+        // with O_CREAT, file didn't exist, no offset mode?? TODO: test this out lol, O_WRONLY
+        (true, false, false, None, OpenMode::WriteOnly, _) => panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
+        
+        // for reference: match (creat_flag, excl_flag, file_existed_at_start, offset_flag, open_mode) {
+        // with O_CREAT, file existed, O_APPEND (so if it existed, just add to it), O_WRONLY
+        // syscall_succeeds == precond: file existed with contents
+        // syscall fails == precond: we don't have access? EACCES?
+        (true, false, true, Some(OffsetFlag::Append), OpenMode::WriteOnly, Ok(())) => Some(FileEventResult::Successful(FileEvent::Modified)),
+        (true, false, true, Some(OffsetFlag::Append), OpenMode::WriteOnly, Err(ret_val)) => {
+            if ret_val == -13 {
+                Some(FileEventResult::Failed(FileEvent::Modified, AccessFailure::Permissions))
+            } else {
+                panic!("with O_CREAT, file existed, O_APPEND, O_WRONLY, error not recognized: {}", ret_val);
+            }
+        } 
+
+        // with O_CREAT, file existed, O_TRUNC (so if it existed, just overwrite that mother), O_WRONLY
+        // syscall succeeds == precond: O_TRUNC blows everything away anyway so it doesn't matter if the file existed, no precond.
+        // syscall fails == precond: we must not have permissions? EACCES? because O_TRUNC comes through like KAPOW
+        (true, false, true, Some(OffsetFlag::Trunc), OpenMode::WriteOnly, Ok(())) => Some(FileEventResult::Successful(FileEvent::CreatedByOverwriting)),
+        (true, false, true, Some(OffsetFlag::Trunc), OpenMode::WriteOnly, Err(ret_val)) => {
+            if ret_val == -13 {
+                Some(FileEventResult::Failed(FileEvent::CreatedByOverwriting, AccessFailure::Permissions))
+            } else {
+                panic!("with O_CREAT, file existed, O_TRUNC (so overwrite it), O_WRONLY, error not recognized: {}", ret_val);
+            }
+        }
+
+        // with O_CREAT, file existed, no offset mode?? TODO: test this out lol, O_WRONLY
+        (true, false, true, None, OpenMode::WriteOnly, _) => panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
+
+        // Yay! The offset doesn't matter in this case!
+        // with O_CREAT, O_EXCL, file didn't exist, O_WRONLY
+        // syscall succeeds == precond: the file didn't exist, does the mode matter? no!
+        (true, true, false, _, OpenMode::WriteOnly, Ok(())) => Some(FileEventResult::Successful(FileEvent::Created)),
+        // syscall fails == precond: file didn't exist, and it's O_EXCL, so this should be the perfect scenario. must fail for something else? must be EACESS probs
+        (true, true, false, _, OpenMode::WriteOnly, Err(ret_val)) => {
+            if ret_val == -13 {
+                Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions))
+            } else {
+                panic!("with O_CREAT, file existed, O_TRUNC (so overwrite it), O_WRONLY, error not recognized: {}", ret_val);
+            }
+        }
+
+        // Another case where the offset mode doesn't matter because this case is a mess!
+        // with O_CREAT, O_EXCL, file existed, offset mode?, O_WRONLY
+        // syscall succeeds == precond: how the hell did that succeed? O_EXCL AND the file existed??
+        // syscall fails == precond: well that makes sense, O_EXCL and the file existed, it failed, with EEXIST (VERIFY!)
+        (true, true, true, _, OpenMode::WriteOnly, Ok(())) => panic!("with O_CREAT, O_EXCL, file existed, offset mode?, O_WRONLY, how is this succeeding?!"),
+        // syscall fails == precond: well that makes sense, O_EXCL and the file existed, it failed, with EEXIST (VERIFY!)
+        // could also be EACCES
+        (true, true, true, _, OpenMode::WriteOnly, Err(ret_val)) => {
+            match ret_val {
+                -13 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions)),
+                -17 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::AlreadyExists)),
+                _ => panic!("with O_CREAT, O_EXCL, file existed, offset mode?, O_WRONLY, error not recognized: {}", ret_val),
+            }
+        } 
+
+        
+        // file existed, opening it for writing, no specified offset mode?
+        (false, false, true, None, OpenMode::WriteOnly, _) => panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
+        
+        // with O_CREAT, O_EXCL, file existed, offset mode?, O_WRONLY
+        // No offset?
+        (true, true, true, None, OpenMode::ReadWrite, _) =>  panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
+        
+        // with O_CREAT, O_EXCL, file existed, offset mode of trunc or append, O_RDWR
+        // syscall succeeds == how??? 
+        (true, true, true, _, OpenMode::ReadWrite, Ok(())) => panic!("with O_CREAT, O_EXCL, file existed, it succeeded??"),
+        // syscall fails == well that makes sense it should, verify though
+        (true, true, true, Some(OffsetFlag::Append), OpenMode::ReadWrite, Err(ret_val)) => {
+            match ret_val {
+                -13 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions)),
+                -17 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::AlreadyExists)),
+                _ => panic!("with O_CREAT, O_EXCL, file existed, offset mode of trunc or append, O_RDWR, error not recognized: {}", ret_val),
+            }
+        }
+
+        // this might be okay,  but honestly, O_CREAT, O_TRUNC, AND O_EXCL? WHAT ARE YOU DOING
+        (true, true, true, Some(OffsetFlag::Trunc), OpenMode::ReadWrite, Err(ret_val)) => panic!("O_CREAT, O_TRUNC, AND O_EXCL? syscall failed WHAT ARE YOU DOING"),
+
+
+        // with O_CREAT, O_EXCL, file didn't exist, no offset mode??, O_RDWR
+        // syscall succeeds == cool it made the file
+        // syscall fails == must not have access?
+        (true, true, false, None, OpenMode::ReadWrite) => todo!(),
+
+        // with O_CREAT, file existed, no offset mode??, O_RDWR
+        // syscall succeeds == could be that we created the file OR that we opened an existing one
+        // syscall fails == we don't have permissions?
+        (true, false, true, None, OpenMode::ReadWrite) => todo!(),
+        
+        // with O_CREAT, O_EXCL, file didn't exist, either offset mode, O_RDWR
+        // succeeds == cool, we made the file, it didn't exist before, and also the offset mode doesn't matter
+        (true, true, false, Some(_), OpenMode::ReadWrite) => todo!(),
+
+        // with O_CREAT, file existed, offset mode?, O_RDWR
+        // succeeds == how???
+        // fails == that makes sense, either because EACCES, EEXIST?
+        (true, false, true, Some(_), OpenMode::ReadWrite) => todo!(),
+        
+        // with O_CREAT, file didn't exist, no offset mode??, O_RDWR
+        (true, false, false, None, OpenMode::ReadWrite) => panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
+        
+        // with O_CREAT, file didn't exist, offset flag doesn't matter, O_RDWR
+        // syscall succeeds == we created the file
+        // syscall failed == permissions?
+        (true, false, false, Some(_), OpenMode::ReadWrite) => todo!(),
+
+        // file existed, offset mode is irrelevant to readonly,  O_RDONLY
+        // succeeded == we opened the file, precond: file existed with contents
+        // failed == EACCES?
+        (false, false, true, _, OpenMode::ReadOnly) => todo!(),
+
+        // file existed, offset mode..., ????????
+        (false, false, true, None, OpenMode::ReadWrite) => todo!(),
+        
+        // file existed, 
+        (false, false, true, Some(_), OpenMode::ReadWrite) => todo!(),
+        
+        // file existed, O_APPEND, O_WRONLY
+        // syscall succeeds == precond: file existed with contents
+        // syscall failed == failed because of access? EACCES?
+        (false, false, true, Some(OffsetFlag::Append), OpenMode::WriteOnly) => todo!(),
+
+        // file existed, O_TRUNC, O_WRONLY
+        // syscall succeeds == we overwrite whatever is there anyway, no precond
+        // syscall fails == failed because of access? EACCES?
+        (false, false, true, Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => todo!(),
+        
+        // trying to open NOT to create, file didn't exist, RDONLY
+        // syscall succeeds == ??? how the fuck
+        // syscall fails == failed because EACCES or ENOENT?
+        (false, false, false, _, OpenMode::ReadOnly) => todo!(),
+
+        // trying to open NOT to create, file didn't exist, no offset mode???, O_RDWR
+        // syscall succeeds == how?
+        // syscall fails == no offset mode? EACCES? ENOENT??
+        (false, false, false, None, OpenMode::ReadWrite) => todo!(),
+
+        // trying to open not to create, file didn't exist, no offset mode??, O_WRONLY
+        // syscall succeeds == how???
+        // syscall fails == no offset mode? EACCES? ENOENT?
+        (false, false, false, None, OpenMode::WriteOnly) => todo!(),
+
+        // trying to open not to create, file didn't exist, O_APPEND or O_TRUNC, O_RDWR
+        // syscall succeeds == how???
+        // syscall fails == EACCES or ENOENT
+        (false, false, false, Some(OffsetFlag::Append) | Some(OffsetFlag::Trunc), OpenMode::ReadWrite) => todo!(),
+
+        // trying to open not to create, file didn't exist, O_APPEND or O_TRUNC, O_WRONLY
+        // syscall succeeds == how???
+        // syscall fails == EACCES or ENOENT
+        (false, false, false, Some(OffsetFlag::Append) | Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => todo!(),
+       
     }
+
+    // TODO: This is just here for now so the compiler shuts up
+    // match (file_creation_outcome, open_mode, syscall_outcome) {
+    //     // true
+    //     (Some(_), OpenMode::ReadOnly, _) => panic!("File create and mode is read only!!"),
+    //     (None, OpenMode::ReadOnly, SyscallOutcome::Success) => {
+    //         Some(FileAccess::Successful(FileAction::Read))
+    //     }
+    //     // TODO: stuff other than "does not exist" (EACCES, ENOENT)
+    //     (None, OpenMode::ReadOnly, SyscallOutcome::Failure(ret_val)) => match ret_val {
+    //         -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
+    //         -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
+    //         e => panic!("Unrecognized error number for open!: {}", e),
+    //     },
+    //     // true
+    //     (Some(FileCreateOutcome::FileAlreadyExistsJustOpens), OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
+    //         Some(FileAccess::Successful(FileAction::Modified))
+    //     }
+    //     (Some(FileCreateOutcome::SuccessfulCreation), OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
+    //         Some(FileAccess::Successful(FileAction::Created))
+    //     }
+    //     (None, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Success) => {
+    //         Some(FileAccess::Successful(FileAction::Modified))
+    //     }
+    //     (Some(FileCreateOutcome::FailedCreation), OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(_)) => {
+    //         // How can it fail to create a file?
+    //         // TODO: Figure all that out
+    //         // For now, let's just handle "the file already exists"
+    //         // I'll strace it in a sec
+    //         Some(FileAccess::Failed(AccessFailure::AlreadyExists))
+    //     }
+    //     (None, OpenMode::WriteOnly | OpenMode::ReadWrite, SyscallOutcome::Failure(ret_val)) => {
+    //         match ret_val {
+    //             -2 => Some(FileAccess::Failed(AccessFailure::DoesNotExist)),
+    //             -13 => Some(FileAccess::Failed(AccessFailure::Permissions)),
+    //             e => panic!("Unrecognized error number for open!: {}", e),
+    //         }
+    //     }
+    // }
 }
