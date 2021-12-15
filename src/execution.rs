@@ -908,23 +908,49 @@ fn generate_file_event(
 
 
         // with O_CREAT, O_EXCL, file didn't exist, no offset mode??, O_RDWR
-        // syscall succeeds == cool it made the file
+        // syscall succeeds == cool it made the file? i guess the offset thing is fine lol?
+        (true, true, false, None, OpenMode::ReadWrite, Ok(())) => Some(FileEventResult::Successful(FileEvent::CreatedByOverwriting)),
         // syscall fails == must not have access?
-        (true, true, false, None, OpenMode::ReadWrite) => todo!(),
+        (true, true, false, None, OpenMode::ReadWrite, Err(ret_val)) => {
+            match ret_val {
+                // *technically* still overwriting? even though the file aint there? consolidate cases??
+                -13 => Some(FileEventResult::Failed(FileEvent::CreatedByOverwriting, AccessFailure::Permissions)),
+                _ => panic!("with O_CREAT, O_EXCL, file didn't exist, no offset mode??, O_RDWR, error not recognized: {}", ret_val),
+            }
+        }
 
         // with O_CREAT, file existed, no offset mode??, O_RDWR
-        // syscall succeeds == could be that we created the file OR that we opened an existing one
+        // syscall succeeds == we opened the existing file! for reading and writing, what fuckin case is that?
+        // the strongest case is "file existed with contents", and if we are opening an existing
+        // file for reading and/or writing I think it falls under it? So I'm gonna do Read as the FileEvent
+        (true, false, true, None, OpenMode::ReadWrite, Ok(())) => Some(FileEventResult::Successful(FileEvent::Read)),
         // syscall fails == we don't have permissions?
-        (true, false, true, None, OpenMode::ReadWrite) => todo!(),
-        
+        (true, false, true, None, OpenMode::ReadWrite, Err(ret_val)) => {
+            match ret_val {
+                -13 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions)),
+                _ => panic!("with O_CREAT, file existed, no offset mode??, O_RDWR"),
+            }
+        }
+       
         // with O_CREAT, O_EXCL, file didn't exist, either offset mode, O_RDWR
+        // offset mode doesn't matter because it didn't exist anyway 
         // succeeds == cool, we made the file, it didn't exist before, and also the offset mode doesn't matter
-        (true, true, false, Some(_), OpenMode::ReadWrite) => todo!(),
+        // fails == how? permissions?
+        (true, true, false, Some(_), OpenMode::ReadWrite, Ok(())) => Some(FileEventResult::Successful(FileEvent::Created)),
+        (true, true, false, Some(_), OpenMode::ReadWrite, Err(ret_val)) => {
+            match ret_val {
+                -13 => Some(FileEventResult::Failed(FileEvent::Created, AccessFailure::Permissions)),
+                _ => panic!("with O_CREAT, O_EXCL, file didn't exist, either offset mode, O_RDWR, unrecognized error: {}", ret_val),
+            }
+        }
+
 
         // with O_CREAT, file existed, offset mode?, O_RDWR
-        // succeeds == how???
+        // succeeds == opened the file that existed
         // fails == that makes sense, either because EACCES, EEXIST?
-        (true, false, true, Some(_), OpenMode::ReadWrite) => todo!(),
+        (true, false, true, Some(), OpenMode::ReadWrite, Ok(())) => panic!("")
+        (true, false, true, Some(_), OpenMode::ReadWrite, Err(ret_val) => todo!(),
+
         
         // with O_CREAT, file didn't exist, no offset mode??, O_RDWR
         (true, false, false, None, OpenMode::ReadWrite) => panic!("Can you open at file without O_APPEND or O_TRUNC? Apparently."),
@@ -1020,4 +1046,113 @@ fn generate_file_event(
     //         }
     //     }
     // }
+}
+
+fn generate_file_event2(
+    file_creation_outcome: Option<FileCreateOutcome>,
+    full_path: PathBuf,
+    // is_file_create: bool,
+    pid: Pid,
+    open_mode: OpenMode,
+    syscall_outcome: SyscallOutcome,
+) -> Option<FileEventResult> {
+    // Trust me Dewey, you don't want no part of this.
+    if full_path.starts_with("/dev/pts")
+        || full_path.starts_with("/dev/null")
+        || full_path.starts_with("/etc/")
+        || full_path.starts_with("/proc/")
+        || full_path.is_dir()
+    {
+        return None;
+    }
+
+    enum OffsetFlag {
+        Append,
+        Trunc,
+    }
+
+    enum OpenMode {
+        ReadOnly,
+        ReadWrite,
+        WriteOnly,
+    }
+
+    enum Open {
+        AccessDenied,
+        AppendingToFile,
+        CreatedFileExclusively,
+        FileDidntExist,
+        TruncateFile,
+    }
+
+    enum Create {
+        AccessDenied,
+        CreatedFile,
+        FailureFileExisted,
+    }
+
+    let append_flag = false;
+    let creat_flag = false;
+    let excl_flag = false;
+    let file_existed_at_start = false;
+    let offset_flag = None;
+    let open_mode = OpenMode::ReadOnly;
+    let syscall_succeeded: Result<(), i32> = Ok(());
+    // TODO: !!!!
+    // In general, the behavior of O_EXCL is undefined if it is
+    //           used without O_CREAT.
+    // TODO: success of syscall?
+    // TODO: errors of syscalls?
+
+    if excl_flag && !creat_flag {
+        panic!("do not support for now.");
+    }
+
+    if create_flag {
+        if excl_flag {
+            if syscall_succeeded {
+                Create::CreatedFileExclusively
+            } else {
+                // EEXIST
+                return Create::AccessDenied | Create::FailureFileExisted;
+            }
+        } else {
+            if syscall_succeededs {
+                if file_existed_at_start {
+                    match (offset_flag, open_mode) {
+                        (_, OpenMode::ReadOnly) => panic!("O_CREAT + O_RDONLY AND success???"),
+                        (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
+                        (None, OpenMode::WriteOnly) => panic!("Do not support O_WRONLY without offset flag!"),
+                        (Some(OffsetFlag::Append), OpenMode::WriteOnly) => Open::AppendingToFile,
+                        (Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => Open::TruncateFile,
+
+                    }
+                } else {
+                    Create::CreatedFile
+                }
+            } else {
+                Create::AccessDenied
+            }
+        }
+    } else 
+    // Only opens file, no need to worry about it creating a file.
+    {
+        if syscall_succeeded {
+            match (offset_flag, open_mode) {
+                (_, OpenMode::ReadOnly) => panic!("Undefined by POSIX/LINUX."),
+                (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
+                (None, OpenMode::WriteOnly) => panic!("Do not support O_WRONLY without offset flag!"),
+                (Some(OffsetFlag::Append), OpenMode::WriteOnly) => Open::AppendingToFile,
+                (Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => Open::TruncateFile,
+
+            }
+        } else {
+            // match on syscall return for error number
+            // Cannot open file... EACESS ENOENT
+            return Open::AccessDenied | Open::FileDidntExist
+        }
+    }
+    match (file_existed_at_start, offset_flag, open_mode) {
+
+    }
 }

@@ -55,13 +55,16 @@ pub enum AccessFailure {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum FileEvent {
+    // "file did not exist"  ???
     Created,
     // O_TRUNC + O_CREAT, if the file is there, overwrite it
     // it stands out because it just blows away all the events
     // previous to it
     CreatedByOverwriting,
     Deleted,
+    // "file exists with these contents"
     Read,
+    // "file exists with these contents"
     Modified,
 }
 
