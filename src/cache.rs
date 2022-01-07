@@ -54,31 +54,21 @@ pub enum AccessFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum FileEvent {
-    // "file did not exist"  ???
-    Created,
-    // O_TRUNC + O_CREAT, if the file is there, overwrite it
-    // it stands out because it just blows away all the events
-    // previous to it
-    CreatedByOverwriting,
-    Deleted,
-    // "file exists with these contents"
-    Read,
-    // "file exists with these contents"
-    Modified,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum FileEventResult {
-    Successful(FileEvent),
-    // FileEvent = What did they try to do?
-    // AccessFailure = Why did they fail to do it?
-    Failed(FileEvent, AccessFailure),
+pub enum OpenSyscallEvent {
+    OpenAccessDenied,
+    OpenAppendingToFile,
+    OpenCreatedFileExclusively,
+    OpenFileDidntExist,
+    OpenTruncateFile,
+    CreateAccessDenied,
+    CreateCreatedFile,
+    CreateCreatedFileExclusively,
+    CreateFailedToCreateFileExclusively,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct FileInfo {
-    accesses: Vec<FileAccess>,
+    events: Vec<OpenSyscallEvent>,
     final_hash: Option<Vec<u8>>,
     starting_hash: Option<Vec<u8>>,
 }
@@ -86,14 +76,14 @@ struct FileInfo {
 impl FileInfo {
     fn new() -> FileInfo {
         FileInfo {
-            accesses: Vec::new(),
+            events: Vec::new(),
             final_hash: None,
             starting_hash: None,
         }
     }
 
-    fn add_access(&mut self, file_access: FileAccess) {
-        self.accesses.push(file_access);
+    fn add_event(&mut self, file_event: OpenSyscallEvent) {
+        self.events.push(file_event);
     }
 
     fn add_starting_hash(&mut self, hash: Vec<u8>) {
@@ -114,14 +104,14 @@ impl FileInfo {
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct ExecFileAccesses {
-    accesses: HashMap<PathBuf, FileInfo>,
+pub struct ExecFileEvents {
+    filename_to_info_map: HashMap<PathBuf, FileInfo>,
 }
 
-impl ExecFileAccesses {
-    pub fn new() -> ExecFileAccesses {
-        ExecFileAccesses {
-            accesses: HashMap::new(),
+impl ExecFileEvents {
+    pub fn new() -> ExecFileEvents {
+        ExecFileEvents {
+            filename_to_info_map: HashMap::new(),
         }
     }
 
@@ -129,20 +119,21 @@ impl ExecFileAccesses {
     pub fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
-        file_access: FileAccess,
+        file_event: OpenSyscallEvent,
         full_path: PathBuf,
     ) {
         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
         let _ = s.enter();
 
         s.in_scope(|| "in add_new_file_event");
-        if let Some(file_info) = self.accesses.get_mut(&full_path) {
-            file_info.add_access(file_access);
+        // First case, we already saw this file and now we are adding another event to it.
+        if let Some(file_info) = self.filename_to_info_map.get_mut(&full_path) {
+            file_info.add_event(file_event);
         } else {
             let mut file_info = FileInfo::new();
-            file_info.add_access(file_access);
+            file_info.add_event(file_event);
             s.in_scope(|| "adding access");
-            self.accesses.insert(full_path, file_info);
+            self.filename_to_info_map.insert(full_path, file_info);
         }
     }
 
@@ -165,7 +156,7 @@ impl ExecFileAccesses {
     // }
 
     fn add_starting_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
-        if let Some(file_info) = self.accesses.get_mut(&full_path) {
+        if let Some(file_info) = self.filename_to_info_map.get_mut(&full_path) {
             file_info.add_starting_hash(hash);
         } else {
             panic!("Should not be adding starting hash when full path entry is not present!");
@@ -173,7 +164,7 @@ impl ExecFileAccesses {
     }
 
     fn add_final_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
-        if let Some(file_info) = self.accesses.get_mut(&full_path) {
+        if let Some(file_info) = self.filename_to_info_map.get_mut(&full_path) {
             file_info.add_final_hash(hash);
         } else {
             panic!("Should not be adding final hash when full path entry is not present!");
@@ -304,7 +295,7 @@ pub enum Execution {
     // its kinda just pending. I want to know which one the root is
     // and doing it in the enum seems easiest.
     PendingRoot,
-    Successful(ChildExecutions, ExecFileAccesses, ExecMetadata),
+    Successful(ChildExecutions, ExecFileEvents, ExecMetadata),
 }
 
 impl Execution {
@@ -357,7 +348,8 @@ impl Execution {
     pub fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
-        file_access: FileAccess,
+        // OBVIOUSLY, will handle any syscall event eventually.
+        file_access: OpenSyscallEvent,
         full_path: PathBuf,
     ) {
         match self {
@@ -371,7 +363,7 @@ impl Execution {
         }
     }
 
-    fn file_events(&self) -> ExecFileAccesses {
+    fn file_events(&self) -> ExecFileEvents {
         match self {
             Execution::Successful(_, accesses, _) => accesses.clone(),
             Execution::Failed(_) => panic!("No file events for failed execution!"),
@@ -509,10 +501,15 @@ impl RcExecution {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);
     }
 
-    pub fn add_new_file_event(&self, caller_pid: Pid, file_access: FileAccess, full_path: PathBuf) {
+    pub fn add_new_file_event(
+        &self,
+        caller_pid: Pid,
+        file_event: OpenSyscallEvent,
+        full_path: PathBuf,
+    ) {
         self.execution
             .borrow_mut()
-            .add_new_file_event(caller_pid, file_access, full_path);
+            .add_new_file_event(caller_pid, file_event, full_path);
     }
 
     // pub fn add_output_file_hashes(&self, caller_pid: Pid) -> anyhow::Result<()> {
@@ -555,7 +552,7 @@ impl RcExecution {
         self.execution.borrow().execution_name()
     }
 
-    pub fn file_events(&self) -> ExecFileAccesses {
+    pub fn file_events(&self) -> ExecFileEvents {
         self.execution.borrow().file_events()
     }
 
