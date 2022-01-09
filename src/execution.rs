@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use libc::{
-    c_char, syscall, AT_SYMLINK_NOFOLLOW, CLONE_THREAD, O_ACCMODE, O_APPEND, O_CREAT, O_EXCL,
-    O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+    c_char, syscall, AT_FDCWD, AT_SYMLINK_NOFOLLOW, CLONE_THREAD, O_ACCMODE, O_APPEND, O_CREAT,
+    O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
 };
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_hash, ExecFileEvents, ExecMetadata, Execution, OpenMode, OpenSyscallEvent, RcExecution,
+    /*generate_hash,*/ ExecFileEvents, ExecMetadata, Execution, OpenMode, OpenSyscallEvent,
+    RcExecution,
 };
 
 use crate::context;
@@ -192,8 +193,8 @@ pub async fn trace_process(
                             starting_cwd,
                         )?;
 
-                        s.in_scope(|| debug!("Checking cache for execution"));
                         if curr_execution.is_pending_root() {
+                            // Old stuff:
                             //     if let Some(cached_exec) =
                             //         get_cached_root_execution(tracer.curr_proc, new_execution.clone())
                             //     {
@@ -223,10 +224,16 @@ pub async fn trace_process(
                             // call. And it's not parent doing a second execve, it must be the child doing an execve.
                             // If we check the pid of the curr_exec vs new_rcexecution they should differ.
                             // TODO: check the pids
+
+                            // Old stuff for adding child executions I think?
+                            // curr_execution.update_root(new_execution.clone());
+                            // let new_rcexecution = RcExecution::new(new_execution);
+                            // curr_execution.add_child_execution(new_rcexecution.clone());
+                            // curr_execution = new_rcexecution;
+
+                            // I *think* this is all I have to do to update the execution right now
+                            // because I am only worrying about ONE at a time.
                             curr_execution.update_root(new_execution.clone());
-                            let new_rcexecution = RcExecution::new(new_execution);
-                            curr_execution.add_child_execution(new_rcexecution.clone());
-                            curr_execution = new_rcexecution;
                         }
                         continue;
                     }
@@ -290,7 +297,7 @@ pub async fn trace_process(
                 let _ = sys_span.enter();
                 let retval = regs.retval::<i32>();
 
-                span!(Level::INFO, "Posthook", retval).in_scope(|| info!(""));
+                span!(Level::INFO, "Posthook", retval).in_scope(|| info!(name));
 
                 match name {
                     // "access" => handle_access(&curr_execution, &regs, &tracer)?,
@@ -504,7 +511,6 @@ fn handle_open(
     syscall_name: &str,
     tracer: &Ptracer,
 ) -> Result<()> {
-    let pid = tracer.curr_proc;
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -567,16 +573,20 @@ fn handle_open(
         .read_c_string(path_arg_bytes)
         .with_context(|| context!("Cannot read `open` path."))?;
     let file_name_arg = PathBuf::from(path_arg);
+    sys_span.in_scope(|| info!("File name arg: {:?}", file_name_arg));
 
-    // If a path is absolute it will start with "/"
-    // and so we don't need to call get_full_path().
+    // Uh why is this not calling get_full_path()? lmao
     let full_path = if file_name_arg.starts_with("/") {
         file_name_arg
     } else {
         match syscall_name {
             "openat" => {
                 let dir_fd = regs.arg1::<i32>();
-                let dir_path = path_from_fd(tracer.curr_proc, dir_fd)?;
+                let dir_path = if dir_fd == AT_FDCWD {
+                    execution.starting_cwd()
+                } else {
+                    path_from_fd(tracer.curr_proc, dir_fd)?
+                };
                 dir_path.join(file_name_arg)
             }
             _ => {
@@ -604,22 +614,22 @@ fn handle_open(
         syscall_outcome,
     );
 
-    let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
-        Some(generate_hash(
-            pid,
-            full_path.clone().into_os_string().into_string().unwrap(),
-        ))
-    } else {
-        None
-    };
+    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
+    //     Some(generate_hash(
+    //         pid,
+    //         full_path.clone().into_os_string().into_string().unwrap(),
+    //     ))
+    // } else {
+    //     None
+    // };
 
     if let Some(event) = open_syscall_event {
-        execution.add_new_file_event(tracer.curr_proc, event, full_path.clone());
+        execution.add_new_file_event(tracer.curr_proc, event, full_path);
     }
 
-    if let Some(hash) = starting_hash {
-        execution.add_starting_hash(full_path, hash);
-    }
+    // if let Some(hash) = starting_hash {
+    //     execution.add_starting_hash(full_path, hash);
+    // }
     Ok(())
 }
 
@@ -719,7 +729,13 @@ fn get_full_path(
             }
             "openat" => {
                 let dir_fd = regs.arg1::<i32>();
-                let dir_path = path_from_fd(tracer.curr_proc, dir_fd)?;
+                let dir_path = if dir_fd == AT_FDCWD {
+                    curr_execution.starting_cwd()
+                } else {
+                    path_from_fd(tracer.curr_proc, dir_fd)?
+                };
+
+                debug!("in get_full_path(), dir fd is: {}", dir_fd);
                 dir_path.join(file_name_arg)
             }
             s => panic!("Unhandled syscall in get_full_path(): {}!", s),
@@ -730,6 +746,7 @@ fn get_full_path(
 }
 
 fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
+    debug!("In path_from_fd()");
     let proc_path = format!("/proc/{}/fd/{}", pid, fd);
     let proc_path = readlink(proc_path.as_str())?;
     Ok(PathBuf::from(proc_path))
@@ -757,6 +774,7 @@ fn generate_open_syscall_file_event(
     if full_path.starts_with("/dev/pts")
         || full_path.starts_with("/dev/null")
         || full_path.starts_with("/etc/")
+        || full_path.starts_with("/lib/")
         || full_path.starts_with("/proc/")
         || full_path.is_dir()
     {
@@ -813,7 +831,12 @@ fn generate_open_syscall_file_event(
         // Only opens file, no need to worry about it creating a file.
         match syscall_outcome {
             Ok(_) => match (offset_flag, open_mode) {
-                (_, OpenMode::ReadOnly) => panic!("Undefined by POSIX/LINUX."),
+                // TODO: Hmm. There should be a case for
+                // (None, OpenMode::ReadOnly)
+                // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
+                // file existed.
+                (None, OpenMode::ReadOnly) => Some(OpenSyscallEvent::OpenReadOnly),
+                (Some(_), OpenMode::ReadOnly) => panic!("Undefined by POSIX/LINUX."),
                 (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
                 (None, OpenMode::WriteOnly) => {
                     panic!("Do not support O_WRONLY without offset flag!")
