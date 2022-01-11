@@ -529,7 +529,7 @@ fn handle_open(
     let (creat_flag, excl_flag, offset_mode, open_mode) = if syscall_name == "creat" {
         let creat_flag = true;
         let excl_flag = false;
-        let offset_mode = None;
+        let offset_mode = Some(OffsetFlag::Trunc);
         // creat() uses write only as the mode
         (creat_flag, excl_flag, offset_mode, OpenMode::WriteOnly)
     } else {
@@ -566,7 +566,7 @@ fn handle_open(
     let path_arg_bytes = match syscall_name {
         "creat" | "open" => regs.arg1::<*const c_char>(),
         "openat" => regs.arg2::<*const c_char>(),
-        _ => panic!("Not handling an appropriate system call from handle_open!"),
+        _ => panic!("Inappropriate system call in handle_open()!"),
     };
 
     let path_arg = tracer
@@ -575,26 +575,7 @@ fn handle_open(
     let file_name_arg = PathBuf::from(path_arg);
     sys_span.in_scope(|| info!("File name arg: {:?}", file_name_arg));
 
-    // Uh why is this not calling get_full_path()? lmao
-    let full_path = if file_name_arg.starts_with("/") {
-        file_name_arg
-    } else {
-        match syscall_name {
-            "openat" => {
-                let dir_fd = regs.arg1::<i32>();
-                let dir_path = if dir_fd == AT_FDCWD {
-                    execution.starting_cwd()
-                } else {
-                    path_from_fd(tracer.curr_proc, dir_fd)?
-                };
-                dir_path.join(file_name_arg)
-            }
-            _ => {
-                let cwd = execution.starting_cwd();
-                cwd.join(file_name_arg)
-            }
-        }
-    };
+    let full_path = get_full_path(execution, syscall_name, tracer)?;
     sys_span.in_scope(|| info!("Full path: {:?}", full_path));
 
     // We need to check the current exec's map of files it has accessed,
@@ -603,7 +584,6 @@ fn handle_open(
     // If it hasn't we need to add the full path -> file struct
     // to the vector of files this exec has accessed.
 
-    // TODO: lol make this a function
     let open_syscall_event = generate_open_syscall_file_event(
         creat_flag,
         excl_flag,
