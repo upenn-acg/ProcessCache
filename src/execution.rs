@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    /*generate_hash,*/ ExecFileEvents, ExecMetadata, Execution, OpenMode, OpenSyscallEvent,
-    RcExecution,
+    /*generate_hash,*/ ExecFileEvents, ExecMetadata, Execution, OpenMode, RcExecution,
+    SyscallEvent,
 };
 
 use crate::context;
@@ -300,7 +300,7 @@ pub async fn trace_process(
                 span!(Level::INFO, "Posthook", retval).in_scope(|| info!(name));
 
                 match name {
-                    // "access" => handle_access(&curr_execution, &regs, &tracer)?,
+                    "access" => handle_access(&curr_execution, &tracer)?,
                     "creat" | "openat" | "open" => {
                         handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                     }
@@ -421,40 +421,56 @@ pub async fn trace_process(
 }
 
 // Handling the access system call.
-// fn handle_access(execution: &RcExecution, regs: &Regs<Unmodified>, tracer: &Ptracer) -> Result<()> {
-// unimplemented!();
-// let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
-// sys_span.in_scope(|| {
-//     debug!("File metadata event: (access)");
-// });
-// let ret_val = regs.retval::<i32>();
-// // retval = 0 is success for this syscall.
-// let syscall_succeeded = ret_val == 0;
-// let bytes = regs.arg1::<*const c_char>();
-// let register_path = tracer
-//     .read_c_string(bytes)
-//     .with_context(|| context!("Cannot read `access` path."))?;
-// let syscall_name = String::from("access");
-// debug!("register path: {}", register_path);
+fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
 
-// let path_arg = PathBuf::from(register_path);
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_access()"))?;
+    let ret_val = regs.retval::<i32>();
+    // retval = 0 is success for this syscall.
+    let syscall_name = String::from("access");
+    let full_path = get_full_path(execution, &syscall_name, tracer)?;
 
-// let full_path = get_full_path(Some(PathArg::Path(path_arg)), tracer.curr_proc)?;
-// debug!("made it past get_full_path");
+    sys_span.in_scope(|| {
+        debug!("Generating access syscall event!");
+    });
+    let access_syscall_event = if full_path.starts_with("/dev/pts")
+        || full_path.starts_with("/dev/null")
+        || full_path.starts_with("/etc/")
+        || full_path.starts_with("/lib/")
+        || full_path.starts_with("/proc/")
+        || full_path.is_dir()
+    {
+        None
+    } else {
+        match ret_val {
+            0 => Some(SyscallEvent::Access),
+            -2 => Some(SyscallEvent::AccessFileDidntExist),
+            -13 => Some(SyscallEvent::AccessAccessDenied),
+            e => panic!("Unexpected error returned by access syscall!: {}", e),
+        }
+    };
 
-// let file_access = generate_file_access(
-//     full_path,
-//     IO::Input,
-//     tracer.curr_proc,
-//     syscall_name,
-//     syscall_succeeded,
-// );
+    if let Some(event) = access_syscall_event {
+        execution.add_new_file_event(tracer.curr_proc, event, full_path);
+    }
 
-// if let Some(access) = file_access {
-//     execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
-// }
-// Ok(())
-// }
+    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
+    //     Some(generate_hash(
+    //         pid,
+    //         full_path.clone().into_os_string().into_string().unwrap(),
+    //     ))
+    // } else {
+    //     None
+    // };
+
+    // if let Some(hash) = starting_hash {
+    //     execution.add_starting_hash(full_path, hash);
+    // }
+    Ok(())
+}
 
 fn create_new_execution(
     args: Vec<String>,
@@ -518,7 +534,7 @@ fn handle_open(
     // indicates success.
     let regs = tracer
         .get_registers()
-        .with_context(|| context!("Failed to get regs in exec event"))?;
+        .with_context(|| context!("Failed to get regs in handle_open()"))?;
     let ret_val = regs.retval::<i32>();
     let syscall_outcome = if ret_val > 0 {
         Ok(ret_val)
@@ -689,7 +705,7 @@ fn get_full_path(
         .with_context(|| context!("Failed to get regs in exec event"))?;
 
     let path_arg_bytes = match syscall_name {
-        "creat" | "open" => regs.arg1::<*const c_char>(),
+        "access" | "creat" | "open" => regs.arg1::<*const c_char>(),
         "openat" => regs.arg2::<*const c_char>(),
         _ => panic!("Not handling an appropriate system call in get_full_path!"),
     };
@@ -703,7 +719,7 @@ fn get_full_path(
         file_name_arg
     } else {
         match syscall_name {
-            "creat" | "open" => {
+            "access" | "creat" | "open" => {
                 let cwd = curr_execution.starting_cwd();
                 cwd.join(file_name_arg)
             }
@@ -749,7 +765,7 @@ fn generate_open_syscall_file_event(
     offset_flag: Option<OffsetFlag>,
     open_mode: OpenMode,
     syscall_outcome: Result<i32, i32>,
-) -> Option<OpenSyscallEvent> {
+) -> Option<SyscallEvent> {
     // Trust me Dewey, you don't want no part of this.
     if full_path.starts_with("/dev/pts")
         || full_path.starts_with("/dev/null")
@@ -768,10 +784,10 @@ fn generate_open_syscall_file_event(
     if creat_flag {
         if excl_flag {
             match syscall_outcome {
-                Ok(_) => Some(OpenSyscallEvent::OpenCreatedFileExclusively),
+                Ok(_) => Some(SyscallEvent::CreateCreatedFileExclusively),
                 Err(ret_val) => match ret_val {
-                    -13 => Some(OpenSyscallEvent::CreateAccessDenied),
-                    -17 => Some(OpenSyscallEvent::CreateFailedToCreateFileExclusively),
+                    -13 => Some(SyscallEvent::CreateAccessDenied),
+                    -17 => Some(SyscallEvent::CreateFailedToCreateFileExclusively),
                     _ => panic!(
                         "O_CREAT + O_EXCL, syscall failed, but not for EACCES or EEXIST :{}",
                         ret_val
@@ -791,18 +807,18 @@ fn generate_open_syscall_file_event(
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
                             (Some(OffsetFlag::Append), OpenMode::WriteOnly) => {
-                                Some(OpenSyscallEvent::OpenAppendingToFile)
+                                Some(SyscallEvent::OpenAppendingToFile)
                             }
                             (Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => {
-                                Some(OpenSyscallEvent::OpenTruncateFile)
+                                Some(SyscallEvent::OpenTruncateFile)
                             }
                         }
                     } else {
-                        Some(OpenSyscallEvent::CreateCreatedFile)
+                        Some(SyscallEvent::CreateCreatedFile)
                     }
                 }
                 Err(ret_val) => match ret_val {
-                    -13 => Some(OpenSyscallEvent::CreateAccessDenied),
+                    -13 => Some(SyscallEvent::CreateAccessDenied),
                     _ => panic!("O_CREAT and failed but not because access denied?"),
                 },
             }
@@ -815,24 +831,24 @@ fn generate_open_syscall_file_event(
                 // (None, OpenMode::ReadOnly)
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
-                (None, OpenMode::ReadOnly) => Some(OpenSyscallEvent::OpenReadOnly),
+                (None, OpenMode::ReadOnly) => Some(SyscallEvent::OpenReadOnly),
                 (Some(_), OpenMode::ReadOnly) => panic!("Undefined by POSIX/LINUX."),
                 (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
                 (None, OpenMode::WriteOnly) => {
                     panic!("Do not support O_WRONLY without offset flag!")
                 }
                 (Some(OffsetFlag::Append), OpenMode::WriteOnly) => {
-                    Some(OpenSyscallEvent::OpenAppendingToFile)
+                    Some(SyscallEvent::OpenAppendingToFile)
                 }
                 (Some(OffsetFlag::Trunc), OpenMode::WriteOnly) => {
-                    Some(OpenSyscallEvent::OpenTruncateFile)
+                    Some(SyscallEvent::OpenTruncateFile)
                 }
             },
             Err(ret_val) => match ret_val {
                 // ENOENT
-                -2 => Some(OpenSyscallEvent::OpenFileDidntExist),
+                -2 => Some(SyscallEvent::OpenFileDidntExist),
                 // EACCES
-                -13 => Some(OpenSyscallEvent::OpenAccessDenied),
+                -13 => Some(SyscallEvent::OpenAccessDenied),
                 _ => panic!(
                     "Failed to open file NOT because ENOENT or EACCES, err num: {}",
                     ret_val

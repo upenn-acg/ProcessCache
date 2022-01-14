@@ -48,11 +48,17 @@ pub enum AccessFailure {
     Permissions,
 }
 
+// Successful and failing events.
+// "Open" meaning not using O_CREAT
+// "Create" meaning using O_CREAT
+// Current syscalls covered: creat, open, openat, access
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum OpenSyscallEvent {
+pub enum SyscallEvent {
+    Access,
+    AccessAccessDenied,
+    AccessFileDidntExist,
     OpenAccessDenied,
     OpenAppendingToFile,
-    OpenCreatedFileExclusively,
     OpenFileDidntExist,
     OpenReadOnly,
     OpenTruncateFile,
@@ -64,7 +70,7 @@ pub enum OpenSyscallEvent {
 
 // #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 // struct FileInfo {
-//     events: Vec<OpenSyscallEvent>,
+//     events: Vec<SyscallEvent>,
 //     final_hash: Option<Vec<u8>>,
 //     starting_hash: Option<Vec<u8>>,
 // }
@@ -78,7 +84,7 @@ pub enum OpenSyscallEvent {
 //         }
 //     }
 
-//     fn add_event(&mut self, file_event: OpenSyscallEvent) {
+//     fn add_event(&mut self, file_event: SyscallEvent) {
 //         self.events.push(file_event);
 //     }
 
@@ -101,7 +107,7 @@ pub enum OpenSyscallEvent {
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ExecFileEvents {
-    filename_to_events_map: HashMap<PathBuf, Vec<OpenSyscallEvent>>,
+    filename_to_events_map: HashMap<PathBuf, Vec<SyscallEvent>>,
 }
 
 impl ExecFileEvents {
@@ -115,7 +121,7 @@ impl ExecFileEvents {
     pub fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
-        file_event: OpenSyscallEvent,
+        file_event: SyscallEvent,
         full_path: PathBuf,
     ) {
         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
@@ -344,7 +350,7 @@ impl Execution {
         &mut self,
         caller_pid: Pid,
         // OBVIOUSLY, will handle any syscall event eventually.
-        file_access: OpenSyscallEvent,
+        file_access: SyscallEvent,
         full_path: PathBuf,
     ) {
         match self {
@@ -499,7 +505,7 @@ impl RcExecution {
     pub fn add_new_file_event(
         &self,
         caller_pid: Pid,
-        file_event: OpenSyscallEvent,
+        file_event: SyscallEvent,
         full_path: PathBuf,
     ) {
         self.execution
