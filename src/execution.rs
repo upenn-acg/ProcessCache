@@ -304,9 +304,8 @@ pub async fn trace_process(
                     "creat" | "openat" | "open" => {
                         handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                     }
-                    // "fstat" | "newfstatat" | "stat" => {
-                    //     handle_stat(&curr_execution, &regs, name, &tracer)?
-                    // }
+                    // TODO: newfstatat
+                    "stat" => handle_stat(&curr_execution, name, &tracer)?,
                     _ => {}
                 }
             }
@@ -629,72 +628,60 @@ fn handle_open(
     Ok(())
 }
 
+// Handling the stat system call.
+fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_stat()"))?;
+    let ret_val = regs.retval::<i32>();
+    // retval = 0 is success for this syscall.
+    let full_path = get_full_path(execution, syscall_name, tracer)?;
+
+    sys_span.in_scope(|| {
+        debug!("Generating stat syscall event!");
+    });
+    let stat_syscall_event = if full_path.starts_with("/dev/pts")
+        || full_path.starts_with("/dev/null")
+        || full_path.starts_with("/etc/")
+        || full_path.starts_with("/lib/")
+        || full_path.starts_with("/proc/")
+        || full_path.is_dir()
+    {
+        None
+    } else {
+        match ret_val {
+            0 => Some(SyscallEvent::Stat),
+            -2 => Some(SyscallEvent::StatFileDidntExist),
+            -13 => Some(SyscallEvent::StatAccessDenied),
+            e => panic!("Unexpected error returned by stat syscall!: {}", e),
+        }
+    };
+
+    if let Some(event) = stat_syscall_event {
+        execution.add_new_file_event(tracer.curr_proc, event, full_path);
+    }
+
+    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
+    //     Some(generate_hash(
+    //         pid,
+    //         full_path.clone().into_os_string().into_string().unwrap(),
+    //     ))
+    // } else {
+    //     None
+    // };
+
+    // if let Some(hash) = starting_hash {
+    //     execution.add_starting_hash(full_path, hash);
+    // }
+    Ok(())
+}
+
 // Currently: stat, fstat, newfstat64
 // We consider these syscalls to be inputs.
 // Well the files they are acting upon anyway!
-// fn handle_stat(
-//     execution: &RcExecution,
-//     regs: &Regs<Unmodified>,
-//     syscall_name: &str,
-//     tracer: &Ptracer,
-// ) -> Result<()> {
-//     unimplemented!();
-// let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
-// let _ = sys_span.enter();
-// sys_span.in_scope(|| {
-//     debug!("File stat event: ({})", syscall_name);
-// });
-// // Return value == 0 means success
-// let ret_val: i32 = regs.retval();
-// let syscall_succeeded = ret_val == 0;
-
-// let full_path_arg = if syscall_name == "fstat" {
-//     let fd = regs.arg1::<i32>();
-//     if syscall_succeeded {
-//         // TODO: Do something about stdin, stderr, stdout???
-//         if fd < 3 {
-//             return Ok(());
-//         }
-//         Some(PathArg::Fd(3))
-//     } else {
-//         None
-//     }
-// } else {
-//     // newstatat, stat
-//     // TODO: handle lstat? Or don't? I don't know? What **do** I know?
-//     // TODO: handle DIRFD in newfstatat
-//     let arg: *const c_char = match syscall_name {
-//         "stat" => regs.arg1(),
-//         // newstatat
-//         "newfstatat" => regs.arg2(),
-//         other => bail!(context!("Unhandled syscall: {}", other)),
-//     };
-
-//     let path = tracer
-//         .read_c_string(arg)
-//         .with_context(|| context!("Can't get path from path arg."))?;
-//     Some(PathArg::Path(PathBuf::from(path)))
-// };
-
-// // Either way we are calling this function with a PathArg and it's **generic** over the PathArg enum :3
-// let full_path = get_full_path(full_path_arg, tracer.curr_proc)?;
-
-// let syscall_name = String::from(syscall_name);
-// let file_event = generate_file_access(
-//     full_path,
-//     IO::Input,
-//     tracer.curr_proc,
-//     syscall_name,
-//     syscall_succeeded,
-// );
-
-// if let Some(access) = file_event {
-//     execution.add_new_file_event(tracer.curr_proc, access, IO::Input);
-// }
-
-// Ok(())
-// }
-
 fn get_full_path(
     curr_execution: &RcExecution,
     syscall_name: &str,
@@ -705,7 +692,7 @@ fn get_full_path(
         .with_context(|| context!("Failed to get regs in exec event"))?;
 
     let path_arg_bytes = match syscall_name {
-        "access" | "creat" | "open" => regs.arg1::<*const c_char>(),
+        "access" | "creat" | "open" | "stat" => regs.arg1::<*const c_char>(),
         "openat" => regs.arg2::<*const c_char>(),
         _ => panic!("Not handling an appropriate system call in get_full_path!"),
     };
@@ -719,7 +706,7 @@ fn get_full_path(
         file_name_arg
     } else {
         match syscall_name {
-            "access" | "creat" | "open" => {
+            "access" | "creat" | "open" | "stat" => {
                 let cwd = curr_execution.starting_cwd();
                 cwd.join(file_name_arg)
             }
@@ -818,8 +805,9 @@ fn generate_open_syscall_file_event(
                     }
                 }
                 Err(ret_val) => match ret_val {
+                    -2 => Some(SyscallEvent::CreateFailedPathComponentDoesntExist),
                     -13 => Some(SyscallEvent::CreateAccessDenied),
-                    _ => panic!("O_CREAT and failed but not because access denied?"),
+                    _ => panic!("O_CREAT and failed but not because access denied or path component doesn't exist?"),
                 },
             }
         }

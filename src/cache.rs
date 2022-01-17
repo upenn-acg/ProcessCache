@@ -62,10 +62,14 @@ pub enum SyscallEvent {
     OpenFileDidntExist,
     OpenReadOnly,
     OpenTruncateFile,
-    CreateAccessDenied,
+    CreateAccessDenied, // Not sure this actually happens...
     CreateCreatedFile,
     CreateCreatedFileExclusively,
+    CreateFailedPathComponentDoesntExist,
     CreateFailedToCreateFileExclusively,
+    Stat,
+    StatAccessDenied,
+    StatFileDidntExist,
 }
 
 // #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
