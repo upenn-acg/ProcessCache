@@ -304,19 +304,19 @@ pub enum Execution {
 }
 
 impl Execution {
-    // pub fn add_child_execution(&mut self, child_execution: RcExecution) {
-    //     match self {
-    //         Execution::Failed(_) => {
-    //             panic!("Trying to add a child process to a failed execution!")
-    //         }
-    //         Execution::PendingRoot => {
-    //             panic!("Trying to add a child process to a pending execution!")
-    //         }
-    //         Execution::Successful(child_execs, _, _) => {
-    //             child_execs.push(child_execution);
-    //         }
-    //     }
-    // }
+    pub fn add_child_execution(&mut self, child_execution: RcExecution) {
+        match self {
+            Execution::Failed(_) => {
+                panic!("Trying to add a child process to a failed execution!")
+            }
+            Execution::PendingRoot => {
+                panic!("Trying to add a child process to a pending execution!")
+            }
+            Execution::Successful(child_execs, _, _) => {
+                child_execs.push(child_execution);
+            }
+        }
+    }
 
     pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
         match self {
@@ -496,11 +496,11 @@ impl RcExecution {
         }
     }
 
-    // pub fn add_child_execution(&self, child_execution: RcExecution) {
-    //     self.execution
-    //         .borrow_mut()
-    //         .add_child_execution(child_execution);
-    // }
+    pub fn add_child_execution(&self, child_execution: RcExecution) {
+        self.execution
+            .borrow_mut()
+            .add_child_execution(child_execution);
+    }
 
     pub fn add_exit_code(&self, code: i32, exec_pid: Pid) {
         self.execution.borrow_mut().add_exit_code(code, exec_pid);

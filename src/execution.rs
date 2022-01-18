@@ -72,6 +72,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // );
 
     println!("executions: {:?}", first_execution);
+
     Ok(())
 }
 
@@ -194,46 +195,12 @@ pub async fn trace_process(
                         )?;
 
                         if curr_execution.is_pending_root() {
-                            // Old stuff:
-                            //     if let Some(cached_exec) =
-                            //         get_cached_root_execution(tracer.curr_proc, new_execution.clone())
-                            //     {
-                            //         let new_exec_succeeded = new_execution.is_successful();
-                            //         let cached_exec_succeeded = cached_exec.is_successful();
-
-                            //         // If we have that the execution failed when we had cached it, but this time it succeeded,
-                            //         // let's just panic for now. Later, I imagine we want to maybe replace the failed
-                            //         // cached execution with a successful one? Like we'd record this new run. But idk.
-                            //         if !cached_exec_succeeded && new_exec_succeeded {
-                            //             panic!("Cached version failed, but running this time the execution succeeds!!");
-                            //         }
-
-                            //         // We don't skip if it failed. We just let it fail.
-                            //         if cached_exec_succeeded && new_exec_succeeded {
-                            //             s.in_scope(|| info!("Initiating skip of execution!"));
-                            //             skip_execution = true;
-                            //             s.in_scope(|| info!("Serving outputs"));
-                            //             serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
-                            //         }
-                            //     } else {
-                            //         curr_execution.update_root(new_execution);
-                            //     }
-                            // } else {
-                            // We panic in create_new_execution() if a process is trying to execve a second time.
-                            // So if we get here, it's not pending root, it's at least the parent after it's execve
-                            // call. And it's not parent doing a second execve, it must be the child doing an execve.
-                            // If we check the pid of the curr_exec vs new_rcexecution they should differ.
-                            // TODO: check the pids
-
-                            // Old stuff for adding child executions I think?
-                            // curr_execution.update_root(new_execution.clone());
-                            // let new_rcexecution = RcExecution::new(new_execution);
-                            // curr_execution.add_child_execution(new_rcexecution.clone());
-                            // curr_execution = new_rcexecution;
-
-                            // I *think* this is all I have to do to update the execution right now
-                            // because I am only worrying about ONE at a time.
+                            // If the curr execution is pending root, just update the
+                            // the root.
                             curr_execution.update_root(new_execution.clone());
+                        } else {
+                            let new_rcexecution = RcExecution::new(new_execution);
+                            curr_execution.add_child_execution(new_rcexecution.clone());
                         }
                         continue;
                     }
@@ -657,6 +624,7 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
             || path.starts_with("/etc/")
             || path.starts_with("/lib/")
             || path.starts_with("/proc/")
+            || path.starts_with("/usr/")
             || path.is_dir()
         {
             None
@@ -771,6 +739,7 @@ fn generate_open_syscall_file_event(
         || full_path.starts_with("/etc/")
         || full_path.starts_with("/lib/")
         || full_path.starts_with("/proc/")
+        || full_path.starts_with("/usr/")
         || full_path.is_dir()
     {
         return None;
