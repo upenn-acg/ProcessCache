@@ -305,7 +305,7 @@ pub async fn trace_process(
                         handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                     }
                     // TODO: newfstatat
-                    "stat" => handle_stat(&curr_execution, name, &tracer)?,
+                    "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
                     _ => {}
                 }
             }
@@ -638,30 +638,42 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
         .with_context(|| context!("Failed to get regs in handle_stat()"))?;
     let ret_val = regs.retval::<i32>();
     // retval = 0 is success for this syscall.
-    let full_path = get_full_path(execution, syscall_name, tracer)?;
-
-    sys_span.in_scope(|| {
-        debug!("Generating stat syscall event!");
-    });
-    let stat_syscall_event = if full_path.starts_with("/dev/pts")
-        || full_path.starts_with("/dev/null")
-        || full_path.starts_with("/etc/")
-        || full_path.starts_with("/lib/")
-        || full_path.starts_with("/proc/")
-        || full_path.is_dir()
-    {
-        None
-    } else {
-        match ret_val {
-            0 => Some(SyscallEvent::Stat),
-            -2 => Some(SyscallEvent::StatFileDidntExist),
-            -13 => Some(SyscallEvent::StatAccessDenied),
-            e => panic!("Unexpected error returned by stat syscall!: {}", e),
+    let full_path = match syscall_name {
+        "fstat" => {
+            let fd = regs.arg1::<i32>();
+            if fd > 2 {
+                Some(path_from_fd(tracer.curr_proc, fd)?)
+            } else {
+                None
+            }
         }
+        "stat" => Some(get_full_path(execution, syscall_name, tracer)?),
+        _ => panic!("Calling unrecognized syscall in handle_stat()"),
     };
 
-    if let Some(event) = stat_syscall_event {
-        execution.add_new_file_event(tracer.curr_proc, event, full_path);
+    let stat_syscall_event = if let Some(path) = &full_path {
+        if path.starts_with("/dev/pts")
+            || path.starts_with("/dev/null")
+            || path.starts_with("/etc/")
+            || path.starts_with("/lib/")
+            || path.starts_with("/proc/")
+            || path.is_dir()
+        {
+            None
+        } else {
+            match ret_val {
+                0 => Some(SyscallEvent::Stat),
+                -2 => Some(SyscallEvent::StatFileDidntExist),
+                -13 => Some(SyscallEvent::StatAccessDenied),
+                e => panic!("Unexpected error returned by stat syscall!: {}", e),
+            }
+        }
+    } else {
+        None
+    };
+
+    if let (Some(path), Some(event)) = (full_path, stat_syscall_event) {
+        execution.add_new_file_event(tracer.curr_proc, event, path);
     }
 
     // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
