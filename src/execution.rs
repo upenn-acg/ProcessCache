@@ -6,6 +6,7 @@ use libc::{
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
@@ -66,13 +67,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     //     first_execution.child_executions().len()
     // );
 
-    // println!(
-    //     "file events: {:?}",
-    //     first_execution.file_events()
-    // );
-
-    println!("executions: {:?}", first_execution);
-
+    // Print all file event lists for the execution.
+    first_execution.print_pathbuf_to_file_event_lists();
+    // println!("First execution: {:?}", first_execution);
     Ok(())
 }
 
@@ -201,6 +198,7 @@ pub async fn trace_process(
                         } else {
                             let new_rcexecution = RcExecution::new(new_execution);
                             curr_execution.add_child_execution(new_rcexecution.clone());
+                            curr_execution = new_rcexecution;
                         }
                         continue;
                     }
@@ -412,9 +410,10 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
         None
     } else {
         match ret_val {
-            0 => Some(SyscallEvent::Access),
+            // TODO: F_OK, one or more of R_OK, W_OK, X_OK
+            0 => Some(SyscallEvent::Access(vec![0])),
             -2 => Some(SyscallEvent::AccessFileDidntExist),
-            -13 => Some(SyscallEvent::AccessAccessDenied),
+            -13 => Some(SyscallEvent::AccessAccessDenied(vec![0])),
             e => panic!("Unexpected error returned by access syscall!: {}", e),
         }
     };

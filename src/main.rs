@@ -148,12 +148,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
-    loader.intercept(libc::SYS_pread64)?;
-    loader.intercept(libc::SYS_read)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
-    loader.intercept(libc::SYS_write)?;
-    loader.intercept(libc::SYS_writev)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
@@ -206,6 +202,10 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getcwd)?;
     loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_getdents64)?;
+    loader.let_pass(libc::SYS_pread64)?;
+    loader.let_pass(libc::SYS_read)?;
+    loader.let_pass(libc::SYS_write)?;
+    loader.let_pass(libc::SYS_writev)?;
     loader.let_pass(libc::SYS_wait4)?;
 
     // TODO: Handle for empty main

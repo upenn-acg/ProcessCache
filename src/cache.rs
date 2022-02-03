@@ -1,3 +1,4 @@
+use libc::c_int;
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
@@ -6,7 +7,6 @@ use std::collections::HashMap;
 // use std::io::Read;
 use std::rc::Rc;
 use std::{cell::RefCell, path::PathBuf};
-
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -54,8 +54,10 @@ pub enum AccessFailure {
 // Current syscalls covered: creat, open, openat, access
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum SyscallEvent {
-    Access,
-    AccessAccessDenied,
+    // Access can check for F_OK OR one OR MORE of R_OK,W_OK, X_OK so
+    // should take in a vec of ints (mode is an int as a parameter to access syscall)
+    Access(Vec<c_int>),
+    AccessAccessDenied(Vec<c_int>),
     AccessFileDidntExist,
     OpenAccessDenied,
     OpenAppendingToFile,
@@ -71,6 +73,63 @@ pub enum SyscallEvent {
     StatAccessDenied,
     StatFileDidntExist,
 }
+
+// Preconditions consist of:
+// existance
+// permissions
+enum Precondition {
+    FileExisted, // WITH CONTENTS (i.e. hash)
+    FileDidntExist,
+    ExecAccess(PathBuf),
+    ReadAccess(PathBuf),
+    WriteAccess(PathBuf),
+    NoExecAccess(PathBuf),
+    NoReadAccess(PathBuf),
+    NoWriteAccess(PathBuf),
+    StatStructMatches, // at least st_size and st_mtime and maybe st_ctime? also set st_atime to 0?
+    FailedAccessRetValMatches,
+    FailedStatRetValMatches,
+    IHaveNoIdea,
+    None,
+}
+
+// Given the FIRST EVENT in the EVENT LIST
+// for the resource, get the PRECONDITION.
+// Maybe preconditions
+/*fn generate_precondition(full_path: PathBuf, syscall_event: SyscallEvent) -> Vec<Precondition> {
+    match syscall_event {
+        // First the Access ones
+        SyscallEvent::AccessCanExec => vec![Precondition::FileExisted, Precondition::ExecAccess(full_path)],
+        SyscallEvent::AccessCanRead => vec![Precondition::FileExisted, Precondition::ReadAccess(full_path)],
+        SyscallEvent::AccessCanWrite => vec![Precondition::FileExisted, Precondition::WriteAccess(full_path)],
+
+        // Failing Access ones
+        SyscallEvent::AccessAccessDeniedExec => vec![Precondition::FileExisted, Precondition::NoExecAccess(full_path)],
+        SyscallEvent::AccessAccessDeniedRead => vec![Precondition::FileExisted, Precondition::NoReadAccess(full_path)],
+        SyscallEvent::AccessAccessDeniedWrite => vec![Precondition::FileExisted, Precondition::NoWriteAccess(full_path)],
+        SyscallEvent::AccessFileDidntExist => vec![Precondition::FileDidntExist, Precondition::FailedAccessRetValMatches],
+
+        SyscallEvent::CreateCreatedFile => vec![Precondition::FileDidntExist, Precondition::WriteAccess(full_path)],
+        SyscallEvent::CreateCreatedFileExclusively => vec![Precondition::FileDidntExist, Precondition::WriteAccess(full_path)],
+        // TODO: Not sure what precondition should be
+        SyscallEvent::CreateAccessDenied => vec![Precondition::IHaveNoIdea],
+        SyscallEvent::CreateFailedPathComponentDoesntExist => vec![Precondition::IHaveNoIdea],
+        SyscallEvent::CreateFailedToCreateFileExclusively => vec![Precondition::FileExisted],
+
+        // I am not sure how to pinpoint what access is denied
+        SyscallEvent::OpenAccessDenied => vec![Precondition::IHaveNoIdea],
+        SyscallEvent::OpenAppendingToFile => vec![Precondition::FileExisted, Precondition::WriteAccess(full_path)],
+        // Or what part of the path didn't exist or if the file didn't exist, how do I know which?
+        SyscallEvent::OpenFileDidntExist => vec![Precondition::IHaveNoIdea],
+        SyscallEvent::OpenReadOnly => vec![Precondition::FileExisted, Precondition::ReadAccess(full_path)],
+        SyscallEvent::OpenTruncateFile => vec![Precondition::None],
+
+
+        // Really starting to think "file existed" is implied by a lot of the other preconditions
+        SyscallEvent::Stat => vec![Precondition::FileExisted, Precondition::StatStructMatches],
+        SyscallEvent::StatAccessDenied | SyscallEvent::StatFileDidntExist => vec![Precondition::FailedStatRetValMatches],
+    }
+}*/
 
 // #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 // struct FileInfo {
@@ -140,6 +199,13 @@ impl ExecFileEvents {
             s.in_scope(|| "adding event");
             self.filename_to_events_map.insert(full_path, event_list);
         }
+    }
+
+    fn file_event_list(&self) -> &HashMap<PathBuf, Vec<SyscallEvent>> {
+        let s = span!(Level::INFO, stringify!(file_event_list));
+        let _ = s.enter();
+
+        &self.filename_to_events_map
     }
 
     // At the end of a successful execution, we get the hash of each output
@@ -368,13 +434,13 @@ impl Execution {
         }
     }
 
-    // fn file_events(&self) -> ExecFileEvents {
-    //     match self {
-    //         Execution::Successful(_, accesses, _) => accesses.clone(),
-    //         Execution::Failed(_) => panic!("No file events for failed execution!"),
-    //         Execution::PendingRoot => panic!("No file events for pending root!"),
-    //     }
-    // }
+    fn exec_file_event_map(&self) -> &HashMap<PathBuf, Vec<SyscallEvent>> {
+        match self {
+            Execution::Successful(_, accesses, _) => accesses.file_event_list(),
+            Execution::Failed(_) => panic!("No file events for failed execution!"),
+            Execution::PendingRoot => panic!("No file events for pending root!"),
+        }
+    }
     // pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
     //     match self {
     //         Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
@@ -426,17 +492,17 @@ impl Execution {
         }
     }
 
-    // fn child_executions(&self) -> Vec<RcExecution> {
-    //     match self {
-    //         Execution::Successful(children, _, _) => children.clone(),
-    //         Execution::Failed(_) => {
-    //             panic!("Should not be getting child execs from failed execution!")
-    //         }
-    //         Execution::PendingRoot => {
-    //             panic!("Should not be trying to get child execs from pending root execution!")
-    //         }
-    //     }
-    // }
+    fn child_executions(&self) -> Vec<RcExecution> {
+        match self {
+            Execution::Successful(children, _, _) => children.clone(),
+            Execution::Failed(_) => {
+                panic!("Should not be getting child execs from failed execution!")
+            }
+            Execution::PendingRoot => {
+                panic!("Should not be trying to get child execs from pending root execution!")
+            }
+        }
+    }
 
     // pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
     //     match self {
@@ -481,6 +547,7 @@ impl Execution {
         }
     }
 }
+
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
 // enum.
@@ -557,9 +624,9 @@ impl RcExecution {
     //     self.execution.borrow().execution_name()
     // }
 
-    // pub fn file_events(&self) -> ExecFileEvents {
-    //     self.execution.borrow().file_events()
-    // }
+    fn exec_file_event_map(&self) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+        self.execution.borrow().exec_file_event_map().clone()
+    }
 
     pub fn is_pending_root(&self) -> bool {
         self.execution.borrow().is_pending_root()
@@ -568,6 +635,33 @@ impl RcExecution {
     // pub fn is_successful(&self) -> bool {
     //     self.execution.borrow().is_successful()
     // }
+
+    // Print all file event lists for the execution.
+    // TODO: This doesn't print the child exec stuff.
+    // Need to make a function to get the child execs as well.
+    // For now, one layer deep is ok.
+    pub fn print_pathbuf_to_file_event_lists(&self) {
+        println!("First execution.");
+        let exec_file_event_map = self.exec_file_event_map();
+        for (full_path, event_list) in exec_file_event_map {
+            println!("Resource path: {:?}", full_path);
+            println!("Event list: {:?}", event_list);
+            println!();
+        }
+
+        println!();
+        println!();
+
+        for child in self.execution.borrow().child_executions() {
+            println!("Child execution: {}", child.caller_pid());
+            let child_exec_file_event_map = child.exec_file_event_map();
+            for (full_path, event_list) in child_exec_file_event_map {
+                println!("Resource path: {:?}", full_path);
+                println!("Event list: {:?}", event_list);
+                println!();
+            }
+        }
+    }
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.execution.borrow().starting_cwd()
