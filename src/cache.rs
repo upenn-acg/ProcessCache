@@ -2,7 +2,12 @@ use libc::{c_int, stat, F_OK, R_OK, W_OK, X_OK};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
+};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -47,14 +52,14 @@ pub enum SyscallFailure {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Permission {
-    Exec,
+    Exec, // Pointless?
     Read,
-    Search,  // exec for dirs?
-    Unknown, // if you call access with multiple options, idk what permission you don't have. and it's YOUR fault for programming like an asshole.
+    Search,  // Exec for dirs?
+    Unknown, // If you call access with multiple options, idk what permission you don't have. and it's YOUR fault for programming like an asshole.
     Write,
 }
 
-// Append and trunc imply wr_only
+// Append and trunc imply WR_ONLY
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Mode {
     Append,
@@ -76,17 +81,44 @@ pub enum StatStruct {
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
-// Current syscalls covered: creat, open, openat, access
+// Current syscalls covered: creat, open, openat, access, stat, fstat
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
-    Access(Vec<c_int>, SyscallOutcome), // Vec<c_int> is list of F_OK, R_OK, W_OK, X_OK
-    Open(Mode, SyscallOutcome), // can fail because the file didn't exist or permission denied
-    Create(CreateMode, SyscallOutcome), // can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    Access(Vec<c_int>, SyscallOutcome), // Vec<c_int> is list of F_OK (0), R_OK, W_OK, X_OK
+    Create(CreateMode, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    Open(Mode, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     // TODO: Handle stat struct too
-    // Stat(StatStruct, SyscallOutcome), // can fail access denied (exec on dir) or file didn't exist
-    Stat(SyscallOutcome), // can fail access denied (exec/search on dir) or file didn't exist
+    Stat(SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
 
+impl SyscallEvent {
+    // Returns true if the syscall event DOES NOT CAUSE SIDE EFFECTS
+    // The phrase "side effects" is confusing me at this point haha.
+    fn is_innocuous(&self) -> bool {
+        match self {
+            SyscallEvent::Access(_, _) => true,
+            SyscallEvent::Create(_, _) => false,
+            SyscallEvent::Open(Mode::ReadOnly, _) => true,
+            SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome) => match outcome {
+                SyscallOutcome::Success(_) => false,
+                SyscallOutcome::Fail(failure) => match failure {
+                    SyscallFailure::AlreadyExists => {
+                        panic!("is_innocuous(): open for writing failed by already exists??")
+                    }
+                    SyscallFailure::FileDoesntExist => true,
+                    SyscallFailure::PermissionDenied(Permission::Write) => true,
+                    SyscallFailure::PermissionDenied(perm) => panic!(
+                        "is_innocuous(): open for writing failed for weird permission: {:?}",
+                        perm
+                    ),
+                },
+            },
+            SyscallEvent::Stat(_) => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
     FileContents,
     FileDidntExist,
@@ -96,6 +128,26 @@ pub enum Fact {
     NoPermission(Vec<Permission>),
 }
 
+fn generate_conditions(file_events: Vec<SyscallEvent>) {
+    // First and easiest case for finding precondition:
+    // All events are innocuous!
+
+    if file_events.iter().all(|event| event.is_innocuous()) {
+        let mut preconditions = HashSet::new();
+        let mut postconditions = HashSet::new();
+        for event in file_events {
+            let (before_facts, after_facts) = generate_facts(event);
+            for fact in before_facts {
+                preconditions.insert(fact);
+            }
+            for fact in after_facts {
+                postconditions.insert(fact);
+            }
+        }
+    } else {
+        todo!();
+    }
+}
 // Given a SyscallEvent, return the "Before" facts and "After" facts.
 // If "After" facts is empty, you know the syscall event was SIDE EFFECT FREE.
 fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
@@ -134,9 +186,7 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
 
         // If you get back EACCES from an access() call, you had to not have access to something.
         // Or the file didn't exist. Here are the cases:
-        // Access(F_OK) -> before: file didn't exist
-        // Access(just one) -> before: didn't have whatever permission type that is
-        // Access(more than one) -> before: didn't have.. some fuckin permission? I need a "idk" permission
+        // Access(more than one) -> Ceheck R_OK, W_OK, and X_OK
         SyscallEvent::Access(
             mode_list,
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_)),
@@ -254,7 +304,6 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             ),
         },
 
-        // How can Open fail?
         SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(failure)) => match failure {
             SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
             SyscallFailure::PermissionDenied(Permission::Read) => {
@@ -286,7 +335,6 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         // To successfully stat a file, the file has to have existed already, and the user must have search access on the dir.
         // Because this is a "side effect FREE" syscall event, the facts that had to be true before and after
         // TODO: properly handle stat struct and checking
-        // SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)) => {
         SyscallEvent::Stat(SyscallOutcome::Success(ret_val)) => {
             if ret_val != 0 {
                 panic!("Return value from stat said success but was not 0!");
