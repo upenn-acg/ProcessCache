@@ -1,14 +1,19 @@
-use libc::c_int;
+use libc::{c_int, stat, F_OK, R_OK, W_OK, X_OK};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-// use std::fs;
-// use std::io::Read;
-use std::rc::Rc;
-use std::{cell::RefCell, path::PathBuf};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
+
+// impl Serialize for i32 {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: Serializer,
+//     {
+//         serializer.serialize_i32(*self)
+//     }
+// }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
@@ -19,117 +24,295 @@ impl Default for Proc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OpenMode {
     ReadOnly,
     ReadWrite,
     WriteOnly,
 }
 
-// Success and failure variants of
-// input and output files.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-// PathBuf = full path to the file.
-// Option<Vec<u8>> = hash.
-// String = syscall name.
-// Some files we may not be able to get the full path.
-// So the full path is just whatever we got in the argument.
-// Example: /etc/ld.so.preload
-// When it's an output file, we don't get the hash
-// until the end of the execution, because the contents
-// of the file may change.
-// Some files (stuff in /etc/ or /dev/pts/ or dirs) aren't really
-// files, so they get no hash.
-// Failed accesses obviously don't get hashed.
-
-pub enum AccessFailure {
-    AlreadyExists,
-    DoesNotExist,
-    Permissions,
+// The i32 is the return value.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SyscallOutcome {
+    Success(i32),
+    Fail(SyscallFailure),
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SyscallFailure {
+    AlreadyExists,
+    FileDoesntExist,
+    PermissionDenied(Permission),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Permission {
+    Exec,
+    Read,
+    Search,  // exec for dirs?
+    Unknown, // if you call access with multiple options, idk what permission you don't have. and it's YOUR fault for programming like an asshole.
+    Write,
+}
+
+// Append and trunc imply wr_only
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Mode {
+    Append,
+    ReadOnly,
+    Trunc,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CreateMode {
+    Create,
+    Excl,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StatStruct {
+    Struct(stat),
+    None,
+}
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
 // Current syscalls covered: creat, open, openat, access
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
-    // Access can check for F_OK OR one OR MORE of R_OK,W_OK, X_OK so
-    // should take in a vec of ints (mode is an int as a parameter to access syscall)
-    Access(Vec<c_int>),
-    AccessAccessDenied(Vec<c_int>),
-    AccessFileDidntExist,
-    OpenAccessDenied,
-    OpenAppendingToFile,
-    OpenFileDidntExist,
-    OpenReadOnly,
-    OpenTruncateFile,
-    CreateAccessDenied, // Not sure this actually happens...
-    CreateCreatedFile,
-    CreateCreatedFileExclusively,
-    CreateFailedPathComponentDoesntExist,
-    CreateFailedToCreateFileExclusively,
-    Stat,
-    StatAccessDenied,
-    StatFileDidntExist,
+    Access(Vec<c_int>, SyscallOutcome), // Vec<c_int> is list of F_OK, R_OK, W_OK, X_OK
+    Open(Mode, SyscallOutcome), // can fail because the file didn't exist or permission denied
+    Create(CreateMode, SyscallOutcome), // can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    // TODO: Handle stat struct too
+    // Stat(StatStruct, SyscallOutcome), // can fail access denied (exec on dir) or file didn't exist
+    Stat(SyscallOutcome), // can fail access denied (exec/search on dir) or file didn't exist
 }
 
-// Preconditions consist of:
-// existance
-// permissions
-enum Precondition {
-    FileExisted, // WITH CONTENTS (i.e. hash)
+pub enum Fact {
+    FileContents,
     FileDidntExist,
-    ExecAccess(PathBuf),
-    ReadAccess(PathBuf),
-    WriteAccess(PathBuf),
-    NoExecAccess(PathBuf),
-    NoReadAccess(PathBuf),
-    NoWriteAccess(PathBuf),
-    StatStructMatches, // at least st_size and st_mtime and maybe st_ctime? also set st_atime to 0?
-    FailedAccessRetValMatches,
-    FailedStatRetValMatches,
-    IHaveNoIdea,
-    None,
+    FileExisted,
+    StatStructMatches,
+    HasPermission(Vec<Permission>),
+    NoPermission(Vec<Permission>),
 }
 
-// Given the FIRST EVENT in the EVENT LIST
-// for the resource, get the PRECONDITION.
-// Maybe preconditions
-/*fn generate_precondition(full_path: PathBuf, syscall_event: SyscallEvent) -> Vec<Precondition> {
+// Given a SyscallEvent, return the "Before" facts and "After" facts.
+// If "After" facts is empty, you know the syscall event was SIDE EFFECT FREE.
+fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
     match syscall_event {
-        // First the Access ones
-        SyscallEvent::AccessCanExec => vec![Precondition::FileExisted, Precondition::ExecAccess(full_path)],
-        SyscallEvent::AccessCanRead => vec![Precondition::FileExisted, Precondition::ReadAccess(full_path)],
-        SyscallEvent::AccessCanWrite => vec![Precondition::FileExisted, Precondition::WriteAccess(full_path)],
+        // In order to call access successfully, the user has to have the access mode(s) they specified, or just file existence in the
+        // case of F_OK.
+        SyscallEvent::Access(mode_list, SyscallOutcome::Success(ret_val)) => {
+            if ret_val != 0 {
+                panic!("Return value from access said success but was not 0!");
+            } else {
+                let mut before = Vec::new();
+                let mut has_permissions: Vec<Permission> = Vec::new();
 
-        // Failing Access ones
-        SyscallEvent::AccessAccessDeniedExec => vec![Precondition::FileExisted, Precondition::NoExecAccess(full_path)],
-        SyscallEvent::AccessAccessDeniedRead => vec![Precondition::FileExisted, Precondition::NoReadAccess(full_path)],
-        SyscallEvent::AccessAccessDeniedWrite => vec![Precondition::FileExisted, Precondition::NoWriteAccess(full_path)],
-        SyscallEvent::AccessFileDidntExist => vec![Precondition::FileDidntExist, Precondition::FailedAccessRetValMatches],
+                if mode_list.len() == 1 {
+                    let first = mode_list.get(0).unwrap();
+                    // F_OK == 0
+                    if *first == 0 {
+                        before.push(Fact::FileExisted);
+                    }
+                } else {
+                    for mode in mode_list {
+                        match mode {
+                            R_OK => has_permissions.push(Permission::Read),
+                            W_OK => has_permissions.push(Permission::Write),
+                            X_OK => has_permissions.push(Permission::Exec),
+                            _ => panic!("Mode not recognized for access syscall event!: {}", mode),
+                        }
+                    }
+                    before.push(Fact::FileExisted);
+                    before.push(Fact::HasPermission(has_permissions));
+                }
 
-        SyscallEvent::CreateCreatedFile => vec![Precondition::FileDidntExist, Precondition::WriteAccess(full_path)],
-        SyscallEvent::CreateCreatedFileExclusively => vec![Precondition::FileDidntExist, Precondition::WriteAccess(full_path)],
-        // TODO: Not sure what precondition should be
-        SyscallEvent::CreateAccessDenied => vec![Precondition::IHaveNoIdea],
-        SyscallEvent::CreateFailedPathComponentDoesntExist => vec![Precondition::IHaveNoIdea],
-        SyscallEvent::CreateFailedToCreateFileExclusively => vec![Precondition::FileExisted],
+                (before, vec![])
+            }
+        }
 
-        // I am not sure how to pinpoint what access is denied
-        SyscallEvent::OpenAccessDenied => vec![Precondition::IHaveNoIdea],
-        SyscallEvent::OpenAppendingToFile => vec![Precondition::FileExisted, Precondition::WriteAccess(full_path)],
-        // Or what part of the path didn't exist or if the file didn't exist, how do I know which?
-        SyscallEvent::OpenFileDidntExist => vec![Precondition::IHaveNoIdea],
-        SyscallEvent::OpenReadOnly => vec![Precondition::FileExisted, Precondition::ReadAccess(full_path)],
-        SyscallEvent::OpenTruncateFile => vec![Precondition::None],
+        // If you get back EACCES from an access() call, you had to not have access to something.
+        // Or the file didn't exist. Here are the cases:
+        // Access(F_OK) -> before: file didn't exist
+        // Access(just one) -> before: didn't have whatever permission type that is
+        // Access(more than one) -> before: didn't have.. some fuckin permission? I need a "idk" permission
+        SyscallEvent::Access(
+            mode_list,
+            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_)),
+        ) => {
+            let mut before = Vec::new();
+            let mut not_these_perms: Vec<Permission> = Vec::new();
 
+            for mode in mode_list {
+                match mode {
+                    F_OK => {
+                        panic!("Syscall event is permission denied in access, why do we get F_OK?")
+                    }
+                    R_OK => not_these_perms.push(Permission::Read),
+                    W_OK => not_these_perms.push(Permission::Write),
+                    X_OK => not_these_perms.push(Permission::Exec),
+                    _ => panic!("Mode value not recognized! {}", mode),
+                }
+            }
 
-        // Really starting to think "file existed" is implied by a lot of the other preconditions
-        SyscallEvent::Stat => vec![Precondition::FileExisted, Precondition::StatStructMatches],
-        SyscallEvent::StatAccessDenied | SyscallEvent::StatFileDidntExist => vec![Precondition::FailedStatRetValMatches],
+            before.push(Fact::NoPermission(not_these_perms));
+            (before, vec![])
+        }
+
+        // This is: access(F_OK) == failure.
+        // So the only "before" fact is "file didn't exist"
+        SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
+            (vec![Fact::FileDidntExist], vec![])
+        }
+
+        // Shouldn't be possible
+        SyscallEvent::Access(_, SyscallOutcome::Fail(e)) => {
+            panic!("Unrecognized syscall failure for access syscall: {:?}", e);
+        }
+
+        // These events represent successfully creating the file, with or without the EXCL flag.
+        // But either way, we know the file didn't exist to start, so their "before" facts are the same.
+        SyscallEvent::Create(_, SyscallOutcome::Success(_)) => {
+            let before = vec![
+                Fact::FileDidntExist,
+                Fact::HasPermission(vec![Permission::Write]),
+            ];
+            let after = vec![Fact::FileExisted, Fact::FileContents];
+            (before, after)
+        }
+
+        SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::AlreadyExists => {
+                panic!("Create event, NOT EXCL, failed on already exists??")
+            }
+            SyscallFailure::FileDoesntExist => {
+                panic!("Create event, NOT EXCL, failed on file doesn't exist??")
+            }
+            SyscallFailure::PermissionDenied(Permission::Write) => {
+                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Create event, NOT EXCL, failed for strange permission: {:?}",
+                perm
+            ),
+        },
+
+        SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::AlreadyExists => (vec![Fact::FileExisted], vec![]),
+            SyscallFailure::FileDoesntExist => {
+                panic!("Create event, EXCL, failed on file doesn't exist??")
+            }
+            SyscallFailure::PermissionDenied(Permission::Write) => {
+                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Create event, EXCL, failed for strange permission: {:?}",
+                perm
+            ),
+        },
+
+        // To successfully open a file, user must have permissions for the open mode, and the file had to already exist.
+        // ReadOnly causes no side effects (therefore has an empty "after" facts list)
+        SyscallEvent::Open(mode, SyscallOutcome::Success(_)) => match mode {
+            Mode::Append => (
+                vec![
+                    Fact::FileContents,
+                    Fact::FileExisted,
+                    Fact::HasPermission(vec![Permission::Write]),
+                ],
+                vec![Fact::FileContents, Fact::FileExisted],
+            ),
+            Mode::ReadOnly => (
+                vec![
+                    Fact::FileContents,
+                    Fact::FileExisted,
+                    Fact::HasPermission(vec![Permission::Read]),
+                ],
+                vec![],
+            ),
+            Mode::Trunc => (
+                vec![
+                    Fact::FileExisted,
+                    Fact::HasPermission(vec![Permission::Write]),
+                ],
+                vec![Fact::FileContents, Fact::FileExisted],
+            ),
+        },
+
+        SyscallEvent::Open(Mode::Append, SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::AlreadyExists => {
+                panic!("Failed to open for appending but failed because file already exists??")
+            }
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Write) => {
+                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Open for append but permission denied was not writing: {:?}",
+                perm
+            ),
+        },
+
+        // How can Open fail?
+        SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Read) => {
+                (vec![Fact::NoPermission(vec![Permission::Read])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Open for read only but failed on weird permission: {:?}",
+                perm
+            ),
+            SyscallFailure::AlreadyExists => {
+                panic!("Open for read only but failed on file already exists??")
+            }
+        },
+
+        SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Write) => {
+                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Open for write/trunc but failed on weird permission: {:?}",
+                perm
+            ),
+            SyscallFailure::AlreadyExists => {
+                panic!("Open for truncate but failed on file already exists??")
+            }
+        },
+
+        // To successfully stat a file, the file has to have existed already, and the user must have search access on the dir.
+        // Because this is a "side effect FREE" syscall event, the facts that had to be true before and after
+        // TODO: properly handle stat struct and checking
+        // SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)) => {
+        SyscallEvent::Stat(SyscallOutcome::Success(ret_val)) => {
+            if ret_val != 0 {
+                panic!("Return value from stat said success but was not 0!");
+            } else {
+                let before = vec![
+                    Fact::FileExisted,
+                    Fact::HasPermission(vec![Permission::Write]),
+                    Fact::StatStructMatches,
+                ];
+                (before, vec![])
+            }
+        }
+
+        SyscallEvent::Stat(SyscallOutcome::Fail(failure)) => match failure {
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
+            SyscallFailure::AlreadyExists => panic!("Stat failed because file already exists??"),
+            SyscallFailure::PermissionDenied(Permission::Search) => {
+                (vec![Fact::NoPermission(vec![Permission::Search])], vec![])
+            }
+            SyscallFailure::PermissionDenied(perm) => panic!(
+                "Stat failed for strange permission (not search): {:?}",
+                perm
+            ),
+        },
     }
-}*/
+}
 
 // #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 // struct FileInfo {
@@ -168,7 +351,7 @@ enum Precondition {
 // a successful execution.
 // Full path mapped to
 // TODO: Handle stderr and stdout.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecFileEvents {
     filename_to_events_map: HashMap<PathBuf, Vec<SyscallEvent>>,
 }
@@ -266,21 +449,11 @@ impl ExecFileEvents {
     // }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-enum FileState {
-    Deleted(PathBuf),
-    ExistsToStart(PathBuf),
-    DoesNotExistAtStart(PathBuf),
-    Renamed {
-        old_full_path: PathBuf,
-        new_full_path: PathBuf,
-    },
-}
 // Info about the execution that we want to keep around
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
 // we expect it to fail and it succeeds).
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExecMetadata {
     args: Vec<String>,
     // The cwd can change during the execution, this is fine.
@@ -299,7 +472,7 @@ pub struct ExecMetadata {
     // to add info to. But, I don't want this serialized with
     // the rest of the metadata (obviously pids change from run
     // to run).
-    #[serde(skip)]
+    // #[serde(skip)]
     caller_pid: Proc,
 }
 
@@ -359,7 +532,7 @@ impl ExecMetadata {
 }
 
 pub type ChildExecutions = Vec<RcExecution>;
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Execution {
     Failed(ExecMetadata),
     // Before we find out if the root execution's "execve" call succeeds,
@@ -551,7 +724,7 @@ impl Execution {
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
 // enum.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RcExecution {
     execution: Rc<RefCell<Execution>>,
 }
