@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    /*generate_hash,*/ CreateMode, ExecFileEvents, ExecMetadata, Execution, Mode, OpenMode,
-    Permission, RcExecution, SyscallEvent, SyscallFailure, SyscallOutcome,
+    /*cte_hash,*/ CreateMode, ExecFileEvents, ExecMetadata, Execution, Mode, OpenMode,
+    Permission, RcExecution, ResourceType, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -432,9 +432,12 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
                 flag_vec,
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             )),
+            // It could be that the user doesn't have one of the permissions they specified as a parameter
+            // OR it could be that they don't have search permissions on some dir in the path to the resource.
+            // And we don't know so permission is gonna have to be unknown.
             -13 => Some(SyscallEvent::Access(
                 flag_vec,
-                SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Search)),
+                SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Unknown)),
             )),
             e => panic!("Unexpected error returned by access syscall!: {}", e),
         }
@@ -783,7 +786,7 @@ fn generate_open_syscall_file_event(
                 Err(ret_val) => match ret_val {
                     -13 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write)),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir))),
                     )),
                     -17 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
@@ -822,7 +825,7 @@ fn generate_open_syscall_file_event(
                     // More accurately, some "path component" doesn't exist, but they don't know that,
                     // and so we don't, and so y'all get a generic error. Linux is NOT a generous god.
                     -2 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
-                    -13 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write)))),
+                    -13 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir))))),
                     _ => panic!("O_CREAT and failed but not because access denied or path component doesn't exist?"),
                 },
             }
@@ -868,11 +871,11 @@ fn generate_open_syscall_file_event(
                 -13 => match offset_mode {
                     Mode::Append | Mode::Trunc => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write)),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::File))),
                     )),
                     _ => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read)),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read(ResourceType::File))),
                     )),
                 },
                 _ => panic!(

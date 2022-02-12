@@ -50,15 +50,20 @@ pub enum SyscallFailure {
     PermissionDenied(Permission),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Permission {
-    Exec, // Pointless?
-    Read,
+    Exec(ResourceType), // Pointless?
+    Read(ResourceType),
     Search,  // Exec for dirs?
     Unknown, // If you call access with multiple options, idk what permission you don't have. and it's YOUR fault for programming like an asshole.
-    Write,
+    Write(ResourceType),
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum ResourceType {
+    Dir,
+    File,
+}
 // Append and trunc imply WR_ONLY
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Mode {
@@ -94,7 +99,7 @@ pub enum SyscallEvent {
 impl SyscallEvent {
     // Returns true if the syscall event DOES NOT CAUSE SIDE EFFECTS
     // The phrase "side effects" is confusing me at this point haha.
-    fn is_innocuous(&self) -> bool {
+    fn is_side_effect_free(&self) -> bool {
         match self {
             SyscallEvent::Access(_, _) => true,
             SyscallEvent::Create(_, _) => false,
@@ -103,12 +108,12 @@ impl SyscallEvent {
                 SyscallOutcome::Success(_) => false,
                 SyscallOutcome::Fail(failure) => match failure {
                     SyscallFailure::AlreadyExists => {
-                        panic!("is_innocuous(): open for writing failed by already exists??")
+                        panic!("is_side_effect_free(): open for writing failed by already exists??")
                     }
                     SyscallFailure::FileDoesntExist => true,
-                    SyscallFailure::PermissionDenied(Permission::Write) => true,
+                    SyscallFailure::PermissionDenied(Permission::Write(_)) => true,
                     SyscallFailure::PermissionDenied(perm) => panic!(
-                        "is_innocuous(): open for writing failed for weird permission: {:?}",
+                        "is_side_effect_free(): open for writing failed for weird permission: {:?}",
                         perm
                     ),
                 },
@@ -121,63 +126,394 @@ impl SyscallEvent {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
     FileContents,
-    FileDidntExist,
-    FileExisted,
+    FileDoesntExist,
+    FileExists,
     StatStructMatches,
-    HasPermission(Vec<Permission>),
-    NoPermission(Vec<Permission>),
+    HasPermission(Permission),
+    NoPermission(Permission),
 }
 
-fn generate_conditions(file_events: Vec<SyscallEvent>) {
-    // First and easiest case for finding precondition:
-    // All events are innocuous!
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum State {
+    Created,
+    // TODO: Deleted,
+    Modified,
+    None,
+}
 
-    if file_events.iter().all(|event| event.is_innocuous()) {
-        let mut preconditions = HashSet::new();
-        let mut postconditions = HashSet::new();
-        for event in file_events {
-            let (before_facts, after_facts) = generate_facts(event);
-            for fact in before_facts {
-                preconditions.insert(fact);
+struct CurrState {
+    state: State,
+}
+
+impl CurrState {
+    fn update_based_on_syscall(&mut self, syscall_event: &SyscallEvent) {
+        match *syscall_event {
+            SyscallEvent::Create(_, SyscallOutcome::Success(_)) => {
+                self.state = State::Created;
             }
-            for fact in after_facts {
-                postconditions.insert(fact);
+            SyscallEvent::Open(Mode::Append | Mode::Trunc, SyscallOutcome::Success(_)) => {
+                self.state = State::Modified;
+            }
+            // No change
+            _ => (),
+        }
+    }
+
+    fn state(&self) -> &State {
+        &self.state
+    }
+}
+
+fn generate_access_permission_list(mode_list: Vec<c_int>) -> Vec<Fact> {
+    let mut before_facts = Vec::new();
+    for mode in mode_list {
+        match mode {
+            F_OK => panic!("Syscall event is permission denied in access, why do we get F_OK?"),
+            R_OK => before_facts.push(Fact::NoPermission(Permission::Read(ResourceType::File))),
+            W_OK => before_facts.push(Fact::NoPermission(Permission::Write(ResourceType::File))),
+            X_OK => before_facts.push(Fact::NoPermission(Permission::Exec(ResourceType::File))), // TODO: is this right? could be dir..?
+            _ => panic!("Mode value not recognized! {}", mode),
+        }
+    }
+    before_facts
+}
+
+fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
+    let mut curr_preconditions = HashSet::new();
+
+    if file_events.iter().all(|event| event.is_side_effect_free()) {
+        // Simplest case: NO events cause side effects.
+        // There should be no after facts coming back from generate_facts()
+        // because side-effect-free syscalls do not contribute to postconditions.
+
+        for event in file_events {
+            let (before_facts, after_facts) = generate_facts(&event);
+            if !after_facts.is_empty() {
+                panic!("generate_conditions(): after facts from side-effect-free syscall event: {:?} is not empty!", event);
+            }
+
+            // For each of these side-effect-free events, we get their "before"
+            // facts and just add them to the running set of preconditions.
+            for fact in before_facts {
+                curr_preconditions.insert(fact);
             }
         }
     } else {
-        todo!();
+        // Okay, so this is the harder case.
+        // We might have a mix of different types of syscall events here.
+        // H E T E R O G E N E O U S
+        //
+        // --------------------------------------------------------------
+        // Preconditions:
+        // For each event...
+        // 1) Get its before facts.
+        // 2) Add unique facts to the preconditions set IF they don't depend
+        //    on something the execution has done. Use the curr_state to inform
+        //    us when a major event has occurred on the resource and contradictions may arise.
+        //    Example: stat. If stat is called
+        //    after a file is created, the stat struct is not a part of the
+        //    preconditions because it depends on the file being made. BUT
+        //    search perm on the dir DOES go in the preconditions because that
+        //    had to be true before the execution started (because we panic if
+        //    you try to change ownership of shit).
+        let mut curr_state = CurrState { 
+            state: State::None,
+        };
+
+        for event in file_events {
+            let (new_before_facts, after_facts) = generate_facts(&event);
+
+            // Update the curr_state if the event is side-effect-ful.
+            curr_state.update_based_on_syscall(&event);
+            
+            // PRECONDITIONS
+            if curr_preconditions.is_empty() {
+                // This is the first syscall event, we can just
+                // stick the "before" facts in the preconditions.
+                for new_before in new_before_facts {
+                    curr_preconditions.insert(new_before);
+                }
+            } else {
+                // There are existing preconditions! Be sure to check the
+                // - existing preconditions AND
+                // - current state
+                // for contradictions, and adjust as necessary!
+                let state = curr_state.state();
+                match (event, state) {
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Success(_)), State::Created) => {
+                        let permissions = generate_access_permission_list(mode_list);
+                        // The file existing depends on a previous event (Created) so it is not included in the preconditions
+                        for perm in permissions {
+                            curr_preconditions.insert(perm);
+                        }
+                    }
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Success(_)), State::Modified) => {
+                        let permissions = generate_access_permission_list(mode_list);
+
+                        // Well this makes sense? We recently modified the file. We probably
+                        // have some kinda access to it lol.
+                        curr_preconditions.insert(Fact::FileExists);
+                        for perm in permissions {
+                            curr_preconditions.insert(perm);
+                        }
+                    }
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Success(_)), State::None) => {
+                        let permissions = generate_access_permission_list(mode_list);
+
+                        // Okay, so we haven't modified this file.
+                        // But we are able to access it. Totally plausible.
+                        curr_preconditions.insert(Fact::FileExists);
+                        for perm in permissions {
+                            curr_preconditions.insert(perm);
+                        }
+                    }
+
+
+                    (SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _) => {
+                        panic!("Access syscall failed because file already existed??");
+                    }
+                    (SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::None) => {
+                        // We tried to access the file, it doesn't exist.
+                        // Ezpz.
+                        curr_preconditions.insert(Fact::FileDoesntExist);
+                    }
+                    (SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Modified) => {
+                        panic!("Access syscall failed on file doesn't exist, but the last known state was modified??");
+                    }
+                    (SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Created) => {
+                        panic!("Access syscall failed on file doesn't exist, but the last known state was created??");
+                    }
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_))), State::Modified) => {
+                        // Could be exec perm on the file, could be read perm on the file (maybe)?
+                        // Write perm doesn't make sense. 
+                        let permissions = generate_access_permission_list(mode_list);
+                        for perm in permissions {
+                            match perm {
+                                Fact::NoPermission(Permission::Exec(_)) | Fact::NoPermission(Permission::Read(_)) => {
+                                    curr_preconditions.insert(perm);
+                                }
+                                _ => panic!("Unrecognized permission error when last action on file was creation: {:?}", perm),
+                            }
+                        }
+                    }
+
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_))), State::Created) => {
+                        // Could be exec perm on the file, could be read perm on the file (maybe)?
+                        // Write perm doesn't make sense. 
+                        let permissions = generate_access_permission_list(mode_list);
+                        for perm in permissions {
+                            match perm {
+                                Fact::NoPermission(Permission::Exec(_)) | Fact::NoPermission(Permission::Read(_)) => {
+                                    curr_preconditions.insert(perm);
+                                }
+                                _ => panic!("Unrecognized permission error when last action on file was creation: {:?}", perm),
+                            }
+                        }
+                    }
+                    (SyscallEvent::Access(mode_list, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_))), State::None) => {
+                        // TODO: it could be search perm on one of the dirs leading to the file?
+                        // All we know is the permissions we might not have.
+                        let permissions = generate_access_permission_list(mode_list);
+                        for perm in permissions {
+                            curr_preconditions.insert(perm);
+                        }
+                    }
+
+
+                    // CreateMode, SyscallOutcome
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success(_)), State::None) => {
+                        // Just your average every day successful file creation.
+                        curr_preconditions.insert(Fact::FileDoesntExist);
+                        curr_preconditions.insert(Fact::HasPermission(Permission::Write(ResourceType::Dir)));
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success(_)), State::Modified) => {
+                        panic!("Last state was modified but we successfully created a file (NOT TRUNC)??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success(_)), State::Created) => {
+                        panic!("Last state was created but we successfully created a file (NOT TRUNC)??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _) => {
+                        // You tried to make a file, but it failed this time because it already exists?
+                        // The last state change was that it was created? Not possible without the EXCL flag which
+                        // we know has its own cases!
+                        panic!("Failed to create file because it already exists, but O_EXCL is not in use!");
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), _) => {
+                        panic!("Failed to create file because file doesn't exist??");
+                    }
+                    
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::None) => {
+                        curr_preconditions.insert(Fact::NoPermission(Permission::Write(ResourceType::Dir)));
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::Created) => {
+                        panic!("We failed to create a file because we didn't have write perm to the dir but the last state was created??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::Modified) => {
+                        panic!("We failed to create a file because we didn't have write perm to the dir but the last state was modified??");
+                    }
+
+                    (SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(e))), _) => {
+                        panic!("Failed to create file for strange permission error: {:?}", e);
+                    }
+
+                    // EXCL
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Success(_)), State::None) => {
+                        curr_preconditions.insert(Fact::FileDoesntExist);
+                        curr_preconditions.insert(Fact::HasPermission(Permission::Write(ResourceType::Dir)));
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Success(_)), State::Created) => {
+                        panic!("Last state change was creation, but we successfully EXCL created the file now, again??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Success(_)), State::Modified) => {
+                        panic!("Last state change was modification, but we successfully EXCL created the file now, again??");
+                    }
+
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), State::None) => {
+                        // We wanted to exclusively create the file, but the file already existed. Classic mistake, Frank.
+                        curr_preconditions.insert(Fact::FileExists);
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), State::Created) => {
+                        curr_preconditions.insert(Fact::FileExists);
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), State::Modified) => {
+                        curr_preconditions.insert(Fact::FileExists);
+                    }
+
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::None) => {
+                        // Trying to create the file exclusively but the file doesn't exist? What? That's what we want?
+                        panic!("Failed to create file exclusively because it doesn't exist??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Created) => {
+                        panic!("Failed to create file exclusively because it doesn't exist, but the last state was creation??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Modified) => {
+                        panic!("Failed to create file exclusively because it doesn't exist, but the last state was modified??");
+                    }
+
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::None) => {
+                        // Trying to create a file exclusively and we fail because we don't have write permission to the dir. Makes sense.
+                        curr_preconditions.insert(Fact::NoPermission(Permission::Write(ResourceType::Dir)));
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::Created) => {
+                        // It's weird that the last state was creation, so we had write perms, but now this create excl fails because write perms...
+                        panic!("Create exclusively fails bc write perm on dir but last state was creation??");
+                    }
+                    (SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::Modified) => {
+                        panic!("Create exclusively fails bc write perm on dir but last state was modification??");
+                    }
+
+                    // Don't add stat struct because if the file was recently modified or created, that means the stat's "before" fact relies on something that happened mid-exec.
+                    // Add exists (though it's obviously already in the set...)
+                    // Add search perm on dir because it did succeed.
+                    (SyscallEvent::Stat(SyscallOutcome::Success(_)), State::Created | State::Modified) => {
+                        curr_preconditions.insert(Fact::FileExists);
+                        curr_preconditions.insert(Fact::HasPermission(Permission::Search));
+                    }
+                    // The state can't affect it because it hasn't changed.
+                    // Just add alllll the successful stat facts.
+                    (SyscallEvent::Stat(SyscallOutcome::Success(_)), State::None) => {
+                        curr_preconditions.insert(Fact::FileExists);
+                        curr_preconditions.insert(Fact::HasPermission(Permission::Search));
+                        curr_preconditions.insert(Fact::StatStructMatches);
+                    }
+
+                    (SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_))), State::Created | State::Modified) => {
+                        panic!("How the hell can you create a file and write to it but you can't search the directory it's in??");
+                    }
+
+                    // Permission denied from a stat call means the user doesn't have search access
+                    // to the directory where the resource is housed.
+                    // This doesn't tell us anything about whether the file exists.
+                    (SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_))), State::None) => {
+                        curr_preconditions.insert(Fact::NoPermission(Permission::Search));
+                    }
+
+                    // This execution has made no changes to the resource. So we just add all our before facts to the preconditions.
+                    // Which is just that the file doesn't exist lol.
+                    (SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::None) => {
+                        curr_preconditions.insert(Fact::FileDoesntExist);
+                    }
+
+                    (SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Created | State::Modified) => {
+                        panic!("Curr state is that the file was modified or created, but the stat failed because the file didn't exist??");
+                    }
+
+                    (SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _) => panic!("Stat failed because file already exists? What?"),
+
+                    // All before events from a successful open read only:
+                    // - file exists
+                    // - read access to file
+                    // - contents
+                    // If the previous state was Created, all the above facts depend on that.
+                    // So none get added.
+                    (SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Success(_)), State::Created) => (),
+                    (SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _) => {
+                        panic!("Open file read only fails because file already exists??");
+                    }
+                    (SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::Created | State::Modified) => {
+                        panic!("Open file read only fails because file doesn't exist but the last state change was that it was changed or created??");
+                    }
+
+                    (SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), State::None) => {
+                        // All facts for when user tries to read only open a file and gets the error that it doesn't exist:
+                        // - file doesn't exist
+                        curr_preconditions.insert(Fact::FileDoesntExist);
+                    }
+                    (SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read(ResourceType::File)))), _) => {
+                        curr_preconditions.insert(Fact::NoPermission(Permission::Read(ResourceType::File)));
+                    }
+                    
+
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success(_)), _) => {
+                        curr_preconditions.insert(Fact::HasPermission(Permission::Write(ResourceType::Dir)));
+                    }
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _) => {
+                        panic!("Open file with trunc but failed because file already exists??");
+                    }
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)), _) => {
+                        panic!("Open file with trunc but failed because file doesn't exist??");
+                    }
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::None) => {
+                        curr_preconditions.insert(Fact::NoPermission(Permission::Read(ResourceType::File)));
+                    }
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)))), State::Created | State::Modified) => {
+                        panic!("Open file with trunc, failed on write perm for dir, but previous state was the user creating or modifying the file??");
+                    }
+                    (SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(e))), _) => {
+                        panic!("Open file with trunc but failed because permission other than write denied?? : {:?}", e);
+                    }
+                    
+
+                }
+            }
+    
+        }
     }
+    return curr_preconditions;
 }
+
 // Given a SyscallEvent, return the "Before" facts and "After" facts.
 // If "After" facts is empty, you know the syscall event was SIDE EFFECT FREE.
-fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
+fn generate_facts(syscall_event: &SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
     match syscall_event {
         // In order to call access successfully, the user has to have the access mode(s) they specified, or just file existence in the
         // case of F_OK.
         SyscallEvent::Access(mode_list, SyscallOutcome::Success(ret_val)) => {
-            if ret_val != 0 {
+            if *ret_val != 0 {
                 panic!("Return value from access said success but was not 0!");
             } else {
                 let mut before = Vec::new();
-                let mut has_permissions: Vec<Permission> = Vec::new();
 
-                if mode_list.len() == 1 {
-                    let first = mode_list.get(0).unwrap();
-                    // F_OK == 0
-                    if *first == 0 {
-                        before.push(Fact::FileExisted);
+                before.push(Fact::FileExists);
+                for mode in mode_list {
+                    match *mode {
+                        // Access syscall tells you  permissions on the FILE.
+                        R_OK => before.push(Fact::HasPermission(Permission::Read(ResourceType::File))),
+                        W_OK => before.push(Fact::HasPermission(Permission::Write(ResourceType::File))),
+                        X_OK => before.push(Fact::HasPermission(Permission::Exec(ResourceType::File))),
+                        0 => {}
+                        _ => panic!("Mode not recognized for access syscall event!: {}", mode),
                     }
-                } else {
-                    for mode in mode_list {
-                        match mode {
-                            R_OK => has_permissions.push(Permission::Read),
-                            W_OK => has_permissions.push(Permission::Write),
-                            X_OK => has_permissions.push(Permission::Exec),
-                            _ => panic!("Mode not recognized for access syscall event!: {}", mode),
-                        }
-                    }
-                    before.push(Fact::FileExisted);
-                    before.push(Fact::HasPermission(has_permissions));
                 }
 
                 (before, vec![])
@@ -192,28 +528,26 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_)),
         ) => {
             let mut before = Vec::new();
-            let mut not_these_perms: Vec<Permission> = Vec::new();
 
             for mode in mode_list {
-                match mode {
+                match *mode {
                     F_OK => {
                         panic!("Syscall event is permission denied in access, why do we get F_OK?")
                     }
-                    R_OK => not_these_perms.push(Permission::Read),
-                    W_OK => not_these_perms.push(Permission::Write),
-                    X_OK => not_these_perms.push(Permission::Exec),
+                    R_OK => before.push(Fact::NoPermission(Permission::Read(ResourceType::File))),
+                    W_OK => before.push(Fact::NoPermission(Permission::Write(ResourceType::File))),
+                    X_OK => before.push(Fact::NoPermission(Permission::Exec(ResourceType::File))), // TODO: is this right? could be dir..?
                     _ => panic!("Mode value not recognized! {}", mode),
                 }
             }
 
-            before.push(Fact::NoPermission(not_these_perms));
             (before, vec![])
         }
 
         // This is: access(F_OK) == failure.
-        // So the only "before" fact is "file didn't exist"
+        // So the only "before" fact is "file doesn't exist"
         SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-            (vec![Fact::FileDidntExist], vec![])
+            (vec![Fact::FileDoesntExist], vec![])
         }
 
         // Shouldn't be possible
@@ -225,10 +559,10 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         // But either way, we know the file didn't exist to start, so their "before" facts are the same.
         SyscallEvent::Create(_, SyscallOutcome::Success(_)) => {
             let before = vec![
-                Fact::FileDidntExist,
-                Fact::HasPermission(vec![Permission::Write]),
+                Fact::FileDoesntExist,
+                Fact::HasPermission(Permission::Write(ResourceType::Dir)),
             ];
-            let after = vec![Fact::FileExisted, Fact::FileContents];
+            let after = vec![Fact::FileExists, Fact::FileContents];
             (before, after)
         }
 
@@ -239,8 +573,10 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             SyscallFailure::FileDoesntExist => {
                 panic!("Create event, NOT EXCL, failed on file doesn't exist??")
             }
-            SyscallFailure::PermissionDenied(Permission::Write) => {
-                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            // TODO: this could be exec on the dir.. but we don't know that?
+            // and neither does the user...
+            SyscallFailure::PermissionDenied(Permission::Write(ResourceType::File)) => {
+                (vec![Fact::NoPermission(Permission::Write(ResourceType::File))], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Create event, NOT EXCL, failed for strange permission: {:?}",
@@ -249,12 +585,12 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         },
 
         SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Fail(failure)) => match failure {
-            SyscallFailure::AlreadyExists => (vec![Fact::FileExisted], vec![]),
+            SyscallFailure::AlreadyExists => (vec![Fact::FileExists], vec![]),
             SyscallFailure::FileDoesntExist => {
                 panic!("Create event, EXCL, failed on file doesn't exist??")
             }
-            SyscallFailure::PermissionDenied(Permission::Write) => {
-                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)) => {
+                (vec![Fact::NoPermission(Permission::Write(ResourceType::Dir))], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Create event, EXCL, failed for strange permission: {:?}",
@@ -268,25 +604,28 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             Mode::Append => (
                 vec![
                     Fact::FileContents,
-                    Fact::FileExisted,
-                    Fact::HasPermission(vec![Permission::Write]),
+                    Fact::FileExists,
+                    Fact::HasPermission(Permission::Write(ResourceType::File)),
                 ],
-                vec![Fact::FileContents, Fact::FileExisted],
+                vec![Fact::FileContents, Fact::FileExists],
             ),
             Mode::ReadOnly => (
                 vec![
                     Fact::FileContents,
-                    Fact::FileExisted,
-                    Fact::HasPermission(vec![Permission::Read]),
+                    Fact::FileExists,
+                    Fact::HasPermission(Permission::Read(ResourceType::File)),
                 ],
                 vec![],
             ),
             Mode::Trunc => (
                 vec![
-                    Fact::FileExisted,
-                    Fact::HasPermission(vec![Permission::Write]),
+                    Fact::FileExists,
+                    // The man page says that when the file exists, it is truncated to
+                    // length zero. So I am pretty sure it isn't deleting the file and
+                    // making a new one (i.e. write permission to the dir)
+                    Fact::HasPermission(Permission::Write(ResourceType::File)),
                 ],
-                vec![Fact::FileContents, Fact::FileExisted],
+                vec![Fact::FileContents, Fact::FileExists],
             ),
         },
 
@@ -294,9 +633,9 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             SyscallFailure::AlreadyExists => {
                 panic!("Failed to open for appending but failed because file already exists??")
             }
-            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
-            SyscallFailure::PermissionDenied(Permission::Write) => {
-                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDoesntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir)) => {
+                (vec![Fact::NoPermission(Permission::Write(ResourceType::Dir))], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Open for append but permission denied was not writing: {:?}",
@@ -305,9 +644,9 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         },
 
         SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Fail(failure)) => match failure {
-            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
-            SyscallFailure::PermissionDenied(Permission::Read) => {
-                (vec![Fact::NoPermission(vec![Permission::Read])], vec![])
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDoesntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Read(ResourceType::File)) => {
+                (vec![Fact::NoPermission(Permission::Read(ResourceType::File))], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Open for read only but failed on weird permission: {:?}",
@@ -319,9 +658,9 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         },
 
         SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(failure)) => match failure {
-            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
-            SyscallFailure::PermissionDenied(Permission::Write) => {
-                (vec![Fact::NoPermission(vec![Permission::Write])], vec![])
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDoesntExist], vec![]),
+            SyscallFailure::PermissionDenied(Permission::Write(ResourceType::File)) => {
+                (vec![Fact::NoPermission(Permission::Write(ResourceType::File))], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Open for write/trunc but failed on weird permission: {:?}",
@@ -336,12 +675,12 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         // Because this is a "side effect FREE" syscall event, the facts that had to be true before and after
         // TODO: properly handle stat struct and checking
         SyscallEvent::Stat(SyscallOutcome::Success(ret_val)) => {
-            if ret_val != 0 {
+            if *ret_val != 0 {
                 panic!("Return value from stat said success but was not 0!");
             } else {
                 let before = vec![
-                    Fact::FileExisted,
-                    Fact::HasPermission(vec![Permission::Write]),
+                    Fact::FileExists,
+                    Fact::HasPermission(Permission::Search),
                     Fact::StatStructMatches,
                 ];
                 (before, vec![])
@@ -349,10 +688,10 @@ fn generate_facts(syscall_event: SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
         }
 
         SyscallEvent::Stat(SyscallOutcome::Fail(failure)) => match failure {
-            SyscallFailure::FileDoesntExist => (vec![Fact::FileDidntExist], vec![]),
+            SyscallFailure::FileDoesntExist => (vec![Fact::FileDoesntExist], vec![]),
             SyscallFailure::AlreadyExists => panic!("Stat failed because file already exists??"),
             SyscallFailure::PermissionDenied(Permission::Search) => {
-                (vec![Fact::NoPermission(vec![Permission::Search])], vec![])
+                (vec![Fact::NoPermission(Permission::Search)], vec![])
             }
             SyscallFailure::PermissionDenied(perm) => panic!(
                 "Stat failed for strange permission (not search): {:?}",
