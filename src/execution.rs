@@ -786,7 +786,9 @@ fn generate_open_syscall_file_event(
                 Err(ret_val) => match ret_val {
                     -13 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir))),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(
+                            ResourceType::Dir,
+                        ))),
                     )),
                     -17 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
@@ -871,11 +873,15 @@ fn generate_open_syscall_file_event(
                 -13 => match offset_mode {
                     Mode::Append | Mode::Trunc => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::File))),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(
+                            ResourceType::File,
+                        ))),
                     )),
                     _ => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read(ResourceType::File))),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read(
+                            ResourceType::File,
+                        ))),
                     )),
                 },
                 _ => panic!(
