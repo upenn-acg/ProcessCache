@@ -141,6 +141,7 @@ pub enum State {
     None,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 struct CurrState {
     state: State,
 }
@@ -182,12 +183,14 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
     let mut curr_preconditions = HashSet::new();
 
     if file_events.iter().all(|event| event.is_side_effect_free()) {
+        debug!("SIDE effects!!!");
         // Simplest case: NO events cause side effects.
         // There should be no after facts coming back from generate_facts()
         // because side-effect-free syscalls do not contribute to postconditions.
 
         for event in file_events {
             let (before_facts, after_facts) = generate_facts(&event);
+            debug!("BEFORE FACTS: {:?}", before_facts);
             if !after_facts.is_empty() {
                 panic!("generate_conditions(): after facts from side-effect-free syscall event: {:?} is not empty!", event);
             }
@@ -199,6 +202,7 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
             }
         }
     } else {
+        debug!("SIDE EFFECTS");
         // Okay, so this is the harder case.
         // We might have a mix of different types of syscall events here.
         // H E T E R O G E N E O U S
@@ -223,6 +227,7 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
 
             // Update the curr_state if the event is side-effect-ful.
             curr_state.update_based_on_syscall(&event);
+            debug!("Current state is: {:?}", curr_state);
 
             // PRECONDITIONS
             if curr_preconditions.is_empty() {
@@ -591,7 +596,7 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
                         SyscallEvent::Stat(SyscallOutcome::Success(_)),
                         State::Created | State::Modified,
                     ) => {
-                        curr_preconditions.insert(Fact::FileExists);
+                        // curr_preconditions.insert(Fact::FileExists); oops
                         curr_preconditions.insert(Fact::HasPermission(Permission::Search));
                     }
                     // The state can't affect it because it hasn't changed.
@@ -895,12 +900,14 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
             }
         }
     }
-    return curr_preconditions;
+    curr_preconditions
 }
 
 // Given a SyscallEvent, return the "Before" facts and "After" facts.
 // If "After" facts is empty, you know the syscall event was SIDE EFFECT FREE.
 fn generate_facts(syscall_event: &SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
+    let sys_span = span!(Level::INFO, "generate_facts");
+    let _ = sys_span.enter();
     match syscall_event {
         // In order to call access successfully, the user has to have the access mode(s) they specified, or just file existence in the
         // case of F_OK.
@@ -908,9 +915,8 @@ fn generate_facts(syscall_event: &SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             if *ret_val != 0 {
                 panic!("Return value from access said success but was not 0!");
             } else {
-                let mut before = Vec::new();
+                let mut before = vec![Fact::FileExists];
 
-                before.push(Fact::FileExists);
                 for mode in mode_list {
                     match *mode {
                         // Access syscall tells you  permissions on the FILE.
@@ -1033,7 +1039,6 @@ fn generate_facts(syscall_event: &SyscallEvent) -> (Vec<Fact>, Vec<Fact>) {
             ),
             Mode::Trunc => (
                 vec![
-                    Fact::FileExists,
                     // The man page says that when the file exists, it is truncated to
                     // length zero. So I am pretty sure it isn't deleting the file and
                     // making a new one (i.e. write permission to the dir)
@@ -1624,6 +1629,10 @@ impl RcExecution {
             println!("Resource path: {:?}", full_path);
             println!("Event list: {:?}", event_list);
             println!();
+
+            let preconditions = generate_preconditions(event_list);
+            println!("Preconditions: {:?}", preconditions);
+            println!();
         }
 
         println!();
@@ -1635,6 +1644,9 @@ impl RcExecution {
             for (full_path, event_list) in child_exec_file_event_map {
                 println!("Resource path: {:?}", full_path);
                 println!("Event list: {:?}", event_list);
+
+                let preconditions = generate_preconditions(event_list);
+                println!("Preconditions: {:?}", preconditions);
                 println!();
             }
         }
