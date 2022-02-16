@@ -312,17 +312,119 @@ fn generate_postconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
                         }
                     }
 
-                    (SyscallEvent::Open(_, _), State::Created) => todo!(),
-                    (SyscallEvent::Open(_, _), State::Modified) => todo!(),
-                    (SyscallEvent::Open(_, _), State::None) => todo!(),
+                    (SyscallEvent::Open(mode, SyscallOutcome::Success(_)), State::Created) => {
+                        match mode {
+                            Mode::Append | Mode::Trunc => (),
+                            Mode::ReadOnly => {
+                                curr_postconditions.insert(Fact::HasPermission(Permission::Read(
+                                    ResourceType::File,
+                                )));
+                            }
+                        }
+                    }
+                    (
+                        SyscallEvent::Open(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)),
+                        State::Created,
+                    ) => {
+                        panic!("Failed to open a file because it already exists? What?");
+                    }
+                    (
+                        SyscallEvent::Open(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                        ),
+                        State::Created,
+                    ) => {
+                        panic!("Failed to open file because it doesn't exist, but last state change was creation??");
+                    }
+                    (
+                        SyscallEvent::Open(
+                            mode,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(p)),
+                        ),
+                        State::Created,
+                    ) => match mode {
+                        Mode::Append | Mode::Trunc => {
+                            if p == Permission::Write(ResourceType::Dir) {
+                                panic!("Failed to open file for append or trunc because no write perm to the dir, but the last state change was creation of this file??");
+                            }
+                        }
+                        Mode::ReadOnly => {
+                            curr_postconditions
+                                .insert(Fact::NoPermission(Permission::Read(ResourceType::File)));
+                        }
+                    },
+
+                    (SyscallEvent::Open(mode, SyscallOutcome::Success(_)), State::Modified) => {
+                        match mode {
+                            Mode::Append | Mode::Trunc => {
+                                curr_postconditions.insert(Fact::FileContents);
+                            }
+                            Mode::ReadOnly => (),
+                        }
+                    }
+                    (
+                        SyscallEvent::Open(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)),
+                        _,
+                    ) => {
+                        panic!("Failed to open a file because it already exists? What?");
+                    }
+                    (
+                        SyscallEvent::Open(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                        ),
+                        State::Modified,
+                    ) => {
+                        panic!("Failed to open a file because it doesn't exist, but the last state change was modified??");
+                    }
+                    (
+                        SyscallEvent::Open(
+                            mode,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(p)),
+                        ),
+                        State::Modified,
+                    ) => match mode {
+                        Mode::Append | Mode::Trunc => {
+                            if p == Permission::Write(ResourceType::File) {
+                                panic!("Failed to open file for append or trunc because no write perm to the file, but the last state change was modification of this file??");
+                            }
+                        }
+                        Mode::ReadOnly => {
+                            curr_postconditions
+                                .insert(Fact::NoPermission(Permission::Read(ResourceType::File)));
+                        }
+                    },
+
+                    // Mode , Outcome
+                    (SyscallEvent::Open(mode, SyscallOutcome::Success(_)), State::None) => {
+                        match mode {
+                            Mode::Append | Mode::Trunc => {
+                                curr_postconditions.insert(Fact::FileContents);
+                            }
+                            Mode::ReadOnly => (),
+                        }
+                    }
+                    (
+                        SyscallEvent::Open(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                        ),
+                        State::None,
+                    ) => (),
+                    (
+                        SyscallEvent::Open(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(_)),
+                        ),
+                        State::None,
+                    ) => (),
 
                     // Stat = SIDE EFFECT FREE
                     // Which means it also contributes nothing to the postconditions.
                     (SyscallEvent::Stat(_), State::Created) => {}
                     (SyscallEvent::Stat(_), State::Modified) => {}
-                    (SyscallEvent::Stat(_), State::None) => {} // permissions list, outcome
-                                                               // Access is SIDE-EFFECT-FREE
-                                                               // It contributes nothing to postconditions.
+                    (SyscallEvent::Stat(_), State::None) => {}
                 }
             }
         }
@@ -342,7 +444,7 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
             let (before_facts, after_facts) = generate_facts(&event);
             debug!("BEFORE FACTS: {:?}", before_facts);
             if !after_facts.is_empty() {
-                panic!("generate_conditions(): after facts from side-effect-free syscall event: {:?} is not empty!", event);
+                panic!("generate_preconditions(): after facts from side-effect-free syscall event: {:?} is not empty!", event);
             }
 
             // For each of these side-effect-free events, we get their "before"
