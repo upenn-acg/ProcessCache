@@ -137,6 +137,7 @@ pub enum Fact {
 pub enum State {
     Created,
     // TODO: Deleted,
+    // TODO: Renamed/Renamed+???...
     Modified,
     None,
 }
@@ -179,6 +180,155 @@ fn generate_access_permission_list(mode_list: Vec<c_int>) -> Vec<Fact> {
     before_facts
 }
 
+fn generate_postconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
+    let mut curr_postconditions = HashSet::new();
+
+    // If all events in the list are side effect free, then the
+    // post conditions are equal to the pre conditions. But, it's
+    // simpler for me to reason about if the post conditions are just
+    // empty in this case :)
+    if file_events.iter().all(|event| event.is_side_effect_free()) {
+        // If all the events are side effect free,
+        curr_postconditions
+    } else {
+        let mut curr_state = CurrState { state: State::None };
+
+        for event in file_events {
+            curr_state.update_based_on_syscall(&event);
+            debug!("Curr state is: {:?}", curr_state);
+            let (_, after_facts) = generate_facts(&event);
+            if curr_postconditions.is_empty() {
+                for new_after in after_facts {
+                    curr_postconditions.insert(new_after);
+                }
+            } else {
+                let state = curr_state.state();
+                match (event, state) {
+                    // Access = SIDE EFFECT FREE
+                    // Which means it contributes nothin to the postconditions.
+                    (SyscallEvent::Access(_, _), State::Created) => {}
+                    (SyscallEvent::Access(_, _), State::Modified) => {}
+                    (SyscallEvent::Access(_, _), State::None) => {}
+
+                    // CreateMode, SyscallOutcome
+                    (SyscallEvent::Create(_, SyscallOutcome::Success(_)), State::Created) => {
+                        panic!("Successfully created file even though last state change was creation??");
+                    }
+                    (
+                        SyscallEvent::Create(
+                            create_mode,
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
+                        ),
+                        State::Created,
+                    ) => {
+                        if create_mode == CreateMode::Create {
+                            panic!("Failed to create because the file already exists, but not using EXCL flag??");
+                        }
+                    }
+                    (
+                        SyscallEvent::Create(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                        ),
+                        _,
+                    ) => {
+                        panic!("Failed to create file because it doesn't exist? What??");
+                    }
+                    (
+                        SyscallEvent::Create(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(p)),
+                        ),
+                        State::Created,
+                    ) => {
+                        if p != Permission::Write(ResourceType::Dir) {
+                            panic!(
+                                "Failed to create file for strange permissions reason: {:?}",
+                                p
+                            );
+                        }
+                    }
+
+                    (SyscallEvent::Create(_, SyscallOutcome::Success(_)), State::Modified) => {
+                        panic!("Last state was modified but we successfully created a file (NOT TRUNC)??");
+                    }
+                    (
+                        SyscallEvent::Create(
+                            create_mode,
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
+                        ),
+                        State::Modified,
+                    ) => {
+                        if create_mode == CreateMode::Create {
+                            panic!("Failed to create file because it already existed but not using O_EXCL??");
+                        }
+                    }
+                    (
+                        SyscallEvent::Create(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(p)),
+                        ),
+                        State::Modified,
+                    ) => {
+                        if p != Permission::Write(ResourceType::Dir) {
+                            panic!(
+                                "Failed to create file for strange permissions reason: {:?}",
+                                p
+                            );
+                        }
+                    }
+
+                    // Probably the easiest to reason about is State::None
+                    // This is SIDE-EFFECT-FUL
+                    (SyscallEvent::Create(_, SyscallOutcome::Success(_)), State::None) => {
+                        curr_postconditions.insert(Fact::FileContents);
+                        curr_postconditions.insert(Fact::FileExists);
+                    }
+                    // This is SIDE-EFFECT-FREE because it FAILS.
+                    (
+                        SyscallEvent::Create(
+                            create_mode,
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
+                        ),
+                        State::None,
+                    ) => match create_mode {
+                        CreateMode::Create => {
+                            panic!("Create file NOT excl but failed because file already exists??");
+                        }
+                        CreateMode::Excl => (),
+                    },
+                    (
+                        SyscallEvent::Create(
+                            _,
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied(p)),
+                        ),
+                        State::None,
+                    ) => {
+                        if p != Permission::Write(ResourceType::Dir) {
+                            panic!(
+                                "Failed to create file for strange permissions error: {:?}",
+                                p
+                            );
+                        }
+                    }
+
+                    (SyscallEvent::Open(_, _), State::Created) => todo!(),
+                    (SyscallEvent::Open(_, _), State::Modified) => todo!(),
+                    (SyscallEvent::Open(_, _), State::None) => todo!(),
+
+                    // Stat = SIDE EFFECT FREE
+                    // Which means it also contributes nothing to the postconditions.
+                    (SyscallEvent::Stat(_), State::Created) => {}
+                    (SyscallEvent::Stat(_), State::Modified) => {}
+                    (SyscallEvent::Stat(_), State::None) => {} // permissions list, outcome
+                                                               // Access is SIDE-EFFECT-FREE
+                                                               // It contributes nothing to postconditions.
+                }
+            }
+        }
+        curr_postconditions
+    }
+}
 fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
     let mut curr_preconditions = HashSet::new();
 
@@ -223,7 +373,7 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
         let mut curr_state = CurrState { state: State::None };
 
         for event in file_events {
-            let (new_before_facts, after_facts) = generate_facts(&event);
+            let (new_before_facts, _) = generate_facts(&event);
 
             // Update the curr_state if the event is side-effect-ful.
             curr_state.update_based_on_syscall(&event);
@@ -753,7 +903,10 @@ fn generate_preconditions(file_events: Vec<SyscallEvent>) -> HashSet<Fact> {
                         ),
                         _,
                     ) => {
-                        panic!("Open for append failed because of strange permissions error: {:?}",)
+                        panic!(
+                            "Open for append failed because of strange permissions error: {:?}",
+                            e
+                        );
                     }
 
                     // All before events from a successful open read only:
