@@ -2,6 +2,7 @@ use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
 mod cache;
+mod condition_generator;
 mod execution;
 mod ptracer;
 mod redirection;
@@ -136,6 +137,12 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
 
     loader.intercept(libc::SYS_access)?;
     loader.intercept(libc::SYS_creat)?;
+    // TODO: panic! (at least for now)
+    loader.intercept(libc::SYS_chdir)?;
+    // TODO: panic!
+    loader.intercept(libc::SYS_chmod)?;
+    // TODO: panic!
+    loader.intercept(libc::SYS_chown)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
     loader.intercept(libc::SYS_execve)?;
@@ -150,6 +157,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_openat)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
+    // loader.intercept(libc::SYS_unlink)?;
+    // loader.intercept(libc::SYS_unlinkat)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
@@ -186,7 +195,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getxattr)?;
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_getrusage)?;
-    loader.let_pass(libc::SYS_chmod)?;
+    // loader.let_pass(libc::SYS_chmod)?;
     loader.let_pass(libc::SYS_pselect6)?;
 
     // TODO: Probably should handle later...

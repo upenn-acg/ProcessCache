@@ -5,13 +5,14 @@ use libc::{
 };
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
-use nix::unistd::Pid;
+use nix::unistd::{AccessFlags, Pid};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{
-    /*cte_hash,*/ CreateMode, ExecFileEvents, ExecMetadata, Execution, Mode, OpenMode,
-    Permission, RcExecution, ResourceType, SyscallEvent, SyscallFailure, SyscallOutcome,
+use crate::cache::{ExecMetadata, Execution, RcExecution};
+use crate::condition_generator::{
+    CreateMode, ExecFileEvents, Mode, OpenMode, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -67,7 +68,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // );
 
     // Print all file event lists for the execution.
-    first_execution.print_pathbuf_to_file_event_lists();
+    // first_execution.print_pathbuf_to_file_event_lists();
+
     // println!("First execution: {:?}", first_execution);
     Ok(())
 }
@@ -145,6 +147,8 @@ pub async fn trace_process(
                 // For file creation type events (creat, open, openat), we want to know if the file already existed
                 // before the syscall happens (i.e. in the prehook).
                 let mut file_existed_at_start = false;
+                // For unlink, we want to know the number of hardlinks.
+                // For now, let's panic if it's > 1.
 
                 // Special cases, we won't get a posthook event. Instead we will get
                 // an execve event or a posthook if execve returns failure. We don't
@@ -152,6 +156,9 @@ pub async fn trace_process(
                 // TODO: Handle them properly...
 
                 match name {
+                    "chdir" => panic!("Program called chdir!!!"),
+                    "chmod" => panic!("Program called chmod!!!"),
+                    "chown" => panic!("Program called chown!!!"),
                     "creat" | "open" | "openat" => {
                         // Get the full path and check if the file exists.
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -408,36 +415,40 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     {
         None
     } else {
-        // TODO: F_OK, one or more of R_OK, W_OK, X_OK
-        let flags = regs.arg2::<i32>();
-        let mut flag_vec: Vec<c_int> = Vec::new();
-        // F_OK  == 0
-        if flags == 0 {
-            flag_vec.push(0);
+        // TODO: panic if more than one?
+        let flags_arg = regs.arg2::<i32>();
+        let access_flags: Option<AccessFlags> = AccessFlags::from_bits(flags_arg);
+        let mut flag_set = HashSet::new();
+        if let Some(flags) = access_flags {
+            if flags.contains(AccessFlags::F_OK) {
+                flag_set.insert(AccessFlags::F_OK);
+            } else {
+                if flags.contains(AccessFlags::R_OK) {
+                    flag_set.insert(AccessFlags::R_OK);
+                }
+                if flags.contains(AccessFlags::W_OK) {
+                    flag_set.insert(AccessFlags::W_OK);
+                }
+                if flags.contains(AccessFlags::X_OK) {
+                    flag_set.insert(AccessFlags::X_OK);
+                }
+            }
         } else {
-            if ((flags & R_OK) == R_OK) {
-                flag_vec.push(R_OK);
-            }
-            if ((flags & W_OK) == W_OK) {
-                flag_vec.push(W_OK);
-            }
-            if ((flags & X_OK) == X_OK) {
-                flag_vec.push(X_OK);
-            }
+            panic!("Access flags unexpected value!!");
         }
 
         match ret_val {
-            0 => Some(SyscallEvent::Access(flag_vec, SyscallOutcome::Success(0))),
+            0 => Some(SyscallEvent::Access(flag_set, SyscallOutcome::Success)),
             -2 => Some(SyscallEvent::Access(
-                flag_vec,
+                flag_set,
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             )),
             // It could be that the user doesn't have one of the permissions they specified as a parameter
             // OR it could be that they don't have search permissions on some dir in the path to the resource.
             // And we don't know so permission is gonna have to be unknown.
             -13 => Some(SyscallEvent::Access(
-                flag_vec,
-                SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Unknown)),
+                flag_set,
+                SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
             )),
             e => panic!("Unexpected error returned by access syscall!: {}", e),
         }
@@ -657,13 +668,13 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
                     // let stat_struct = regs.arg2::<*const libc::stat>();
                     // TODO: actually do something with this fucking struct.
                     // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
-                    Some(SyscallEvent::Stat(SyscallOutcome::Success(0)))
+                    Some(SyscallEvent::Stat(SyscallOutcome::Success))
                 }
                 -2 => Some(SyscallEvent::Stat(SyscallOutcome::Fail(
                     SyscallFailure::FileDoesntExist,
                 ))),
                 -13 => Some(SyscallEvent::Stat(SyscallOutcome::Fail(
-                    SyscallFailure::PermissionDenied(Permission::Search),
+                    SyscallFailure::PermissionDenied,
                 ))),
                 e => panic!("Unexpected error returned by stat syscall!: {}", e),
             }
@@ -781,14 +792,13 @@ fn generate_open_syscall_file_event(
             match syscall_outcome {
                 Ok(ret_val) => Some(SyscallEvent::Create(
                     CreateMode::Excl,
-                    SyscallOutcome::Success(ret_val),
+                    SyscallOutcome::Success,
                 )),
                 Err(ret_val) => match ret_val {
                     -13 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(
-                            ResourceType::Dir,
-                        ))),
+                        // I know it's either WRITE or EXEC access denied.
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     -17 => Some(SyscallEvent::Create(
                         CreateMode::Excl,
@@ -813,23 +823,25 @@ fn generate_open_syscall_file_event(
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
                             (Mode::Append, OpenMode::WriteOnly) => {
-                                Some(SyscallEvent::Open(Mode::Append, SyscallOutcome::Success(ret_val)))
+                                Some(SyscallEvent::Open(Mode::Append, SyscallOutcome::Success))
                             }
                             (Mode::Trunc, OpenMode::WriteOnly) => {
-                                Some(SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success(ret_val)))
+                                Some(SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success))
                             }
                         }
                     } else {
-                        Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success(ret_val)))
+                        Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success))
                     }
                 }
                 Err(ret_val) => match ret_val {
                     // More accurately, some "path component" doesn't exist, but they don't know that,
-                    // and so we don't, and so y'all get a generic error. Linux is NOT a generous god.
+                    // and so we don't, and so y'all get a generic error. 
+                    // Linux is NOT a generous god.
+                    // And neither am I.
                     -2 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
-                    -13 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(ResourceType::Dir))))),
+                    -13 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied))),
                     _ => panic!("O_CREAT and failed but not because access denied or path component doesn't exist?"),
-                },
+                }
             }
         }
     } else {
@@ -841,10 +853,9 @@ fn generate_open_syscall_file_event(
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
                 // Retval is pretty useless here but whatever.
-                (Mode::ReadOnly, OpenMode::ReadOnly) => Some(SyscallEvent::Open(
-                    Mode::ReadOnly,
-                    SyscallOutcome::Success(ret_val),
-                )),
+                (Mode::ReadOnly, OpenMode::ReadOnly) => {
+                    Some(SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Success))
+                }
                 (Mode::Trunc | Mode::Append, OpenMode::ReadOnly) => {
                     panic!("Undefined by POSIX/LINUX.")
                 }
@@ -853,14 +864,12 @@ fn generate_open_syscall_file_event(
                 (Mode::ReadOnly, OpenMode::WriteOnly) => {
                     panic!("Do not support O_WRONLY without offset flag!")
                 }
-                (Mode::Append, OpenMode::WriteOnly) => Some(SyscallEvent::Open(
-                    Mode::Append,
-                    SyscallOutcome::Success(ret_val),
-                )),
-                (Mode::Trunc, OpenMode::WriteOnly) => Some(SyscallEvent::Open(
-                    Mode::Trunc,
-                    SyscallOutcome::Success(ret_val),
-                )),
+                (Mode::Append, OpenMode::WriteOnly) => {
+                    Some(SyscallEvent::Open(Mode::Append, SyscallOutcome::Success))
+                }
+                (Mode::Trunc, OpenMode::WriteOnly) => {
+                    Some(SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success))
+                }
             },
             Err(ret_val) => match ret_val {
                 // ENOENT
@@ -873,15 +882,11 @@ fn generate_open_syscall_file_event(
                 -13 => match offset_mode {
                     Mode::Append | Mode::Trunc => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Write(
-                            ResourceType::File,
-                        ))),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     _ => Some(SyscallEvent::Open(
                         offset_mode,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied(Permission::Read(
-                            ResourceType::File,
-                        ))),
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                 },
                 _ => panic!(
