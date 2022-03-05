@@ -290,8 +290,8 @@ pub enum SyscallOutcome {
 
 // Directory Preconditions (For now, just cwd), File Preconditions
 // Takes in all the events for ONE RESOURCE and generates its preconditions.
-fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
-    let sys_span = span!(Level::INFO, "generate_file_preconditions");
+fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
+    let sys_span = span!(Level::INFO, "generate_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions = HashSet::new();
 
@@ -950,7 +950,7 @@ mod tests {
             HashSet::from([AccessFlags::R_OK]),
             SyscallOutcome::Success,
         )];
-        let preconditions = generate_file_preconditions(&events);
+        let preconditions = generate_preconditions(&events);
         let correct_preconditions =
             HashSet::from([Fact::File(FileFact::HasPermission(AccessFlags::R_OK))]);
         assert_eq!(preconditions, correct_preconditions);
@@ -975,7 +975,7 @@ mod tests {
             ),
             SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
         ];
-        let preconditions = generate_file_preconditions(&events);
+        let preconditions = generate_preconditions(&events);
         let correct_preconditions = HashSet::from([
             Fact::File(FileFact::DoesntExist),
             Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
@@ -983,9 +983,23 @@ mod tests {
         ]);
         assert_eq!(preconditions, correct_preconditions);
     }
+    #[test]
+    fn test_postconds2() {
+        let events = [
+            SyscallEvent::Access(
+                HashSet::from([AccessFlags::W_OK]),
+                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+            ),
+            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+        ];
+        let postconditions = generate_postconditions(&events);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
+        assert_eq!(postconditions, correct_postconditions);
+    }
 
     // stat
     // open open
+    #[test]
     fn test_preconds3() {
         let events = [
             SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
@@ -995,7 +1009,7 @@ mod tests {
             ),
             SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
         ];
-        let preconditions = generate_file_preconditions(&events);
+        let preconditions = generate_preconditions(&events);
         let correct_preconditions = HashSet::from([
             Fact::File(FileFact::DoesntExist),
             Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
@@ -1003,6 +1017,7 @@ mod tests {
         ]);
         assert_eq!(preconditions, correct_preconditions);
     }
+    #[test]
     fn test_postconds3() {
         let events = [
             SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
@@ -1013,14 +1028,11 @@ mod tests {
             SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
         ];
         let postconditions = generate_postconditions(&events);
-        let correct_postconditions = HashSet::from([
-            Fact::File(FileFact::DoesntExist),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
-        ]);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
         assert_eq!(postconditions, correct_postconditions);
     }
 
+    #[test]
     fn test_preconds4() {
         let events = [
             SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
@@ -1028,7 +1040,7 @@ mod tests {
             SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
             SyscallEvent::Stat(SyscallOutcome::Success),
         ];
-        let preconditions = generate_file_preconditions(&events);
+        let preconditions = generate_preconditions(&events);
         let correct_preconditions = HashSet::from([
             Fact::File(FileFact::Exists),
             Fact::File(FileFact::Contents),
@@ -1037,5 +1049,18 @@ mod tests {
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
         ]);
         assert_eq!(preconditions, correct_preconditions);
+    }
+
+    #[test]
+    fn test_postconds4() {
+        let events = [
+            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
+            SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success),
+            SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
+            SyscallEvent::Stat(SyscallOutcome::Success),
+        ];
+        let postconditions = generate_postconditions(&events);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
+        assert_eq!(postconditions, correct_postconditions);
     }
 }
