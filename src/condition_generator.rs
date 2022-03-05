@@ -92,10 +92,7 @@ impl FirstStateStruct {
                 SyscallEvent::Access(_, SyscallOutcome::Success) => {
                     self.state = FirstState::Exists;
                 }
-                SyscallEvent::Access(
-                    flags,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => {
+                SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => {
                     // If you call access(R_OK) and the file doesn't exist, you will get ENOENT,
                     // and that will be a different kind of access event.
                     self.state = FirstState::Exists;
@@ -386,6 +383,11 @@ fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
+            // No first state, but last mod was created or modified? what?
+            (SyscallEvent::Access(_, _), FirstState::None, LastMod::Created | LastMod::Modified) => {
+                panic!("Unexpected access failure, no first state but last mod created or modified??");
+            }
+
             (SyscallEvent::Access(flags, outcome), FirstState::None, LastMod::None) => {
                 // Nothing has modified this file yet.
                 match outcome {
@@ -450,7 +452,7 @@ fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
-            (SyscallEvent::Create(CreateMode::Create, outcome), FirstState::Exists, LastMod::Created) => {
+            (SyscallEvent::Create(CreateMode::Create, _), FirstState::Exists, LastMod::Created) => {
                 panic!("First state exists, last mod created, creating again (not excl) should be open event??");
             }
             (SyscallEvent::Create(CreateMode::Excl, outcome), FirstState::Exists, LastMod::Created) => {
@@ -459,7 +461,7 @@ fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     o => panic!("Strange outcome trying to create excl file that already exists??: {:?}", o),
                 }
             }
-            (SyscallEvent::Create(CreateMode::Create, outcome), FirstState::Exists, LastMod::Modified) => {
+            (SyscallEvent::Create(CreateMode::Create, _), FirstState::Exists, LastMod::Modified) => {
                 panic!("First state exists, last mod modified, creating again (not excl) should be open event??");
             }
             (SyscallEvent::Create(CreateMode::Excl, outcome), FirstState::Exists, LastMod::Modified) => {
@@ -783,7 +785,6 @@ fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
-            _ => (),
         }
 
         // This function will only change the first_state if it is None.
@@ -793,45 +794,221 @@ fn generate_file_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
     curr_file_preconditions
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_access_preconds() {
-//         let events = [SyscallEvent::Access(
-//             vec![Permission::Read],
-//             SyscallOutcome::Success,
-//         )];
-//         let preconditions = generate_file_preconditions(&events);
-//         let correct_preconditions: HashSet<Fact> =
-//             vec![Fact::File(FileFact::HasPermission(Permission::Read))]
-//                 .into_iter()
-//                 .collect();
-//         assert_eq!(preconditions, correct_preconditions);
-//     }
-
-//     #[test]
-//     fn test_access_create_preconds() {
-//         let events = [
-//             SyscallEvent::Access(
-//                 vec![Permission::Write],
-//                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-//             ),
-//             SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
-//         ];
-//         let preconditions = generate_file_preconditions(&events);
-//         let correct_preconditions: HashSet<Fact> = vec![
-//             Fact::File(FileFact::DoesntExist),
-//             Fact::Dir(DirFact::HasPermission(Permission::Write)),
-//         ]
-//         .into_iter()
-//         .collect();
-//         assert_eq!(preconditions, correct_preconditions);
-//     }
-// }
-
+// REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-// fn generate_postconditions() -> (Vec<Fact>, Vec<Fact>) {
+fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
+    let sys_span = span!(Level::INFO, "generate_file_postconditions");
+    let _ = sys_span.enter();
+    let mut curr_file_postconditions = HashSet::new();
 
-// }
+    let mut first_state_struct = FirstStateStruct {
+        state: FirstState::None,
+    };
+    let mut curr_state_struct = LastModStruct {
+        state: LastMod::None,
+    };
+
+    for event in file_events {
+        let first_state = first_state_struct.state();
+        let curr_state = curr_state_struct.state();
+
+        match (event, first_state, curr_state) {
+            (SyscallEvent::Access(_, _), _, _) => (),
+
+            (
+                SyscallEvent::Create(CreateMode::Create, outcome),
+                FirstState::DoesntExist,
+                LastMod::Created | LastMod::Modified,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("Successfully created but last mod was created or modified??");
+                }
+            }
+            (
+                SyscallEvent::Create(CreateMode::Excl, outcome),
+                FirstState::DoesntExist,
+                LastMod::Created | LastMod::Modified,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("Successfully created excl but last mod was created or modified??");
+                }
+            }
+            (
+                SyscallEvent::Create(CreateMode::Create | CreateMode::Excl, _),
+                FirstState::DoesntExist,
+                LastMod::None,
+            ) => {
+                curr_file_postconditions.insert(Fact::File(FileFact::Contents));
+            }
+            (
+                SyscallEvent::Create(_, outcome),
+                FirstState::Exists,
+                LastMod::Created | LastMod::Modified,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("Successfully created but last mod was created or modified??");
+                }
+            }
+            (
+                SyscallEvent::Create(CreateMode::Create, outcome),
+                FirstState::Exists,
+                LastMod::None,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("Successfully created file but it already exists??");
+                }
+            }
+            (
+                SyscallEvent::Create(CreateMode::Excl, outcome),
+                FirstState::Exists,
+                LastMod::None,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("Successfully created excl file but it already exists??");
+                }
+            }
+            (
+                SyscallEvent::Create(_, outcome),
+                FirstState::None,
+                LastMod::Created | LastMod::Modified,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    panic!("No first state but last mod was created or modified??");
+                }
+            }
+            (SyscallEvent::Create(_, outcome), FirstState::None, LastMod::None) => {
+                if *outcome == SyscallOutcome::Success {
+                    curr_file_postconditions.insert(Fact::File(FileFact::Contents));
+                }
+            }
+            (SyscallEvent::Open(Mode::ReadOnly, _), _, _) => (),
+            (
+                SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome),
+                FirstState::DoesntExist,
+                LastMod::Created | LastMod::Modified,
+            ) => {
+                // We created the file and are now modifying it.
+                // - exists (already known)
+                // - wr access to file (known)
+                // - x access to dir (known)
+                // - contents (known)
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Unexpected open append or trunc failure, first state doesn't exist, last mod created: {:?}", f),
+                    SyscallOutcome::Success => (),
+                }
+            }
+            (
+                SyscallEvent::Open(Mode::Append | Mode::Trunc, _),
+                FirstState::DoesntExist,
+                LastMod::None,
+            ) => (),
+            // If you create a file and don't give yourself write access... I don't even know man.
+            (
+                SyscallEvent::Open(_, _),
+                FirstState::Exists,
+                LastMod::Created | LastMod::Modified,
+            ) => (),
+            (
+                SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome),
+                FirstState::Exists,
+                LastMod::None,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    curr_file_postconditions.insert(Fact::File(FileFact::Contents));
+                }
+            }
+            // Created or modified but no first state??
+            (SyscallEvent::Open(_, _), FirstState::None, LastMod::Created | LastMod::Modified) => {
+                panic!("Open event, no first state but last state was created or modified??");
+            }
+            (
+                SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome),
+                FirstState::None,
+                LastMod::None,
+            ) => {
+                if *outcome == SyscallOutcome::Success {
+                    curr_file_postconditions.insert(Fact::File(FileFact::Contents));
+                }
+            }
+            (SyscallEvent::Stat(_), _, _) => (),
+        }
+
+        // This function will only change the first_state if it is None.
+        first_state_struct.update_based_on_syscall(event);
+        curr_state_struct.update_based_on_syscall(event);
+    }
+    curr_file_postconditions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preconds1() {
+        let events = [SyscallEvent::Access(
+            HashSet::from([AccessFlags::R_OK]),
+            SyscallOutcome::Success,
+        )];
+        let preconditions = generate_file_preconditions(&events);
+        let correct_preconditions =
+            HashSet::from([Fact::File(FileFact::HasPermission(AccessFlags::R_OK))]);
+        assert_eq!(preconditions, correct_preconditions);
+    }
+
+    #[test]
+    fn test_preconds2() {
+        let events = [
+            SyscallEvent::Access(
+                HashSet::from([AccessFlags::W_OK]),
+                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+            ),
+            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+        ];
+        let preconditions = generate_file_preconditions(&events);
+        let correct_preconditions = HashSet::from([
+            Fact::File(FileFact::DoesntExist),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+        ]);
+        assert_eq!(preconditions, correct_preconditions);
+    }
+
+    // stat
+    // open open
+    fn test_preconds3() {
+        let events = [
+            SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            SyscallEvent::Open(
+                Mode::ReadOnly,
+                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+            ),
+            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+        ];
+        let preconditions = generate_file_preconditions(&events);
+        let correct_preconditions = HashSet::from([
+            Fact::File(FileFact::DoesntExist),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+        ]);
+        assert_eq!(preconditions, correct_preconditions);
+    }
+
+    fn test_preconds4() {
+        let events = [
+            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
+            SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success),
+            SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
+            SyscallEvent::Stat(SyscallOutcome::Success),
+        ];
+        let preconditions = generate_file_preconditions(&events);
+        let correct_preconditions = HashSet::from([
+            Fact::File(FileFact::Exists),
+            Fact::File(FileFact::Contents),
+            Fact::File(FileFact::HasPermission(AccessFlags::R_OK)),
+            Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+        ]);
+        assert_eq!(preconditions, correct_preconditions);
+    }
+}

@@ -790,7 +790,7 @@ fn generate_open_syscall_file_event(
     if creat_flag {
         if excl_flag {
             match syscall_outcome {
-                Ok(ret_val) => Some(SyscallEvent::Create(
+                Ok(_) => Some(SyscallEvent::Create(
                     CreateMode::Excl,
                     SyscallOutcome::Success,
                 )),
@@ -812,7 +812,7 @@ fn generate_open_syscall_file_event(
             }
         } else {
             match syscall_outcome {
-                Ok(ret_val) => {
+                Ok(_) => {
                     if file_existed_at_start {
                         match (offset_mode, open_mode) {
                             (_, OpenMode::ReadOnly) => {
@@ -847,7 +847,7 @@ fn generate_open_syscall_file_event(
     } else {
         // Only opens file, no need to worry about it creating a file.
         match syscall_outcome {
-            Ok(ret_val) => match (offset_mode, open_mode) {
+            Ok(_) => match (offset_mode, open_mode) {
                 // TODO: Hmm. There should be a case for
                 // (None, OpenMode::ReadOnly)
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
