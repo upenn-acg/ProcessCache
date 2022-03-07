@@ -275,8 +275,8 @@ pub enum SyscallFailure {
 // The i32 is the return value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallOutcome {
-    Success,
     Fail(SyscallFailure),
+    Success,
 }
 
 // Directory Preconditions (For now, just cwd), File Preconditions
@@ -298,14 +298,26 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
         let curr_state = curr_state_struct.state();
 
         match (event, first_state, curr_state) {
-            // Starting out it didn't exist.
-            // It was created during the execution.
-            // So any permission it has on this file has nothing to do with the precondition, regardless of its outcome.
-            // This goes for DoesntExist Modified and DoesntExist Created because Modified and DoesntExist means it was created
-            // then later modified. So it's kind of the same case.
-            (SyscallEvent::Access(_, _), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
             (SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)), _, _) => {
                 panic!("Access failed because file already exists??");
+            }
+            (SyscallEvent::Access(_, _), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
+            (SyscallEvent::Access(f, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    SyscallOutcome::Fail(f) => {
+                        panic!("Access failed for unexpected reason, first state doesn't exist, last mod deleted: {:?}", f);
+                    }
+                    SyscallOutcome::Success => panic!("Access succeeded but last mod was deleted??"),
+                }
+            }
+            (SyscallEvent::Access(_, outcome), FirstState::Exists, LastMod::Deleted) => {
+                if *outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
+                    panic!("Access failed for unexpected reason, first state exists, last mod deleted: {:?}", outcome);
+                }
+            }
+            (SyscallEvent::Access(_, _), FirstState::None, LastMod::Deleted) => {
+                panic!("First state is none but last mod was deleted??");
             }
             (SyscallEvent::Access(_, outcome), FirstState::DoesntExist, LastMod::None) => {
                 match outcome {
@@ -536,6 +548,87 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
+            // It had to.. be created by us, then deleted, now created again.
+            // So no this does not contribute to the preconditions.
+            (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Failed to create file for strange reason, first state doesn't exist, last mod deleted: {:?}", f),
+                    SyscallOutcome::Success => (),
+                }
+            }
+            // It existed, we deleted it, now we are creating again. Doesn't contribute to the preconditions.
+            (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Failed to create file for strange reason, first state exists, last mod deleted: {:?}", f),
+                    SyscallOutcome::Success => (),
+                }
+            }
+            (SyscallEvent::Create(_, _), FirstState::None, LastMod::Deleted) => {
+                panic!("First state is none but last mod was deleted??");
+            }
+            // It didn't exist, then it did. Then we deleted it. Preconditions don't change.
+            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
+            (SyscallEvent::Delete(outcome), FirstState::DoesntExist, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                        // If it doesn't exist, you can still get back permission denied.
+                        // Still info we need.
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                    }
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => panic!("Delete failed because file already exists??"),
+                    SyscallOutcome::Success => panic!("Succeeded deleting a file when first state was doesn't exist and last mod was none??"),
+                }
+            }
+
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::Created | LastMod::Modified) => {
+                // It existed. Then we deleted. Then created. Now we are trying to delete again.
+                // Only depends on it existing in the preconditions. Which we should already know.
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Failed to delete file for strange reason, first state exists, last mod created or modified??: {:?}", f),
+                    SyscallOutcome::Success => (),
+                }
+            }
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                    }
+                    SyscallOutcome::Fail(f) => panic!("Delete failed for strange reason, first state exists, last mod none: {:?}", f),
+                    SyscallOutcome::Success => {
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                    }
+                }
+            }
+
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Created | LastMod::Modified) => {
+                panic!("Last mod was created or modified but first state is none??");
+            }
+
+            (SyscallEvent::Delete(outcome), FirstState::None, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(_) => (),
+                    SyscallOutcome::Success => {
+                        curr_file_preconditions.insert(Fact::File(FileFact::Exists));
+                    }
+                }
+            }
+            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Deleted) => todo!(),
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    SyscallOutcome::Fail(f) => {
+                        panic!("Unexpected delete file failure, first state exists, last mod deleted: {:?}", f);
+                    }
+                    SyscallOutcome::Success => panic!("Last mod was deleted but we successfully delete again??"),
+                }
+            }
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Deleted) => {
+                panic!("First state was none but last mod was deleted??");
+            }
             // Ok, so the file didn't exist. We created it. Which is dependent on the exec. So all of these cases
             // CONTRIBUTE NOTHING.
             (SyscallEvent::Open(_, _), FirstState::DoesntExist, _) => (),
@@ -557,7 +650,6 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
             // - write access to file, x access to dir (already known)
             // - failures: doesn't exist, already exist make no sense, so does the permission one.
             (SyscallEvent::Open(_, _), FirstState::Exists, LastMod::Created) => (),
-
             // Open appending, it already existed at the start, we modified this,
             // we add nothing to the preconditions that we don't already know.s=
             (SyscallEvent::Open(Mode::Append | Mode::Trunc, _), FirstState::Exists, LastMod::Modified) => (),
@@ -682,6 +774,14 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     SyscallOutcome::Fail(f) => panic!("Unexected open trunc failure, first first state or mods: {:?}", f),
                 }
             }
+            (SyscallEvent::Open(mode, outcome), FirstState::Exists, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    o => panic!("Unexpected outcome from open {:?}, first state exists, last mod deleted: {:?}", mode, o),
+                }
+            }
+
+            (SyscallEvent::Open(mode, _), FirstState::None, LastMod::Deleted) => panic!("Open {:?} first state was none but last mod was deleted??", mode),
             (SyscallEvent::Stat(outcome), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => {
                 match outcome {
                     // This shouldn't happen. Even permissions, we have to have exec access on our cwd to have
@@ -776,56 +876,22 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
-            // It didn't exist, then it did. Then we deleted it. Preconditions don't change.
-            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
-            (SyscallEvent::Delete(outcome), FirstState::DoesntExist, LastMod::None) => {
+
+            // Because the file doesn't exist before the exec starts, this stat depends on an event during the exec.
+            (SyscallEvent::Stat(_), FirstState::DoesntExist, LastMod::Deleted) => (),
+            (SyscallEvent::Stat(outcome), FirstState::Exists, LastMod::Deleted) => {
                 match outcome {
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                        // If it doesn't exist, you can still get back permission denied.
-                        // Still info we need.
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
-                    }
-                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => panic!("Delete failed because file already exists??"),
-                    SyscallOutcome::Success => panic!("Succeeded deleting a file when first state was doesn't exist and last mod was none??"),
+                    // Already exists makes no sense. Permissions also doesn't because we were able to delete the file.
+                    SyscallOutcome::Fail(f) => panic!("Unexpected stat failure, first state exists, last mod deleted: {:?}", f),
+                    SyscallOutcome::Success => panic!("Successfully stat-ed a file but last mod was deleted??"),
                 }
             }
-
-            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::Created | LastMod::Modified) => {
-                // It existed. Then we deleted. Then created. Now we are trying to delete again.
-                // Only depends on it existing in the preconditions. Which we should already know.
-                match outcome {
-                    SyscallOutcome::Fail(f) => panic!("Failed to delete file for strange reason, first state exists, last mod created or modified??: {:?}", f),
-                    SyscallOutcome::Success => (),
-                }
-            }
-            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
-                match outcome {
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
-                    }
-                    SyscallOutcome::Fail(f) => panic!("Delete failed for strange reason, first state exists, last mod none: {:?}", f),
-                    SyscallOutcome::Success => {
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                    }
-                }
-            }
-
-            (SyscallEvent::Delete(_), FirstState::None, LastMod::Created | LastMod::Modified) => {
-                panic!("Last mod was created or modified but first state is none??");
-            }
-
-            (SyscallEvent::Delete(outcome), FirstState::None, LastMod::None) => {
-                match outcome {
-                    SyscallOutcome::Fail(_) => (),
-                    SyscallOutcome::Success => {
-                        curr_file_preconditions.insert(Fact::File(FileFact::Exists));
-                    }
-                }
-            }
+            (SyscallEvent::Stat(_), FirstState::None, LastMod::Deleted) => panic!("First state is none but last mod is deleted??"),
+            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Modified) => todo!(),
+            (SyscallEvent::Delete(_), FirstState::Exists, LastMod::Modified) => todo!(),
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Modified) => todo!(),
+            (SyscallEvent::Stat(_), FirstState::DoesntExist, LastMod::Modified) => todo!(),
         }
 
         // This function will only change the first_state if it is None.
