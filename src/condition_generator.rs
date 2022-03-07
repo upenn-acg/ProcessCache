@@ -16,6 +16,7 @@ pub enum CreateMode {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum LastMod {
     Created,
+    Deleted,
     Modified,
     None,
 }
@@ -28,6 +29,9 @@ impl LastModStruct {
         match *syscall_event {
             SyscallEvent::Create(_, SyscallOutcome::Success) => {
                 self.state = LastMod::Created;
+            }
+            SyscallEvent::Delete(SyscallOutcome::Success) => {
+                self.state = LastMod::Deleted;
             }
             SyscallEvent::Open(Mode::Append | Mode::Trunc, SyscallOutcome::Success) => {
                 self.state = LastMod::Modified;
@@ -136,6 +140,16 @@ impl FirstStateStruct {
                     CreateMode::Excl,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => (),
+                SyscallEvent::Delete(SyscallOutcome::Success) => {
+                    self.state = FirstState::Exists;
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
+                    panic!("Failed to delete a file because it already exists??");
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
+                    self.state = FirstState::Exists;
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => (),
                 SyscallEvent::Open(Mode::Append | Mode::ReadOnly, SyscallOutcome::Success) => {
                     self.state = FirstState::Exists;
                 }
@@ -243,35 +257,12 @@ impl ExecFileEvents {
 // "Create" meaning using O_CREAT
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
-    // None =
     Access(HashSet<AccessFlags>, SyscallOutcome), // Vec<c_int> is list of F_OK (0), R_OK, W_OK, X_OK
     Create(CreateMode, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    Delete(SyscallOutcome),
     Open(Mode, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     // TODO: Handle stat struct too
     Stat(SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
-}
-
-impl SyscallEvent {
-    // Returns true if the syscall event DOES NOT CAUSE SIDE EFFECTS
-    // The phrase "side effects" is confusing me at this point haha.
-    fn is_side_effect_free(&self) -> bool {
-        match self {
-            SyscallEvent::Access(_, _) => true,
-            SyscallEvent::Create(_, _) => false,
-            SyscallEvent::Open(Mode::ReadOnly, _) => true,
-            SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome) => match outcome {
-                SyscallOutcome::Success => false,
-                SyscallOutcome::Fail(failure) => match failure {
-                    SyscallFailure::AlreadyExists => {
-                        panic!("is_side_effect_free(): open for writing failed by already exists??")
-                    }
-                    SyscallFailure::FileDoesntExist => true,
-                    SyscallFailure::PermissionDenied => true,
-                },
-            },
-            SyscallEvent::Stat(_) => true,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -785,6 +776,56 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     }
                 }
             }
+            // It didn't exist, then it did. Then we deleted it. Preconditions don't change.
+            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
+            (SyscallEvent::Delete(outcome), FirstState::DoesntExist, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                        // If it doesn't exist, you can still get back permission denied.
+                        // Still info we need.
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                    }
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => panic!("Delete failed because file already exists??"),
+                    SyscallOutcome::Success => panic!("Succeeded deleting a file when first state was doesn't exist and last mod was none??"),
+                }
+            }
+
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::Created | LastMod::Modified) => {
+                // It existed. Then we deleted. Then created. Now we are trying to delete again.
+                // Only depends on it existing in the preconditions. Which we should already know.
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Failed to delete file for strange reason, first state exists, last mod created or modified??: {:?}", f),
+                    SyscallOutcome::Success => (),
+                }
+            }
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                    }
+                    SyscallOutcome::Fail(f) => panic!("Delete failed for strange reason, first state exists, last mod none: {:?}", f),
+                    SyscallOutcome::Success => {
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
+                        curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                    }
+                }
+            }
+
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Created | LastMod::Modified) => {
+                panic!("Last mod was created or modified but first state is none??");
+            }
+
+            (SyscallEvent::Delete(outcome), FirstState::None, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(_) => (),
+                    SyscallOutcome::Success => {
+                        curr_file_preconditions.insert(Fact::File(FileFact::Exists));
+                    }
+                }
+            }
         }
 
         // This function will only change the first_state if it is None.
@@ -881,6 +922,24 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     curr_file_postconditions.insert(Fact::File(FileFact::Contents));
                 }
             }
+            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
+            (SyscallEvent::Delete(outcome), FirstState::DoesntExist, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => panic!("Failed to delete file because it already exists??"),
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist | SyscallFailure::PermissionDenied) => (),
+                    SyscallOutcome::Success => panic!("Succeeded deleting file but first state was doesn't exist and last mod was none??"),
+                }
+            }
+            (SyscallEvent::Delete(_), FirstState::Exists, LastMod::Created | LastMod::Modified) => (),
+            (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied) | SyscallOutcome::Success => (),
+                    SyscallOutcome::Fail(f) => panic!("Unexpected delete file failure, first state exists, last mod none: {:?}", f),
+                }
+            }
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Created) => todo!(),
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::Modified) => todo!(),
+            (SyscallEvent::Delete(_), FirstState::None, LastMod::None) => todo!(),
             (SyscallEvent::Open(Mode::ReadOnly, _), _, _) => (),
             (
                 SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome),
@@ -1062,5 +1121,18 @@ mod tests {
         let postconditions = generate_postconditions(&events);
         let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
         assert_eq!(postconditions, correct_postconditions);
+    }
+
+    #[test]
+    fn test_preconds5() {
+        let events = [
+            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
+            SyscallEvent::Delete(SyscallOutcome::Success),
+            SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+        ];
+        let preconditions = generate_preconditions(&events);
+        let correct_preconditions = HashSet::from([Fact::File(FileFact::Exists), Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)), Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK))]);
+        assert_eq!(preconditions, correct_preconditions);
     }
 }

@@ -157,8 +157,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_openat)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
-    // loader.intercept(libc::SYS_unlink)?;
-    // loader.intercept(libc::SYS_unlinkat)?;
+    loader.intercept(libc::SYS_unlink)?;
+    loader.intercept(libc::SYS_unlinkat)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
@@ -205,7 +205,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_pipe)?;
-    loader.let_pass(libc::SYS_chdir)?;
     loader.let_pass(libc::SYS_readlink)?;
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;

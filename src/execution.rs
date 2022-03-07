@@ -147,6 +147,7 @@ pub async fn trace_process(
                 // For file creation type events (creat, open, openat), we want to know if the file already existed
                 // before the syscall happens (i.e. in the prehook).
                 let mut file_existed_at_start = false;
+                let mut nlinks_before = 0;
                 // For unlink, we want to know the number of hardlinks.
                 // For now, let's panic if it's > 1.
 
@@ -211,6 +212,12 @@ pub async fn trace_process(
                     "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2" | "clone3" => {
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
+                    }
+                    "unlink" | "unlinkat "=> {
+                        use std::os::unix::fs::MetadataExt;
+                        let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                        let meta = full_path.as_path().metadata().unwrap();
+                        nlinks_before = meta.nlink();
                     }
                     _ => {
                         // Check if we should skip this execution.
@@ -277,6 +284,18 @@ pub async fn trace_process(
                     }
                     // TODO: newfstatat
                     "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
+                    "unlink" | "unlinkat" => {
+                        if nlinks_before == 1 {
+                            // before facts? (success)
+                            // - exists
+                            // - contents
+                            // - write access to dir
+                            // - x access to dir
+                            // after facts? (success)
+                            // - doesnt exist
+                            handle_unlink(&curr_execution, name, &tracer)?
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -702,6 +721,29 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
     Ok(())
 }
 
+fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
+    let regs = tracer
+    .get_registers()
+    .with_context(|| context!("Failed to get regs in handle_access()"))?;
+    let ret_val = regs.retval::<i32>();
+    // retval = 0 is success for this syscall. lots of them it would seem.
+    let full_path = get_full_path(execution, name, tracer)?;
+
+    let delete_syscall_event = match ret_val {
+        0 => SyscallEvent::Delete(SyscallOutcome::Success),
+        -2 => SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+        -13 => SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+        e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
+    };
+
+    execution.add_new_file_event(tracer.curr_proc, delete_syscall_event, full_path);
+    Ok(())
+
+}
+
 // Currently: stat, fstat, newfstat64
 // We consider these syscalls to be inputs.
 // Well the files they are acting upon anyway!
@@ -715,8 +757,8 @@ fn get_full_path(
         .with_context(|| context!("Failed to get regs in exec event"))?;
 
     let path_arg_bytes = match syscall_name {
-        "access" | "creat" | "open" | "stat" => regs.arg1::<*const c_char>(),
-        "openat" => regs.arg2::<*const c_char>(),
+        "access" | "creat" | "open" | "stat" | "unlink" => regs.arg1::<*const c_char>(),
+        "openat" | "unlinkat" => regs.arg2::<*const c_char>(),
         _ => panic!("Not handling an appropriate system call in get_full_path!"),
     };
 
@@ -729,11 +771,11 @@ fn get_full_path(
         file_name_arg
     } else {
         match syscall_name {
-            "access" | "creat" | "open" | "stat" => {
+            "access" | "creat" | "open" | "stat" | "unlink" => {
                 let cwd = curr_execution.starting_cwd();
                 cwd.join(file_name_arg)
             }
-            "openat" => {
+            "openat" | "unlinkat" => {
                 let dir_fd = regs.arg1::<i32>();
                 let dir_path = if dir_fd == AT_FDCWD {
                     curr_execution.starting_cwd()
