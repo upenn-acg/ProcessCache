@@ -3,15 +3,19 @@ use std::marker::PhantomData;
 use std::os::raw::c_char;
 
 /// Represents a register which has never been written to.
+#[derive(Clone)]
 pub enum Unmodified {}
 /// Represents a register which has been changed. Data must be written to tracee
 /// for changes to take effect.
+#[derive(Clone)]
 #[allow(dead_code)]
 pub enum Modified {}
 /// Data has been written to tracee.
+#[derive(Clone)]
 #[allow(dead_code)]
 pub enum Flushed {}
 
+#[derive(Clone)]
 pub struct Regs<T> {
     regs: user_regs_struct,
     // TODO should not expose this.

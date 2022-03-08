@@ -15,12 +15,12 @@ use crate::cache::{
     generate_hash, get_cached_root_execution, serialize_execs_to_cache, serve_outputs_from_cache,
     ExecAccesses, ExecMetadata, Execution, FileAccess, OpenMode, RcExecution, IO,
 };
-use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
 use crate::Ptracer;
+use crate::{context, redirection};
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -86,6 +86,7 @@ pub async fn trace_process(
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
     let mut skip_execution = false;
+    let mut iostream_redirected = false;
 
     loop {
         let event = tracer
@@ -166,6 +167,7 @@ pub async fn trace_process(
                             context!("Unable to get next event after execve prehook.")
                         })?;
 
+                        // We are in the posthook now!
                         let new_execution = create_new_execution(
                             args,
                             tracer.curr_proc,
@@ -201,6 +203,11 @@ pub async fn trace_process(
                                     skip_execution = true;
                                     s.in_scope(|| info!("Serving outputs"));
                                     serve_outputs_from_cache(tracer.curr_proc, &cached_exec)?;
+
+                                    // Update status if this is the root process before skipping.
+                                    if curr_execution.is_pending_root() {
+                                        curr_execution.update_root(new_execution);
+                                    }
                                 }
                             } else {
                                 curr_execution.update_root(new_execution);
@@ -242,6 +249,25 @@ pub async fn trace_process(
                             regs.write_rax(exit_syscall_num);
 
                             tracer.set_regs(&mut regs)?;
+                            continue;
+                        }
+
+                        if !iostream_redirected {
+                            const STDOUT_FD: u32 = 1;
+                            // TODO: Deal with PID recycling?
+                            let stdout_file: String =
+                                format!("stdout_{:?}", tracer.curr_proc.as_raw());
+
+                            // This is the first real system call this program is doing after exec-ing.
+                            // We will redirect their stdout output here by writing it to a file.
+                            redirection::redirect_io_stream(&stdout_file, STDOUT_FD, &mut tracer)
+                                .await
+                                .with_context(|| context!("Unable to redirect stdout."))?;
+
+                            // TODO: Add stderr redirection.
+
+                            iostream_redirected = true;
+                            // Continue to let original system call run.
                             continue;
                         }
                     }

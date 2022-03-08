@@ -3,6 +3,9 @@ use libc::{c_long, c_void, PT_NULL};
 use nix::sys::ptrace;
 use nix::sys::ptrace::{Options, Request};
 use nix::unistd::*;
+use std::convert::TryInto;
+use std::ffi::CString;
+use std::mem::size_of;
 use std::{mem, slice};
 
 use byteorder::LittleEndian;
@@ -88,6 +91,49 @@ impl Ptracer {
         self.curr_proc
     }
 
+    /// Write a Rust string as a char* to the location specified by `address`.
+    pub(crate) fn write_as_c_string(
+        &self,
+        string: &str,
+        address: *const c_char,
+    ) -> anyhow::Result<()> {
+        ensure!(!address.is_null(), context!("Address is null."));
+
+        // Convert into C String. New null terminated string is allocated.
+        let cstring =
+            CString::new(string).with_context(|| context!("Cannot convert to CString"))?;
+
+        self.write_bytes(cstring.as_bytes_with_nul(), address as *const u8)
+            .with_context(|| context!("Failed to write bytes."))?;
+
+        Ok(())
+    }
+
+    /// Inject the system call specified by `syscall_number`. We can only inject at system call
+    /// sites, e.g. pre-hook.
+    /// `regs` should have the arguments you want to use for this injected system call.
+    /// `original_regs` is the original, unmodified state of the registers when ptrace stopped
+    /// at the pre-hook.
+    /// You should call `restore_state` on the returned InjectedHandle to reset the register state
+    /// after the system call has been injected.
+    pub(crate) fn inject_system_call(
+        &self,
+        syscall_number: c_long,
+        original_regs: Regs<Unmodified>,
+        mut regs: Regs<Modified>,
+    ) -> anyhow::Result<InjectedHandle> {
+        let syscall_number = syscall_number.try_into().expect("cannot convert");
+        // Change the orig rax val don't ask me why
+        regs.write_syscall_number(syscall_number);
+        // Change the rax val
+        regs.write_rax(syscall_number);
+
+        self.set_regs(&mut regs)?;
+        Ok(InjectedHandle::new(original_regs))
+    }
+
+    /// TODO: This could probably be optimized to use process_vm_read instead.
+    /// Currently this function read 8 bytes at a time for strings, which is probably waaayy slow!
     pub(crate) fn read_c_string(&self, address: *const c_char) -> anyhow::Result<String> {
         ensure!(!address.is_null(), context!("Address is null."));
 
@@ -116,31 +162,35 @@ impl Ptracer {
         Ok(string)
     }
 
+    /// TODO Not sure why the Copy trait bound is here. I was probably trying to say only "simple"
+    /// types should be copied, e.g. types made up of just bytes. Should 'static be used as a
+    /// better trait bound instead? Hmmm...
     pub fn write_value<T: Copy>(&self, address: *const T, value: &T) -> anyhow::Result<()> {
-        use nix::sys::uio::{process_vm_writev, IoVec, RemoteIoVec};
-        use std::mem::size_of;
-
-        ensure!(!address.is_null(), context!("Address is null."));
-
-        // Ugh rust doesn't support this type as a const so I can't use a stack allocated
-        // array here.
-        let type_size: usize = size_of::<T>();
-        let remote = RemoteIoVec {
-            base: address as usize,
-            len: type_size,
-        };
-
         // Get raw bytes from `value`
         let p: *const T = value;
         let p: *const u8 = p as *const u8;
         // Representation of `value` as a slice of bytes.
-        let byte_repr: &[u8] = unsafe {
-            slice::from_raw_parts(p, mem::size_of::<T>())
+        let byte_repr: &[u8] = unsafe { slice::from_raw_parts(p, size_of::<T>()) };
+
+        self.write_bytes(byte_repr, address as *const u8)
+            .with_context(|| context!("write_bytes failed."))?;
+
+        Ok(())
+    }
+
+    pub fn write_bytes(&self, bytes: &[u8], address: *const u8) -> anyhow::Result<()> {
+        use nix::sys::uio::{process_vm_writev, IoVec, RemoteIoVec};
+
+        ensure!(!address.is_null(), context!("Address is null."));
+
+        let remote = RemoteIoVec {
+            base: address as usize,
+            len: bytes.len(),
         };
 
-        // Local mutable burrow, buffer needs to by borrowed again later.
+        // Local mutable burrow, buffer needs to be borrowed again later.
         {
-            let local = IoVec::from_slice(byte_repr);
+            let local = IoVec::from_slice(bytes);
             process_vm_writev(self.curr_proc, &[local], &[remote])
                 .with_context(|| context!("process_vm_writev() failed."))?;
         }
@@ -148,19 +198,24 @@ impl Ptracer {
     }
 
     pub fn read_value<T>(&self, address: *const T) -> anyhow::Result<T> {
-        use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
-        use std::mem::size_of;
+        let type_size: usize = size_of::<T>();
+        let bytes = self
+            .read_bytes(address as *const u8, type_size)
+            .with_context(|| context!("Cannot read bytes from tracee"))?;
 
+        let res: T = unsafe { ::std::ptr::read(bytes.as_ptr() as *const _) };
+        Ok(res)
+    }
+
+    fn read_bytes(&self, address: *const u8, bytes: usize) -> anyhow::Result<Vec<u8>> {
+        use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
         ensure!(!address.is_null(), context!("Address is null."));
 
-        // Ugh rust doesn't support this type as a const so I can't use a stack allocated
-        // array here.
-        let type_size: usize = size_of::<T>();
         let remote = RemoteIoVec {
             base: address as usize,
-            len: type_size,
+            len: bytes,
         };
-        let mut buffer = vec![0; type_size];
+        let mut buffer = vec![0; bytes];
 
         // Local mutable burrow, buffer needs to by borrowed again later.
         {
@@ -168,8 +223,7 @@ impl Ptracer {
             process_vm_readv(self.curr_proc, &[local], &[remote])
                 .with_context(|| context!("process_vm_readv() failed."))?;
         }
-        let res: T = unsafe { ::std::ptr::read(buffer.as_ptr() as *const _) };
-        Ok(res)
+        Ok(buffer)
     }
 
     pub(crate) async fn get_next_event(
@@ -279,5 +333,37 @@ pub fn ptrace_syscall(
         // Omit integer, not interesting.
         ptrace::ptrace(request, pid, PT_NULL as *mut c_void, signal)
             .with_context(|| context!("Cannot call ptrace({:?}) for {:?}", request, pid))
+    }
+}
+
+/// Handle returned by calling `inject_system_call`. Will reset the state of the injection
+/// so tracee doesn't know injection ever happened.
+pub struct InjectedHandle {
+    regs: Regs<Unmodified>,
+}
+
+impl InjectedHandle {
+    fn new(regs: Regs<Unmodified>) -> Self {
+        InjectedHandle { regs }
+    }
+
+    /// Restores state to how it was before injection happened. You should call this after
+    /// your injected system call returns!
+    /// This will put the registers back to their original state. This includes setting the IP
+    /// pointer back to so the original system call still takes place.
+    pub fn restore_state(self, ptracer: &Ptracer) -> anyhow::Result<Regs<Unmodified>> {
+        const SYSCALL_INSTRUCTION_SIZE: u64 = 2;
+
+        let reset_rip = self.regs.rip::<u64>() - SYSCALL_INSTRUCTION_SIZE;
+        let prev_syscall = self.regs.syscall_number();
+
+        let mut regs = self.regs.make_modified();
+        regs.write_rip(reset_rip);
+
+        regs.write_rax(prev_syscall);
+        ptracer
+            .set_regs(&mut regs)
+            .with_context(|| context!("Unable to restore register state."))?;
+        Ok(regs.make_unmodified())
     }
 }

@@ -4,6 +4,7 @@ mod async_runtime;
 mod cache;
 mod execution;
 mod ptracer;
+mod redirection;
 mod regs;
 mod seccomp;
 mod system_call_names;
@@ -79,11 +80,11 @@ fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
                 .with_context(|| context!("Unable to wait for child to be ready"))?;
 
             debug!("Child returned ready!");
-            Ptracer::set_trace_options(tracee_pid).
-                with_context(|| context!("Unable to set ptracing options."))?;
+            Ptracer::set_trace_options(tracee_pid)
+                .with_context(|| context!("Unable to set ptracing options."))?;
 
-            execution::trace_program(tracee_pid).
-                with_context(|| context!("Failed while tracing program."))?;
+            execution::trace_program(tracee_pid)
+                .with_context(|| context!("Failed while tracing program."))?;
             Ok(())
         }
         ForkResult::Child => run_tracee(command),
