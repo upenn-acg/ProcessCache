@@ -302,7 +302,7 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                 panic!("Access failed because file already exists??");
             }
             (SyscallEvent::Access(_, _), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
-            (SyscallEvent::Access(f, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
+            (SyscallEvent::Access(_, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
                 match outcome {
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                     SyscallOutcome::Fail(f) => {
@@ -633,7 +633,7 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
             // CONTRIBUTE NOTHING.
             (SyscallEvent::Open(_, _), FirstState::DoesntExist, _) => (),
             // Appending to a file successfully tells us we have
-            // write access to file, x access to dir, file contents, it exists
+            // write access to file, x + w access to dir, file contents, it exists
             // all of these we already know based on last mod and first state.
             // ----------------------------------------------------------------
             // Reading from the file:
@@ -768,7 +768,7 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
                     }
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                        curr_file_preconditions.insert(Fact::File(FileFact::NoPermission(AccessFlags::R_OK)));
+                        curr_file_preconditions.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
                         curr_file_preconditions.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
                     }
                     SyscallOutcome::Fail(f) => panic!("Unexected open trunc failure, first first state or mods: {:?}", f),
@@ -888,10 +888,6 @@ fn generate_preconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                 }
             }
             (SyscallEvent::Stat(_), FirstState::None, LastMod::Deleted) => panic!("First state is none but last mod is deleted??"),
-            (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Modified) => todo!(),
-            (SyscallEvent::Delete(_), FirstState::Exists, LastMod::Modified) => todo!(),
-            (SyscallEvent::Delete(_), FirstState::None, LastMod::Modified) => todo!(),
-            (SyscallEvent::Stat(_), FirstState::DoesntExist, LastMod::Modified) => todo!(),
         }
 
         // This function will only change the first_state if it is None.
@@ -921,7 +917,6 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
 
         match (event, first_state, curr_state) {
             (SyscallEvent::Access(_, _), _, _) => (),
-
             (
                 SyscallEvent::Create(CreateMode::Create, outcome),
                 FirstState::DoesntExist,
@@ -988,6 +983,24 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     curr_file_postconditions.insert(Fact::File(FileFact::Contents));
                 }
             }
+            (SyscallEvent::Create(_, outcome), FirstState::DoesntExist | FirstState::Exists, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(f) => panic!("Unexpected file create failure, first state doesn't exist, last mod deleted: {:?}", f),
+                    SyscallOutcome::Success => {
+                        // Okay it didn't exist, we must have created it, then deleted it, now we are creating it again
+                        // So we take out
+                        // - doesn't exist
+                        // and we put in 
+                        // - exists
+                        // - contents
+                        curr_file_postconditions.remove(&Fact::File(FileFact::DoesntExist));
+                        curr_file_postconditions.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+            }
+            (SyscallEvent::Create(_, _), FirstState::None, LastMod::Deleted) => {
+                panic!("First state is none but last mod was deleted??");
+            }
             (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created | LastMod::Modified) => (),
             (SyscallEvent::Delete(outcome), FirstState::DoesntExist, LastMod::None) => {
                 match outcome {
@@ -1003,9 +1016,29 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     SyscallOutcome::Fail(f) => panic!("Unexpected delete file failure, first state exists, last mod none: {:?}", f),
                 }
             }
-            (SyscallEvent::Delete(_), FirstState::None, LastMod::Created) => todo!(),
-            (SyscallEvent::Delete(_), FirstState::None, LastMod::Modified) => todo!(),
-            (SyscallEvent::Delete(_), FirstState::None, LastMod::None) => todo!(),
+            (SyscallEvent::Delete(outcome), FirstState::None, last_mod) => {
+                match last_mod {
+                    LastMod::None => {
+                        match outcome {
+                            SyscallOutcome::Success => {
+                                curr_file_postconditions.insert(Fact::File(FileFact::DoesntExist));
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) | SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => (),
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                                panic!("Failed to delete file because it already exists??");
+                            }
+                        }
+                    }
+                    m => panic!("First state is none but last mod was {:?}??", m),
+                }
+            }
+            (SyscallEvent::Delete(outcome), FirstState::DoesntExist | FirstState::Exists, LastMod::Deleted) => {
+                match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                    SyscallOutcome::Fail(f) => panic!("Delete failed for strange reason, first state doesn't exist, last mod deleted: {:?}", f),
+                    SyscallOutcome::Success => panic!("Last mod was deleted but we just successfully deleted again??"),
+                }
+            }
             (SyscallEvent::Open(Mode::ReadOnly, _), _, _) => (),
             (
                 SyscallEvent::Open(Mode::Append | Mode::Trunc, outcome),
@@ -1055,6 +1088,10 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
                     curr_file_postconditions.insert(Fact::File(FileFact::Contents));
                 }
             }
+            // This open can't succeed. The file was deleted, and this event means they didn't create it but opened an existing one.
+            // Or trunced an existing one. So it can't add to the postconditions.
+            (SyscallEvent::Open(_, _), FirstState::DoesntExist | FirstState::Exists, LastMod::Deleted) => (),
+            (SyscallEvent::Open(_,_), FirstState::None, LastMod::Deleted) => panic!("First state is none but last mod was deleted??"),
             (SyscallEvent::Stat(_), _, _) => (),
         }
 
@@ -1067,32 +1104,12 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
 
 #[cfg(test)]
 mod tests {
+    use nix::sys::socket::sockopt::AcceptConn;
+
     use super::*;
 
     #[test]
-    fn test_preconds1() {
-        let events = [SyscallEvent::Access(
-            HashSet::from([AccessFlags::R_OK]),
-            SyscallOutcome::Success,
-        )];
-        let preconditions = generate_preconditions(&events);
-        let correct_preconditions =
-            HashSet::from([Fact::File(FileFact::HasPermission(AccessFlags::R_OK))]);
-        assert_eq!(preconditions, correct_preconditions);
-    }
-    #[test]
-    fn test_postconds1() {
-        let events = [SyscallEvent::Access(
-            HashSet::from([AccessFlags::R_OK]),
-            SyscallOutcome::Success,
-        )];
-        let postconditions = generate_postconditions(&events);
-        let correct_postconditions = HashSet::new();
-        assert_eq!(postconditions, correct_postconditions);
-    }
-
-    #[test]
-    fn test_preconds2() {
+    fn test_failed_access_then_create() {
         let events = [
             SyscallEvent::Access(
                 HashSet::from([AccessFlags::W_OK]),
@@ -1107,6 +1124,10 @@ mod tests {
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
         ]);
         assert_eq!(preconditions, correct_preconditions);
+
+        let postconditions = generate_postconditions(&events);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
+        assert_eq!(postconditions, correct_postconditions);
     }
     #[test]
     fn test_postconds2() {
@@ -1190,15 +1211,23 @@ mod tests {
     }
 
     #[test]
-    fn test_preconds5() {
+    fn test_append_delete_create() {
         let events = [
             SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
             SyscallEvent::Delete(SyscallOutcome::Success),
-            SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
             SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
         ];
         let preconditions = generate_preconditions(&events);
-        let correct_preconditions = HashSet::from([Fact::File(FileFact::Exists), Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)), Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK))]);
+        let correct_preconditions = HashSet::from([
+            Fact::File(FileFact::Contents),
+            Fact::File(FileFact::Exists),
+            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+            Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
+        ]);
         assert_eq!(preconditions, correct_preconditions);
+
+        let postconditions = generate_postconditions(&events);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
+        assert_eq!(postconditions, correct_postconditions);
     }
 }

@@ -213,7 +213,7 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
-                    "unlink" | "unlinkat "=> {
+                    "unlink" | "unlinkat " => {
                         use std::os::unix::fs::MetadataExt;
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
                         let meta = full_path.as_path().metadata().unwrap();
@@ -726,8 +726,8 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
     let _ = sys_span.enter();
 
     let regs = tracer
-    .get_registers()
-    .with_context(|| context!("Failed to get regs in handle_access()"))?;
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_access()"))?;
     let ret_val = regs.retval::<i32>();
     // retval = 0 is success for this syscall. lots of them it would seem.
     let full_path = get_full_path(execution, name, tracer)?;
@@ -741,7 +741,6 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
 
     execution.add_new_file_event(tracer.curr_proc, delete_syscall_event, full_path);
     Ok(())
-
 }
 
 // Currently: stat, fstat, newfstat64
