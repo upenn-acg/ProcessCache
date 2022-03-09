@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{ExecMetadata, Execution, RcExecution};
+use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
 use crate::condition_generator::{
     CreateMode, ExecFileEvents, Mode, OpenMode, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
@@ -68,7 +68,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // );
 
     // Print all file event lists for the execution.
-    // first_execution.print_pathbuf_to_file_event_lists();
+    first_execution.print_pathbuf_to_file_event_lists();
 
     // println!("First execution: {:?}", first_execution);
     Ok(())
@@ -171,7 +171,7 @@ pub async fn trace_process(
                             .with_context(|| context!("Failed to get regs in exec event"))?;
                         let arg = regs.arg1();
                         let executable = tracer.read_c_string(arg)?;
-
+                        debug!("Execve event, executable: {}", executable);
                         let args = tracer
                             .read_c_string_array(regs.arg2())
                             .with_context(|| context!("Reading arguments to execve"))?;
@@ -184,11 +184,11 @@ pub async fn trace_process(
                         let starting_cwd = PathBuf::from(cwd);
 
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
-                            context!("Unable to get next event after execve prehook.")
+                            context!("Unable to get nstext event after execve prehook.")
                         })?;
 
-                        // We are in the posthook now!
-                        let new_execution = create_new_execution(
+                        debug!("About to call create new exec!!");
+                        let new_exec_call = create_new_execution(
                             args,
                             tracer.curr_proc,
                             &curr_execution,
@@ -196,14 +196,17 @@ pub async fn trace_process(
                             executable,
                             next_event,
                             starting_cwd,
+                            &tracer,
                         )?;
 
-                        if curr_execution.is_pending_root() {
+                        if curr_execution.caller_pid() == tracer.curr_proc {
                             // If the curr execution is pending root, just update the
                             // the root.
-                            curr_execution.update_root(new_execution.clone());
+                            curr_execution.add_new_exec_call(new_exec_call);
                         } else {
-                            let new_rcexecution = RcExecution::new(new_execution);
+                            let mut execution = Execution::new(tracer.curr_proc);
+                            execution.add_new_exec_call(new_exec_call);
+                            let new_rcexecution = RcExecution::new(execution);
                             curr_execution.add_child_execution(new_rcexecution.clone());
                             curr_execution = new_rcexecution;
                         }
@@ -395,7 +398,7 @@ pub async fn trace_process(
                 // This is a new (or at least new version?) execution,
                 // add/update all the necessary stuff in the cache.
                 // TODO: ya know, properly cache
-                curr_execution.add_exit_code(exit_code, pid);
+                curr_execution.add_exit_code(exit_code);
                 // curr_execution.add_output_file_hashes(pid)?;
                 // curr_execution.copy_outputs_to_cache()?;
             }
@@ -503,7 +506,8 @@ fn create_new_execution(
     executable: String,
     next_event: TraceEvent,
     starting_cwd: PathBuf,
-) -> Result<Execution> {
+    tracer: &Ptracer,
+) -> Result<ExecCall> {
     let s = span!(Level::INFO, stringify!(create_new_execution), pid=?caller_pid);
     let _ = s.enter();
 
@@ -513,7 +517,7 @@ fn create_new_execution(
     // caller's pid, this means this is a child process who is
     // doing its first exec! (the difference in pids is that the curr
     // execution struct's pid is the parent of the caller pid)
-    if curr_exec.is_pending_root() || curr_exec.caller_pid() != caller_pid {
+    if curr_exec.no_successful_exec_yet() || curr_exec.caller_pid() != caller_pid {
         let mut new_execution = match next_event {
             TraceEvent::Exec(_) => {
                 // The execve succeeded!
@@ -521,23 +525,37 @@ fn create_new_execution(
                     debug!("Execve succeeded!");
                 });
 
-                Execution::Successful(Vec::new(), ExecFileEvents::new(), ExecMetadata::new())
+                ExecCall::Successful(ExecFileEvents::new(), ExecMetadata::new())
             }
-            _ => {
+            e => {
+                match e {
+                    TraceEvent::Prehook(_) => {
+                        let event_message = tracer
+                            .get_event_message()
+                            .with_context(|| context!("Cannot get event message on prehook"))?
+                            as u32;
+
+                        let name = get_syscall_name(event_message as usize).with_context(|| {
+                            context!("Unable to get syscall name for syscall={}.", event_message)
+                        })?;
+                        println!("Next syscall name: {}", name);
+                    }
+                    _ => (),
+                }
                 // The execve failed!
                 // Create a Failed Execution and add to global executions.
                 s.in_scope(|| {
                     debug!("Execve failed.");
                 });
-                Execution::Failed(ExecMetadata::new())
+                ExecCall::Failed(ExecMetadata::new())
             }
         };
 
-        new_execution.add_identifiers(args, caller_pid, envp, executable, starting_cwd);
+        new_execution.add_identifiers(args, envp, executable);
 
         Ok(new_execution)
     } else {
-        panic!("Process has already exec'd and is trying to exec again!");
+        panic!("Process has already done a successful exec and is trying to do another!");
     }
 }
 

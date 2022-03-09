@@ -2,7 +2,7 @@ use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceEvent {
     Exec(Pid),
     /// This is a stop before the actual program exit, this is our last chance to ptrace-queries

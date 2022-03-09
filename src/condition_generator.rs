@@ -1104,8 +1104,6 @@ fn generate_postconditions(file_events: &[SyscallEvent]) -> HashSet<Fact> {
 
 #[cfg(test)]
 mod tests {
-    use nix::sys::socket::sockopt::AcceptConn;
-
     use super::*;
 
     #[test]
