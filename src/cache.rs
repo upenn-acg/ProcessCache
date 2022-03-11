@@ -1,5 +1,5 @@
 use crate::condition_generator::{ExecFileEvents, SyscallEvent};
-use nix::unistd::Pid;
+use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
@@ -61,6 +61,12 @@ impl ExecCall {
         }
     }
 
+    fn executable(&self) -> String {
+        match self {
+            ExecCall::Successful(_, meta) | ExecCall::Failed(meta) => meta.executable(),
+        }
+    }
+
     fn file_event_list(&self) -> &ExecFileEvents {
         match self {
             ExecCall::Successful(file_events, _) => file_events,
@@ -99,6 +105,10 @@ impl ExecCallList {
         let length = self.exec_calls.len();
         let last_exec = self.exec_calls.as_mut_slice().get_mut(length - 1).unwrap();
         last_exec.add_new_file_event(caller_pid, file_event, full_path);
+    }
+
+    fn exec_calls(&self) -> Vec<ExecCall> {
+        self.exec_calls.clone()
     }
 
     fn exec_file_event_map(&self) -> &ExecFileEvents {
@@ -154,6 +164,12 @@ impl Execution {
             .add_new_file_event(caller_pid, file_access, full_path);
     }
 
+    fn add_starting_cwd(&mut self, cwd: PathBuf) {
+        if self.starting_cwd().is_empty() {
+            self.starting_cwd = cwd;
+        }
+    }
+
     fn caller_pid(&self) -> Pid {
         let proc = &self.caller_pid;
         let Proc(pid) = proc;
@@ -164,12 +180,22 @@ impl Execution {
         self.child_execs.clone()
     }
 
-    fn execs(&self) -> ExecCallList {
-        self.exec_calls.clone()
+    fn execs(&self) -> Vec<ExecCall> {
+        self.exec_calls.exec_calls()
     }
 
     fn exec_file_event_map(&self) -> &ExecFileEvents {
         self.exec_calls.exec_file_event_map()
+    }
+
+    fn get_child_exec_by_pid(&self, pid: Pid) -> RcExecution {
+        let child_execs = self.child_executions();
+        for child in child_execs {
+            if pid == child.caller_pid() {
+                return child;
+            }
+        }
+        panic!("Child pid not found in child execs!");
     }
 
     fn starting_cwd(&self) -> PathBuf {
@@ -283,10 +309,19 @@ impl ExecMetadata {
         }
     }
 
-    fn add_identifiers(&mut self, args: Vec<String>, env_vars: Vec<String>, executable: String) {
+    pub fn add_identifiers(
+        &mut self,
+        args: Vec<String>,
+        env_vars: Vec<String>,
+        executable: String,
+    ) {
         self.args = args;
         self.env_vars = env_vars;
         self.executable = executable;
+    }
+
+    pub fn executable(&self) -> String {
+        self.executable.clone()
     }
 }
 
@@ -400,13 +435,32 @@ impl RcExecution {
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
+    pub fn add_starting_cwd(&self, cwd: PathBuf) {
+        self.execution.borrow_mut().add_starting_cwd(cwd);
+    }
+
+    pub fn child_executions(&self) -> ChildExecutions {
+        self.execution.borrow().child_executions()
+    }
+
+    pub fn exec_calls(&self) -> Vec<ExecCall> {
+        self.execution.borrow().execs()
+    }
+
     pub fn exec_file_event_map(&self) -> ExecFileEvents {
         self.execution.borrow().exec_file_event_map().clone()
     }
 
+    // This should only be called when the curr_exec of the child is
+    // still the parent's. So we know we can just check the parent's
+    // child execs for it.
+    pub fn get_child_exec_by_pid(&self, pid: Pid) -> RcExecution {
+        self.execution.borrow().get_child_exec_by_pid(pid)
+    }
+
     pub fn no_successful_exec_yet(&self) -> bool {
         let execs = self.execution.borrow().execs();
-        for exec in execs.exec_calls {
+        for exec in execs {
             if exec.is_successful() {
                 return false;
             }
@@ -457,6 +511,27 @@ impl RcExecution {
     //     self.execution.borrow().exec_file_event_map().clone()
     // }
 
+    pub fn print_exec_calls_of_all(&self) {
+        println!("Printing executions of first execution:");
+        let exec_calls = self.exec_calls();
+        for exec in exec_calls {
+            let successful = exec.is_successful();
+            let executable = exec.executable();
+            println!("Executable: {}, Success: {}", executable, successful);
+            println!("");
+        }
+
+        for child in self.child_executions() {
+            println!("Child!");
+            let exec_calls = child.exec_calls();
+            for exec in exec_calls {
+                let successful = exec.is_successful();
+                let executable = exec.executable();
+                println!("Executable: {}, Success: {}", executable, successful);
+                println!("");
+            }
+        }
+    }
     // Print all file event lists for the execution.
     // TODO: This doesn't print the child exec stuff.
     // Need to make a function to get the child execs as well.
