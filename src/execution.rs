@@ -381,6 +381,7 @@ pub async fn trace_process(
                     }
                     // TODO: newfstatat
                     "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
+                    "rename" | "renameat" => handle_rename(&curr_execution, name, &tracer)?,
                     "unlink" | "unlinkat" => {
                         if nlinks_before == 1 {
                             // before facts? (success)
@@ -705,6 +706,83 @@ fn handle_open(
     // if let Some(hash) = starting_hash {
     //     execution.add_starting_hash(full_path, hash);
     // }
+    Ok(())
+}
+
+fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_rename", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_stat()"))?;
+
+    let ret_val = regs.retval::<i32>();
+    // retval = 0 is success for this syscall.
+    let (full_old_path, full_new_path) = match syscall_name {
+        "rename" => {
+            let old_path_arg_bytes = regs.arg1::<*const c_char>();
+            let old_path_arg = tracer
+                .read_c_string(old_path_arg_bytes)
+                .with_context(|| context!("Cannot read `open` path."))?;
+            let new_path_arg_bytes = regs.arg1::<*const c_char>();
+            let new_path_arg = tracer
+                .read_c_string(new_path_arg_bytes)
+                .with_context(|| context!("Cannot read `open` path."))?;
+            (PathBuf::from(old_path_arg), PathBuf::from(new_path_arg))
+        }
+        "renameat" | "renameat2" => {
+            let old_dir_fd = regs.arg1::<i32>();
+            let old_path_arg = regs.arg2::<*const c_char>();
+            let old_file_name = tracer
+                .read_c_string(old_path_arg)
+                .with_context(|| context!("Cannot read `rename` path"))?;
+            let old_dir_path = if old_dir_fd == AT_FDCWD {
+                execution.starting_cwd()
+            } else {
+                path_from_fd(tracer.curr_proc, old_dir_fd)?
+            };
+
+            let new_dir_fd = regs.arg3::<i32>();
+            let new_path_arg = regs.arg2::<*const c_char>();
+            let new_file_name = tracer
+                .read_c_string(new_path_arg)
+                .with_context(|| context!("Cannot read `rename` path"))?;
+            let new_dir_path = if new_dir_fd == AT_FDCWD {
+                execution.starting_cwd()
+            } else {
+                path_from_fd(tracer.curr_proc, new_dir_fd)?
+            };
+
+            (
+                old_dir_path.join(old_file_name),
+                new_dir_path.join(new_file_name),
+            )
+        }
+        _ => panic!("Calling unrecognized syscall in handle_rename()"),
+    };
+
+    let rename_event = match ret_val {
+        0 => SyscallEvent::Rename(
+            full_old_path.clone(),
+            full_new_path.clone(),
+            SyscallOutcome::Success,
+        ),
+        // Probably the old file doesn't exist. Empty new path is also possible.
+        -2 => SyscallEvent::Rename(
+            full_old_path.clone(),
+            full_new_path.clone(),
+            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+        ),
+        -13 => SyscallEvent::Rename(
+            full_old_path.clone(),
+            full_new_path.clone(),
+            SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+        ),
+        e => panic!("Unexpected error returned by rename syscall!: {}", e),
+    };
+
+    execution.add_new_file_event(tracer.curr_proc, rename_event.clone(), full_old_path);
+    execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
     Ok(())
 }
 

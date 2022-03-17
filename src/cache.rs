@@ -518,7 +518,7 @@ impl RcExecution {
             let successful = exec.is_successful();
             let executable = exec.executable();
             println!("Executable: {}, Success: {}", executable, successful);
-            println!("");
+            println!();
         }
 
         for child in self.child_executions() {
@@ -528,7 +528,7 @@ impl RcExecution {
                 let successful = exec.is_successful();
                 let executable = exec.executable();
                 println!("Executable: {}, Success: {}", executable, successful);
-                println!("");
+                println!();
             }
         }
     }
