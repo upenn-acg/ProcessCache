@@ -173,136 +173,130 @@ pub async fn trace_process(
                         file_existed_at_start = full_path.exists();
                     }
                     "execve" => {
+                        // Add the "lost" failed execve to this unique execution.
+                        if let Some(lost_execve) = lost_execve_metadata {
+                            let new_exec_call = ExecCall::Failed(lost_execve);
+                            curr_execution.add_new_exec_call(new_exec_call);
+                            lost_execve_metadata = None;
+                        }
+
                         // Have to be sure we are making changes to the correct execution.
                         if tracer.curr_proc != curr_execution.caller_pid() {
                             let child_exec = curr_execution.get_child_exec_by_pid(tracer.curr_proc);
                             curr_execution = child_exec;
                         }
 
-                        if let Some(lost_execve) = lost_execve_metadata {
-                            // Our lost failed execve! Adding you now.
-                            let new_exec_call =
-                                ExecCall::Successful(ExecFileEvents::new(), lost_execve);
-                            curr_execution.add_new_exec_call(new_exec_call);
-                            lost_execve_metadata = None;
-                        } else {
-                            let regs = tracer
-                                .get_registers()
-                                .with_context(|| context!("Failed to get regs in exec event"))?;
-                            let arg = regs.arg1();
-                            let executable = tracer.read_c_string(arg)?;
-                            debug!("Execve event, executable: {}", executable);
-                            let args = tracer
-                                .read_c_string_array(regs.arg2())
-                                .with_context(|| context!("Reading arguments to execve"))?;
-                            let envp = tracer.read_c_string_array(regs.arg3())?;
+                        let regs = tracer
+                            .get_registers()
+                            .with_context(|| context!("Failed to get regs in exec event"))?;
+                        let arg = regs.arg1();
+                        let executable = tracer.read_c_string(arg)?;
+                        debug!("Execve event, executable: {}", executable);
+                        let args = tracer
+                            .read_c_string_array(regs.arg2())
+                            .with_context(|| context!("Reading arguments to execve"))?;
+                        let envp = tracer.read_c_string_array(regs.arg3())?;
 
-                            let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-                            let cwd_path = readlink(cwd_link.as_str())
-                                .with_context(|| context!("Failed to readlink (cwd)"))?;
-                            let cwd = cwd_path.to_str().unwrap().to_owned();
-                            let starting_cwd = PathBuf::from(cwd);
+                        let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                        let cwd_path = readlink(cwd_link.as_str())
+                            .with_context(|| context!("Failed to readlink (cwd)"))?;
+                        let cwd = cwd_path.to_str().unwrap().to_owned();
+                        let starting_cwd = PathBuf::from(cwd);
 
-                            let next_event =
-                                tracer.get_next_event(None).await.with_context(|| {
-                                    context!("Unable to get nstext event after execve prehook.")
-                                })?;
+                        let next_event = tracer.get_next_event(None).await.with_context(|| {
+                            context!("Unable to get nstext event after execve prehook.")
+                        })?;
 
-                            if curr_execution.no_successful_exec_yet() {
-                                match next_event {
-                                    TraceEvent::Exec(_) => {
-                                        // The execve succeeded!
-                                        s.in_scope(|| {
-                                            debug!("Execve succeeded!");
-                                        });
+                        if curr_execution.no_successful_exec_yet() {
+                            match next_event {
+                                TraceEvent::Exec(_) => {
+                                    // The execve succeeded!
+                                    s.in_scope(|| {
+                                        debug!("Execve succeeded!");
+                                    });
 
-                                        let mut new_exec_call = ExecCall::Successful(
-                                            ExecFileEvents::new(),
-                                            ExecMetadata::new(),
-                                        );
+                                    let mut new_exec_call = ExecCall::Successful(
+                                        ExecFileEvents::new(),
+                                        ExecMetadata::new(),
+                                    );
 
-                                        new_exec_call.add_identifiers(args, envp, executable);
-                                        curr_execution.add_new_exec_call(new_exec_call);
-                                        curr_execution.add_starting_cwd(starting_cwd);
-                                    }
-                                    e => {
-                                        if let TraceEvent::Prehook(_) = e {
-                                            let event_message =
-                                                tracer.get_event_message().with_context(|| {
-                                                    context!("Cannot get event message on prehook")
-                                                })?
-                                                    as u32;
+                                    new_exec_call.add_identifiers(args, envp, executable);
+                                    curr_execution.add_new_exec_call(new_exec_call);
+                                    curr_execution.add_starting_cwd(starting_cwd);
+                                }
+                                e => {
+                                    if let TraceEvent::Prehook(_) = e {
+                                        let event_message =
+                                            tracer.get_event_message().with_context(|| {
+                                                context!("Cannot get event message on prehook")
+                                            })? as u32;
 
-                                            let name = get_syscall_name(event_message as usize)
-                                                .with_context(|| {
-                                                    context!(
-                                                        "Unable to get syscall name for syscall={}.",
-                                                        event_message
-                                                    )
+                                        let name = get_syscall_name(event_message as usize)
+                                            .with_context(|| {
+                                                context!(
+                                                    "Unable to get syscall name for syscall={}.",
+                                                    event_message
+                                                )
+                                            })?;
+                                        if name == "execve" {
+                                            // The execve failed and the process is trying to do another one.
+                                            // Add this failed execve to the curr execution.
+                                            let mut new_exec_call =
+                                                ExecCall::Failed(ExecMetadata::new());
+                                            new_exec_call.add_identifiers(
+                                                args,
+                                                envp,
+                                                executable.clone(),
+                                            );
+                                            println!(
+                                                "Executable after failed exec: {}",
+                                                executable
+                                            );
+                                            curr_execution.add_new_exec_call(new_exec_call);
+
+                                            // get the registers hre
+                                            let regs =
+                                                tracer.get_registers().with_context(|| {
+                                                    context!("Failed to get regs in exec event")
                                                 })?;
-                                            if name == "execve" {
-                                                // The execve failed and the process is trying to do another one.
-                                                // Add this failed execve to the curr execution.
-                                                let mut new_exec_call =
-                                                    ExecCall::Failed(ExecMetadata::new());
-                                                new_exec_call.add_identifiers(
-                                                    args,
-                                                    envp,
-                                                    executable.clone(),
-                                                );
-                                                println!(
-                                                    "Executable after failed exec: {}",
-                                                    executable
-                                                );
-                                                curr_execution.add_new_exec_call(new_exec_call);
 
-                                                // get the registers hre
-                                                let regs =
-                                                    tracer.get_registers().with_context(|| {
-                                                        context!("Failed to get regs in exec event")
-                                                    })?;
-
-                                                // Get the registers to get the info for this new execve call.
-                                                // Because if we wait to get_next_event() we will info about...
-                                                // the *next* event. Yeah if you are reading this you are in the
-                                                // bowels of weird ass logic for Process Cache, so, thank you, and
-                                                // welcome to the party I guess.
-                                                let arg = regs.arg1();
-                                                let executable = tracer.read_c_string(arg)?;
-                                                debug!(
-                                                    "Executable after getting new regs: {}",
-                                                    executable
-                                                );
-                                                let args = tracer
-                                                    .read_c_string_array(regs.arg2())
-                                                    .with_context(|| {
-                                                        context!("Reading arguments to execve")
-                                                    })?;
-                                                let envp =
-                                                    tracer.read_c_string_array(regs.arg3())?;
-                                                let mut new_metadata = ExecMetadata::new();
-                                                new_metadata
-                                                    .add_identifiers(args, envp, executable);
-                                                // save that in lost_execve_metadata
-                                                lost_execve_metadata = Some(new_metadata);
-                                            } else if name == "exit" {
-                                                // Add this failed execve to the curr execution.
-                                                let mut new_exec_call =
-                                                    ExecCall::Failed(ExecMetadata::new());
-                                                new_exec_call
-                                                    .add_identifiers(args, envp, executable);
-                                                curr_execution.add_new_exec_call(new_exec_call);
-                                            } else {
-                                                s.in_scope(|| {
-                                                    panic!("Failed execve, next syscall was not execve, it was: {}", name);
-                                                });
-                                            }
+                                            // Get the registers to get the info for this new execve call.
+                                            // Because if we wait to get_next_event() we will info about...
+                                            // the *next* event. Yeah if you are reading this you are in the
+                                            // bowels of weird ass logic for Process Cache, so, thank you, and
+                                            // welcome to the party I guess.
+                                            let arg = regs.arg1();
+                                            let executable = tracer.read_c_string(arg)?;
+                                            debug!(
+                                                "Executable after getting new regs: {}",
+                                                executable
+                                            );
+                                            let args = tracer
+                                                .read_c_string_array(regs.arg2())
+                                                .with_context(|| {
+                                                    context!("Reading arguments to execve")
+                                                })?;
+                                            let envp = tracer.read_c_string_array(regs.arg3())?;
+                                            let mut new_metadata = ExecMetadata::new();
+                                            new_metadata.add_identifiers(args, envp, executable);
+                                            // save that in lost_execve_metadata
+                                            lost_execve_metadata = Some(new_metadata);
+                                        } else if name == "exit" || name == "exit_group" {
+                                            // Add this failed execve to the curr execution.
+                                            let mut new_exec_call =
+                                                ExecCall::Failed(ExecMetadata::new());
+                                            new_exec_call.add_identifiers(args, envp, executable);
+                                            curr_execution.add_new_exec_call(new_exec_call);
+                                        } else {
+                                            s.in_scope(|| {
+                                                panic!("Failed execve, next syscall was not execve, it was: {}", name);
+                                            });
                                         }
                                     }
                                 }
-                            } else {
-                                panic!("Process has already done a successful exec and is trying to do another!");
                             }
+                        } else {
+                            panic!("Process has already done a successful exec and is trying to do another!");
                         }
                         continue;
                     }
