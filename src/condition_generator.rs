@@ -1,3 +1,4 @@
+use nix::fcntl::OFlag;
 use nix::unistd::{AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
@@ -8,11 +9,6 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum CreateMode {
-    Create,
-    Excl,
-}
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum LastMod {
     Created,
@@ -34,7 +30,7 @@ impl LastModStruct {
             SyscallEvent::Delete(SyscallOutcome::Success) => {
                 self.state = LastMod::Deleted;
             }
-            SyscallEvent::Open(Mode::Append | Mode::Trunc, SyscallOutcome::Success) => {
+            SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, SyscallOutcome::Success) => {
                 self.state = LastMod::Modified;
             }
             // No change
@@ -111,36 +107,37 @@ impl FirstStateStruct {
                     );
                 }
 
-                SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success) => {
+                SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success) => {
                     self.state = FirstState::DoesntExist;
                 }
                 // Failed to create a file. Doesn't mean we know anything about whether it exists.
                 SyscallEvent::Create(
-                    CreateMode::Create,
+                    OFlag::O_CREAT,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => (),
-                SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(failure)) => {
+                SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(failure)) => {
                     panic!("Failed to create for strange reason: {:?}", failure);
                 }
-                SyscallEvent::Create(CreateMode::Excl, SyscallOutcome::Success) => {
+                SyscallEvent::Create(OFlag::O_EXCL, SyscallOutcome::Success) => {
                     self.state = FirstState::DoesntExist;
                 }
                 SyscallEvent::Create(
-                    CreateMode::Excl,
+                    OFlag::O_EXCL,
                     SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
                 ) => {
                     self.state = FirstState::Exists;
                 }
                 SyscallEvent::Create(
-                    CreateMode::Excl,
+                    OFlag::O_EXCL,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => {
                     panic!("Failed to create a file excl because file doesn't exist??");
                 }
                 SyscallEvent::Create(
-                    CreateMode::Excl,
+                    OFlag::O_EXCL,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => (),
+                SyscallEvent::Create(f, _) => panic!("Unexpected create flag: {:?}", f),
                 SyscallEvent::Delete(SyscallOutcome::Success) => {
                     self.state = FirstState::Exists;
                 }
@@ -151,27 +148,27 @@ impl FirstStateStruct {
                     self.state = FirstState::Exists;
                 }
                 SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => (),
-                SyscallEvent::Open(Mode::Append | Mode::ReadOnly, SyscallOutcome::Success) => {
+                SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_RDONLY, SyscallOutcome::Success) => {
                     self.state = FirstState::Exists;
                 }
-                SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success) => (),
+                SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success) => (),
                 SyscallEvent::Open(
-                    Mode::Append | Mode::ReadOnly,
+                    OFlag::O_APPEND | OFlag::O_RDONLY,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => {
                     self.state = FirstState::DoesntExist;
                 }
                 SyscallEvent::Open(
-                    Mode::Append | Mode::Trunc,
+                    OFlag::O_APPEND | OFlag::O_TRUNC,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => {
                     self.state = FirstState::Exists;
                 }
-                SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Fail(fail)) => {
+                SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Fail(fail)) => {
                     panic!("Failed to open trunc for strange reason: {:?}", fail)
                 }
                 SyscallEvent::Open(
-                    Mode::ReadOnly,
+                    OFlag::O_RDONLY,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => {
                     self.state = FirstState::Exists;
@@ -179,7 +176,7 @@ impl FirstStateStruct {
                 SyscallEvent::Open(mode, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
                     panic!("Open for {:?} failed because file already exists??", mode)
                 }
-
+                SyscallEvent::Open(f, _) => panic!("Unexpected open flag: {:?}", f),
                 SyscallEvent::Stat(SyscallOutcome::Success) => {
                     self.state = FirstState::Exists;
                 }
@@ -204,19 +201,6 @@ impl FirstStateStruct {
             }
         }
     }
-}
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum Mode {
-    Append,
-    ReadOnly,
-    Trunc,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum OpenMode {
-    ReadOnly,
-    ReadWrite,
-    WriteOnly,
 }
 
 // Actual accesses to the file system performed by
@@ -271,9 +255,9 @@ impl ExecFileEvents {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
     Access(HashSet<AccessFlags>, SyscallOutcome), // Vec<c_int> is list of F_OK (0), R_OK, W_OK, X_OK
-    Create(CreateMode, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
-    Open(Mode, SyscallOutcome), // Can fail because the file didn't exist or permission denied
+    Open(OFlag, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome), // Old, new, outcome
     // TODO: Handle stat struct too
     Stat(SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
@@ -428,7 +412,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
             (SyscallEvent::Create(_, _), FirstState::None, LastMod::Renamed, _) => {
                 panic!("First state none but last mod renamed??");
             }
-            (SyscallEvent::Create(CreateMode::Create, outcome), FirstState::None, LastMod::None, false) => {
+            (SyscallEvent::Create(OFlag::O_CREAT, outcome), FirstState::None, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::File(FileFact::DoesntExist));
@@ -442,7 +426,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                 }
             }
-            (SyscallEvent::Create(CreateMode::Excl, outcome), FirstState::None, LastMod::None, false) => {
+            (SyscallEvent::Create(OFlag::O_EXCL, outcome), FirstState::None, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::File(FileFact::DoesntExist));
@@ -460,6 +444,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                 }
             }
 
+            (SyscallEvent::Create(f, _), _, _, _) => panic!("Unexpected create flag: {:?}", f),
             (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Created, _) => (),
             (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Deleted, true) => (),
             (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Modified, true) => (),
@@ -582,7 +567,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
             (SyscallEvent::Open(_, _), FirstState::Exists, LastMod::Modified, true) => (),
             (SyscallEvent::Open(_, _), FirstState::Exists, LastMod::Modified, false) => (),
             (SyscallEvent::Open(_, _), FirstState::Exists, LastMod::Renamed, true) => (),
-            (SyscallEvent::Open(Mode::Append, outcome), FirstState::Exists, LastMod::Renamed, false) => {
+            (SyscallEvent::Open(OFlag::O_APPEND, outcome), FirstState::Exists, LastMod::Renamed, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         // Have the contents changed? We can check the curr_file_preconds to see if we already know
@@ -602,7 +587,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Open append failed for strange reason, file exists and was renamed: {:?}", f),
                 }
             }
-            (SyscallEvent::Open(Mode::ReadOnly, outcome), FirstState::Exists, LastMod::Renamed, false) => {
+            (SyscallEvent::Open(OFlag::O_RDONLY, outcome), FirstState::Exists, LastMod::Renamed, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         if !curr_file_preconditions.contains(&Fact::File(FileFact::HasPermission(AccessFlags::W_OK))) {
@@ -616,7 +601,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Unexpected open read only failure, file exists and was renamed: {:?}", f),
                 }
             }
-            (SyscallEvent::Open(Mode::Trunc, outcome), FirstState::Exists, LastMod::Renamed, false) => {
+            (SyscallEvent::Open(OFlag::O_TRUNC, outcome), FirstState::Exists, LastMod::Renamed, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
@@ -627,7 +612,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Unexpected open trunc failure, file exists and was renamed: {:?}", f),
                 }
             }
-            (SyscallEvent::Open(Mode::Append, outcome), FirstState::Exists, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_APPEND, outcome), FirstState::Exists, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -640,7 +625,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Unexpected open append failure, file existed, {:?}", f),
                 }
             }
-            (SyscallEvent::Open(Mode::ReadOnly, outcome), FirstState::Exists, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_RDONLY, outcome), FirstState::Exists, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -653,7 +638,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     f => panic!("Unexpected open append failure, file existed, {:?}", f),
                 }
             }
-            (SyscallEvent::Open(Mode::Trunc, outcome), FirstState::Exists, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_TRUNC, outcome), FirstState::Exists, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -677,7 +662,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
             (SyscallEvent::Open(_, _), FirstState::None, LastMod::Renamed, _) => {
                 panic!("First state none but last mod renamed??");
             }
-            (SyscallEvent::Open(Mode::Append, outcome), FirstState::None, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_APPEND, outcome), FirstState::None, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -696,7 +681,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     }
                 }
             }
-            (SyscallEvent::Open(Mode::ReadOnly, outcome), FirstState::None, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_RDONLY, outcome), FirstState::None, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -715,7 +700,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     }
                 }
             }
-            (SyscallEvent::Open(Mode::Trunc, outcome), FirstState::None, LastMod::None, false) => {
+            (SyscallEvent::Open(OFlag::O_TRUNC, outcome), FirstState::None, LastMod::None, false) => {
                 match outcome {
                     SyscallOutcome::Success => {
                         curr_file_preconditions.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
@@ -733,6 +718,7 @@ fn generate_preconditions(file_path: PathBuf, file_events: &[SyscallEvent]) -> H
                     }
                 }
             }
+            (SyscallEvent::Open(f, _), _, _, _) => panic!("Unexpected open flag: {:?}", f),
 
             (
                 SyscallEvent::Rename(_, _, _),
@@ -1148,7 +1134,7 @@ mod tests {
                 HashSet::from([AccessFlags::W_OK]),
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             ),
-            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+            SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
         ];
         let preconditions = generate_preconditions(PathBuf::from("test"), &events);
         let correct_preconditions = HashSet::from([
@@ -1169,7 +1155,7 @@ mod tests {
                 HashSet::from([AccessFlags::W_OK]),
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             ),
-            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+            SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
         ];
         // let postconditions = generate_postconditions(&events);
         // let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
@@ -1179,14 +1165,14 @@ mod tests {
     // stat
     // open open
     #[test]
-    fn test_preconds3() {
+    fn test_stat_open_create_preconds() {
         let events = [
             SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
             SyscallEvent::Open(
-                Mode::ReadOnly,
+                OFlag::O_RDONLY,
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             ),
-            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+            SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
         ];
         let preconditions = generate_preconditions(PathBuf::from("hi"), &events);
         let correct_preconditions = HashSet::from([
@@ -1201,10 +1187,10 @@ mod tests {
         let events = [
             SyscallEvent::Stat(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
             SyscallEvent::Open(
-                Mode::ReadOnly,
+                OFlag::O_RDONLY,
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             ),
-            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+            SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
         ];
         // let postconditions = generate_postconditions(&events);
         // let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
@@ -1212,20 +1198,20 @@ mod tests {
     }
 
     #[test]
-    fn test_preconds4() {
+    fn test_open_open_access_stat_preconds() {
         let events = [
-            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
-            SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success),
+            SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success),
+            SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success),
             SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
             SyscallEvent::Stat(SyscallOutcome::Success),
         ];
         let preconditions = generate_preconditions(PathBuf::from("test"), &events);
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::Exists),
             Fact::File(FileFact::Contents),
             Fact::File(FileFact::HasPermission(AccessFlags::R_OK)),
             Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+            Fact::File(FileFact::StatStructMatches),
         ]);
         assert_eq!(preconditions, correct_preconditions);
     }
@@ -1233,8 +1219,8 @@ mod tests {
     #[test]
     fn test_postconds4() {
         let events = [
-            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
-            SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success),
+            SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success),
+            SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success),
             SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
             SyscallEvent::Stat(SyscallOutcome::Success),
         ];
@@ -1246,14 +1232,13 @@ mod tests {
     #[test]
     fn test_append_delete_create() {
         let events = [
-            SyscallEvent::Open(Mode::Append, SyscallOutcome::Success),
+            SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success),
             SyscallEvent::Delete(SyscallOutcome::Success),
-            SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success),
+            SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
         ];
         let preconditions = generate_preconditions(PathBuf::from("test"), &events);
         let correct_preconditions = HashSet::from([
             Fact::File(FileFact::Contents),
-            Fact::File(FileFact::Exists),
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
             Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
         ]);

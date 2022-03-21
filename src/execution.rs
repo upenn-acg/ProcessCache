@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
-use crate::condition_generator::{
-    CreateMode, ExecFileEvents, Mode, OpenMode, SyscallEvent, SyscallFailure, SyscallOutcome,
-};
+use crate::condition_generator::{ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome};
 
 use crate::context;
 use crate::regs::Regs;
@@ -621,33 +619,39 @@ fn handle_open(
         let creat_flag = true;
         let excl_flag = false;
         // creat() uses write only as the mode
-        (creat_flag, excl_flag, Mode::Trunc, OpenMode::WriteOnly)
+        (creat_flag, excl_flag, OFlag::O_TRUNC, OFlag::O_WRONLY)
     } else {
-        let flags = if syscall_name == "open" {
+        let flag_arg = if syscall_name == "open" {
             regs.arg2::<i32>()
         } else {
             regs.arg3::<i32>()
         };
 
-        let open_mode = match flags & O_ACCMODE {
-            O_RDONLY => OpenMode::ReadOnly,
-            O_RDWR => OpenMode::ReadWrite,
-            O_WRONLY => {
-                sys_span.in_scope(|| {
-                    debug!("Opening write only");
-                });
-                OpenMode::WriteOnly
-            }
-            _ => panic!("Open flags do not match any mode!"),
-        };
-        let creat_flag = ((flags & O_CREAT) == O_CREAT);
-        let excl_flag = ((flags & O_EXCL) == O_EXCL);
-        let offset_mode = if ((flags & O_APPEND) == O_APPEND) {
-            Mode::Append
-        } else if ((flags & O_TRUNC) == O_TRUNC) {
-            Mode::Trunc
+        let option_flags = OFlag::from_bits(flag_arg);
+        let (creat_flag, excl_flag, offset_mode, open_mode) = if let Some(flags) = option_flags {
+            let open_mode = if flags.contains(OFlag::O_RDONLY) {
+                OFlag::O_RDONLY
+            } else if flags.contains(OFlag::O_RDWR) {
+                OFlag::O_RDWR
+            } else if flags.contains(OFlag::O_WRONLY) {
+                OFlag::O_WRONLY
+            } else {
+                panic!("Unrecognized open mode!");
+            };
+
+            let creat_flag = flags.contains(OFlag::O_CREAT);
+            let excl_flag = flags.contains(OFlag::O_EXCL);
+            let offset_mode = if flags.contains(OFlag::O_APPEND) {
+                OFlag::O_APPEND
+            } else if flags.contains(OFlag::O_TRUNC) {
+                OFlag::O_TRUNC
+            } else {
+                OFlag::O_RDONLY
+            };
+
+            (creat_flag, excl_flag, offset_mode, open_mode)
         } else {
-            Mode::ReadOnly
+            panic!("Unexpected open flags value!!");
         };
 
         (creat_flag, excl_flag, offset_mode, open_mode)
@@ -854,12 +858,12 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
 }
 
 fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Result<()> {
-    let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
+    let sys_span = span!(Level::INFO, "handle_unlink", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
     let regs = tracer
         .get_registers()
-        .with_context(|| context!("Failed to get regs in handle_access()"))?;
+        .with_context(|| context!("Failed to get regs in handle_unlink()"))?;
     let ret_val = regs.retval::<i32>();
     // retval = 0 is success for this syscall. lots of them it would seem.
     let full_path = get_full_path(execution, name, tracer)?;
@@ -940,8 +944,8 @@ fn generate_open_syscall_file_event(
     excl_flag: bool,
     file_existed_at_start: bool,
     full_path: &Path,
-    offset_mode: Mode, // trunc, append, readonly. doesn't have to be a weird option anymore b/c
-    open_mode: OpenMode,
+    offset_mode: OFlag, // trunc, append, readonly. doesn't have to be a weird option anymore b/c
+    open_mode: OFlag,
     syscall_outcome: Result<i32, i32>,
 ) -> Option<SyscallEvent> {
     // Trust me Dewey, you don't want no part of this.
@@ -964,17 +968,17 @@ fn generate_open_syscall_file_event(
         if excl_flag {
             match syscall_outcome {
                 Ok(_) => Some(SyscallEvent::Create(
-                    CreateMode::Excl,
+                    OFlag::O_CREAT,
                     SyscallOutcome::Success,
                 )),
                 Err(ret_val) => match ret_val {
                     -13 => Some(SyscallEvent::Create(
-                        CreateMode::Excl,
+                        OFlag::O_CREAT,
                         // I know it's either WRITE or EXEC access denied.
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     -17 => Some(SyscallEvent::Create(
-                        CreateMode::Excl,
+                        OFlag::O_CREAT,
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
                     )),
                     _ => panic!(
@@ -988,22 +992,23 @@ fn generate_open_syscall_file_event(
                 Ok(_) => {
                     if file_existed_at_start {
                         match (offset_mode, open_mode) {
-                            (_, OpenMode::ReadOnly) => {
+                            (_, OFlag::O_RDONLY) => {
                                 panic!("O_CREAT + O_RDONLY AND the system call succeeded????")
                             }
-                            (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
-                            (Mode::ReadOnly, OpenMode::WriteOnly) => {
+                            (_, OFlag::O_RDWR) => panic!("Do not support RW for now..."),
+                            (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
-                            (Mode::Append, OpenMode::WriteOnly) => {
-                                Some(SyscallEvent::Open(Mode::Append, SyscallOutcome::Success))
+                            (OFlag::O_APPEND, OFlag::O_WRONLY) => {
+                                Some(SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success))
                             }
-                            (Mode::Trunc, OpenMode::WriteOnly) => {
-                                Some(SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success))
+                            (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
+                                Some(SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success))
                             }
+                            (offset_flag, mode_flag) => panic!("Unexpected offset flag: {:?} and mode flag: {:?}", offset_flag, mode_flag),
                         }
                     } else {
-                        Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Success))
+                        Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success))
                     }
                 }
                 Err(ret_val) => match ret_val {
@@ -1011,8 +1016,8 @@ fn generate_open_syscall_file_event(
                     // and so we don't, and so y'all get a generic error. 
                     // Linux is NOT a generous god.
                     // And neither am I.
-                    -2 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
-                    -13 => Some(SyscallEvent::Create(CreateMode::Create, SyscallOutcome::Fail(SyscallFailure::PermissionDenied))),
+                    -2 => Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
+                    -13 => Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::PermissionDenied))),
                     _ => panic!("O_CREAT and failed but not because access denied or path component doesn't exist?"),
                 }
             }
@@ -1022,27 +1027,31 @@ fn generate_open_syscall_file_event(
         match syscall_outcome {
             Ok(_) => match (offset_mode, open_mode) {
                 // TODO: Hmm. There should be a case for
-                // (None, OpenMode::ReadOnly)
+                // (None, OpenOFlag::O_RDONLY)
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
                 // Retval is pretty useless here but whatever.
-                (Mode::ReadOnly, OpenMode::ReadOnly) => {
-                    Some(SyscallEvent::Open(Mode::ReadOnly, SyscallOutcome::Success))
+                (OFlag::O_RDONLY, OFlag::O_RDONLY) => {
+                    Some(SyscallEvent::Open(OFlag::O_RDONLY, SyscallOutcome::Success))
                 }
-                (Mode::Trunc | Mode::Append, OpenMode::ReadOnly) => {
+                (OFlag::O_TRUNC | OFlag::O_APPEND, OFlag::O_RDONLY) => {
                     panic!("Undefined by POSIX/LINUX.")
                 }
-                (_, OpenMode::ReadWrite) => panic!("Do not support RW for now..."),
+                (_, OFlag::O_RDWR) => panic!("Do not support RW for now..."),
                 // "ReadOnly" is like my "None" offset flag. and it kinda makes sense
-                (Mode::ReadOnly, OpenMode::WriteOnly) => {
+                (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
                     panic!("Do not support O_WRONLY without offset flag!")
                 }
-                (Mode::Append, OpenMode::WriteOnly) => {
-                    Some(SyscallEvent::Open(Mode::Append, SyscallOutcome::Success))
+                (OFlag::O_APPEND, OFlag::O_WRONLY) => {
+                    Some(SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success))
                 }
-                (Mode::Trunc, OpenMode::WriteOnly) => {
-                    Some(SyscallEvent::Open(Mode::Trunc, SyscallOutcome::Success))
+                (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
+                    Some(SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success))
                 }
+                (offset_flag, mode_flag) => panic!(
+                    "Unexpected offset flag: {:?} and mode flag: {:?}",
+                    offset_flag, mode_flag
+                ),
             },
             Err(ret_val) => match ret_val {
                 // ENOENT
@@ -1053,7 +1062,7 @@ fn generate_open_syscall_file_event(
                 // EACCES
                 // -13 => Some(SyscallEvent::OpenAccessDenied),
                 -13 => match offset_mode {
-                    Mode::Append | Mode::Trunc => Some(SyscallEvent::Open(
+                    OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
                         offset_mode,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
