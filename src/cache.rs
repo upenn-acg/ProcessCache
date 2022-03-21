@@ -1,4 +1,4 @@
-use crate::condition_generator::{ExecFileEvents, SyscallEvent};
+use crate::condition_generator::{Conds, ExecFileEvents, SyscallEvent};
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
@@ -24,16 +24,26 @@ impl Default for Proc {
 }
 
 pub type ChildExecutions = Vec<RcExecution>;
+// pub type Postconditions = HashMap<PathBuf, HashSet<Fact>>;
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExecCall {
     Failed(ExecMetadata),
     // Before we find out if the root execution's "execve" call succeeds,
     // its kinda just pending. I want to know which one the root is
     // and doing it in the enum seems easiest.
-    Successful(ExecFileEvents, ExecMetadata),
+    Successful(ExecFileEvents, ExecMetadata, Conds, Conds),
 }
 
 impl ExecCall {
+    pub fn add_file_preconditions(&mut self) {
+        match self {
+            ExecCall::Successful(file_events, _, preconditions, _) => {
+                preconditions.add_conditions(file_events.clone());
+            }
+            _ => panic!("Trying to add file preconditions to failed exec call!!"),
+        }
+    }
+
     pub fn add_identifiers(
         &mut self,
         args: Vec<String>,
@@ -41,7 +51,7 @@ impl ExecCall {
         executable: String,
     ) {
         match self {
-            ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata) => {
+            ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata, _, _) => {
                 metadata.add_identifiers(args, env_vars, executable);
             }
         }
@@ -54,7 +64,7 @@ impl ExecCall {
         full_path: PathBuf,
     ) {
         match self {
-            ExecCall::Successful(file_events, _) => {
+            ExecCall::Successful(file_events, _, _, _) => {
                 file_events.add_new_file_event(caller_pid, file_access, full_path)
             }
             _ => panic!("Trying to add file event to failed execve!"),
@@ -63,19 +73,19 @@ impl ExecCall {
 
     fn executable(&self) -> String {
         match self {
-            ExecCall::Successful(_, meta) | ExecCall::Failed(meta) => meta.executable(),
+            ExecCall::Successful(_, meta, _, _) | ExecCall::Failed(meta) => meta.executable(),
         }
     }
 
     fn file_event_list(&self) -> &ExecFileEvents {
         match self {
-            ExecCall::Successful(file_events, _) => file_events,
+            ExecCall::Successful(file_events, _, _, _) => file_events,
             _ => panic!("Trying to get file event list for failed execve!!"),
         }
     }
 
     fn is_successful(&self) -> bool {
-        matches!(self, ExecCall::Successful(_, _))
+        matches!(self, ExecCall::Successful(_, _, _, _))
     }
 }
 
@@ -162,6 +172,10 @@ impl Execution {
     ) {
         self.exec_calls
             .add_new_file_event(caller_pid, file_access, full_path);
+    }
+
+    fn generate_preconditions(&mut self) {
+        self.generate_preconditions()
     }
 
     fn add_starting_cwd(&mut self, cwd: PathBuf) {

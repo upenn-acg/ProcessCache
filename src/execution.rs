@@ -6,12 +6,14 @@ use libc::{
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::{AccessFlags, Pid};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
-use crate::condition_generator::{ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome};
+use crate::condition_generator::{
+    Conds, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
+};
 
 use crate::context;
 use crate::regs::Regs;
@@ -109,7 +111,12 @@ pub async fn trace_process(
                 // blown away.
                 if let Some(lost_metadata) = lost_execve_metadata {
                     // Our lost successful execve! Woo!
-                    let new_exec_call = ExecCall::Successful(ExecFileEvents::new(), lost_metadata);
+                    let new_exec_call = ExecCall::Successful(
+                        ExecFileEvents::new(),
+                        lost_metadata,
+                        Conds::Preconds(CondsMap::new()),
+                        Conds::Postconds(CondsMap::new()),
+                    );
                     curr_execution.add_new_exec_call(new_exec_call);
                     lost_execve_metadata = None;
                 }
@@ -216,6 +223,8 @@ pub async fn trace_process(
                                     let mut new_exec_call = ExecCall::Successful(
                                         ExecFileEvents::new(),
                                         ExecMetadata::new(),
+                                        Conds::Preconds(CondsMap::new()),
+                                        Conds::Postconds(CondsMap::new()),
                                     );
 
                                     new_exec_call.add_identifiers(args, envp, executable);
