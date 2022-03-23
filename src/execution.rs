@@ -5,8 +5,9 @@ use libc::{
 };
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
+use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
@@ -721,7 +722,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     let _ = sys_span.enter();
     let regs = tracer
         .get_registers()
-        .with_context(|| context!("Failed to get regs in handle_stat()"))?;
+        .with_context(|| context!("Failed to get regs in handle_rename()"))?;
 
     let ret_val = regs.retval::<i32>();
     // retval = 0 is success for this syscall.
@@ -829,7 +830,8 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
         } else {
             match ret_val {
                 0 => {
-                    // let stat_struct = regs.arg2::<*const libc::stat>();
+                    let stat_ptr = regs.arg2::<u64>();
+                    let idk = tracer.read_value(stat_ptr as *const FileStat)?;
                     // TODO: actually do something with this fucking struct.
                     // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
                     Some(SyscallEvent::Stat(SyscallOutcome::Success))

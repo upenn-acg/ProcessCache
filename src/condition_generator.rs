@@ -964,8 +964,278 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-fn generate_postconditions(file_events: ExecFileEvents) -> HashMap<PathBuf, HashSet<Fact>> {
-    unimplemented!();
+fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf, HashSet<Fact>> {
+    let sys_span = span!(Level::INFO, "generate_file_postconditions");
+    let _ = sys_span.enter();
+
+    let mut curr_file_postconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
+
+    // Just be sure the map is set up ahead of time.
+    for full_path in exec_file_events.file_event_list().keys() {
+        curr_file_postconditions.insert(full_path.clone(), HashSet::new());
+    }
+    for (full_path, event_list) in exec_file_events.file_event_list() {
+        let mut first_state_struct = FirstStateStruct {
+            state: FirstState::None,
+        };
+        let mut last_mod_struct = LastModStruct {
+            state: LastMod::None,
+        };
+        // curr_file_postconditions.insert(full_path.clone(), HashSet::new());
+        for event in event_list {
+            let first_state = first_state_struct.state();
+            let last_mod = last_mod_struct.state();
+
+            match (event, first_state, last_mod) {
+                (_, FirstState::None, LastMod::Created) => {
+                    panic!("First state is none but last mod is created!!");
+                }
+                (_, FirstState::None, LastMod::Deleted) => {
+                    panic!("First state is none but last mod is deleted!!");
+                }
+                (_, FirstState::None, LastMod::Modified) => {
+                    panic!("First state is none but last mod is modified!!");
+                }
+                (_, FirstState::None, LastMod::Renamed) => {
+                    panic!("First state is none but last mod is rename!!");
+                }
+                (SyscallEvent::Access(_, _), _, _) => (),
+                (SyscallEvent::Create(_, _), FirstState::DoesntExist, LastMod::Created) => (),
+                (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+
+                (SyscallEvent::Create(_, _), FirstState::DoesntExist, LastMod::Modified) => (),
+                (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::Renamed) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::None) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Created) => (),
+                (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Deleted) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Modified) => (),
+                (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Renamed) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::Exists));
+                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::None) => (),
+                (SyscallEvent::Create(_, outcome), FirstState::None, LastMod::None) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (
+                    SyscallEvent::Delete(outcome),
+                    FirstState::DoesntExist,
+                    LastMod::Created | LastMod::Modified | LastMod::Renamed,
+                ) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::Exists));
+                        curr_set.remove(&Fact::File(FileFact::Contents));
+                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                    }
+                }
+                (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Deleted) => (),
+                (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::None) => (),
+                (
+                    SyscallEvent::Delete(outcome),
+                    FirstState::Exists,
+                    LastMod::Created | LastMod::Modified | LastMod::Renamed,
+                ) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                    }
+                }
+                (SyscallEvent::Delete(_), FirstState::Exists, LastMod::Deleted) => (),
+                (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.remove(&Fact::File(FileFact::Exists));
+                        curr_set.remove(&Fact::File(FileFact::Contents));
+                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                    }
+                }
+                (SyscallEvent::Delete(outcome), FirstState::None, LastMod::None) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                    }
+                }
+                (SyscallEvent::Open(OFlag::O_RDONLY, _), _, _) => (),
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _),
+                    FirstState::DoesntExist,
+                    LastMod::Created | LastMod::Deleted | LastMod::Modified,
+                ) => (),
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, outcome),
+                    FirstState::DoesntExist,
+                    LastMod::Renamed,
+                ) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _),
+                    FirstState::DoesntExist,
+                    LastMod::None,
+                ) => (),
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _),
+                    FirstState::Exists,
+                    LastMod::Created | LastMod::Deleted | LastMod::Modified,
+                ) => (),
+                // We shouldn't see more events after something is renamed unless it's the new file (and first state wouldn't be exists)
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _),
+                    FirstState::Exists,
+                    LastMod::Renamed,
+                ) => (),
+                (
+                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, outcome),
+                    FirstState::Exists,
+                    LastMod::None,
+                ) => {
+                    if outcome == &SyscallOutcome::Success {
+                        let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                        curr_set.insert(Fact::File(FileFact::Contents));
+                    }
+                }
+                (SyscallEvent::Open(_, _), FirstState::None, LastMod::None) => (),
+                (SyscallEvent::Open(flag, _), _, _) => {
+                    panic!("Unexpected oflag for open! :{:?}", flag);
+                }
+                (
+                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FirstState::DoesntExist,
+                    LastMod::Created | LastMod::Modified | LastMod::Renamed,
+                ) => {
+                    if outcome == &SyscallOutcome::Success && full_path == old_path {
+                        // Get the oldpath's postconds.
+                        // Look up new_path's postconds and set them to oldpath's
+                        // set oldpaths postconds to doesnt exist.
+                        let curr_set = curr_file_postconditions.get(full_path).unwrap();
+                        let curr_set_clone = curr_set.clone();
+                        let new_path_post_set = curr_file_postconditions.get_mut(new_path).unwrap();
+                        for post_cond in curr_set_clone.iter() {
+                            new_path_post_set.insert(post_cond.clone());
+                        }
+                        curr_file_postconditions.insert(
+                            full_path.clone(),
+                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
+                        );
+                    }
+                }
+                (SyscallEvent::Rename(_, _, _), FirstState::DoesntExist, LastMod::Deleted) => (),
+                (SyscallEvent::Rename(_, _, _), FirstState::DoesntExist, LastMod::None) => (),
+                (
+                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FirstState::Exists,
+                    LastMod::Created | LastMod::Modified | LastMod::Renamed,
+                ) => {
+                    if outcome == &SyscallOutcome::Success && full_path == old_path {
+                        // Get the oldpath's postconds.
+                        // Look up new_path's postconds and set them to oldpath's
+                        // set oldpaths postconds to doesnt exist.
+                        let curr_set = curr_file_postconditions.get(full_path).unwrap();
+                        let curr_set_clone = curr_set.clone();
+                        let new_path_post_set = curr_file_postconditions.get_mut(new_path).unwrap();
+                        for post_cond in curr_set_clone.iter() {
+                            new_path_post_set.insert(post_cond.clone());
+                        }
+                        curr_file_postconditions.insert(
+                            full_path.clone(),
+                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
+                        );
+                    }
+                }
+                (SyscallEvent::Rename(_, _, _), FirstState::Exists, LastMod::Deleted) => (),
+                (
+                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FirstState::Exists,
+                    LastMod::None,
+                ) => {
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            if full_path == old_path {
+                                // Get the oldpath's postconds.
+                                // Look up new_path's postconds and set them to oldpath's
+                                // set oldpaths postconds to doesnt exist.
+                                let curr_set = curr_file_postconditions.get(full_path).unwrap();
+                                let curr_set_clone = curr_set.clone();
+                                let new_path_post_set =
+                                    curr_file_postconditions.get_mut(new_path).unwrap();
+                                for post_cond in curr_set_clone.iter() {
+                                    new_path_post_set.insert(post_cond.clone());
+                                }
+
+                                curr_file_postconditions.insert(
+                                    full_path.clone(),
+                                    HashSet::from([Fact::File(FileFact::DoesntExist)]),
+                                );
+                            }
+                        }
+                        // These don't even make sense.
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
+                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                        }
+                        _ => (),
+                    }
+                }
+
+                // We haven't seen old path before.
+                (
+                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FirstState::None,
+                    LastMod::None,
+                ) => {
+                    if outcome == &SyscallOutcome::Success && full_path == old_path {
+                        curr_file_postconditions.insert(
+                            new_path.clone(),
+                            HashSet::from([Fact::File(FileFact::Exists)]),
+                        );
+                        curr_file_postconditions.insert(
+                            full_path.clone(),
+                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
+                        );
+                    }
+                }
+                (SyscallEvent::Stat(_), _, _) => (),
+            }
+            first_state_struct.update_based_on_syscall(event);
+            last_mod_struct.update_based_on_syscall(event);
+        }
+    }
+    curr_file_postconditions
 }
 //     let sys_span = span!(Level::INFO, "generate_file_postconditions");
 //     let _ = sys_span.enter();
@@ -975,16 +1245,16 @@ fn generate_postconditions(file_events: ExecFileEvents) -> HashMap<PathBuf, Hash
 //     let mut first_state_struct = FirstStateStruct {
 //         state: FirstState::None,
 //     };
-//     let mut curr_state_struct = LastModStruct {
+//     let mut last_mod_struct = LastModStruct {
 //         state: LastMod::None,
 //     };
 //     let mut has_been_deleted = false;
 
 //     for event in file_events {
 //         let first_state = first_state_struct.state();
-//         let curr_state = curr_state_struct.state();
+//         let last_mod = last_mod_struct.state();
 
-//         match (event, first_state, curr_state) {
+//         match (event, first_state, last_mod) {
 //             (SyscallEvent::Access(_, _), _, _) => (),
 //             (SyscallEvent::Create(_, _), FirstState::DoesntExist, LastMod::Created) => todo!(),
 //             (SyscallEvent::Create(_, _), FirstState::DoesntExist, LastMod::Deleted) => todo!(),

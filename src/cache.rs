@@ -71,6 +71,16 @@ impl ExecCall {
         }
     }
 
+    pub fn add_conditions(&mut self, exec_file_events: ExecFileEvents) {
+        match self {
+            ExecCall::Successful(_, _, preconds, postconds) => {
+                preconds.add_conditions(exec_file_events.clone());
+                postconds.add_conditions(exec_file_events);
+            }
+            _ => panic!("Trying to add preconditions to failed exec!!"),
+        }
+    }
+
     fn executable(&self) -> String {
         match self {
             ExecCall::Successful(_, meta, _, _) | ExecCall::Failed(meta) => meta.executable(),
@@ -172,10 +182,6 @@ impl Execution {
     ) {
         self.exec_calls
             .add_new_file_event(caller_pid, file_access, full_path);
-    }
-
-    fn generate_preconditions(&mut self) {
-        self.generate_preconditions()
     }
 
     fn add_starting_cwd(&mut self, cwd: PathBuf) {
