@@ -831,17 +831,22 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
             match ret_val {
                 0 => {
                     let stat_ptr = regs.arg2::<u64>();
-                    let idk = tracer.read_value(stat_ptr as *const FileStat)?;
+                    let stat_struct = tracer.read_value(stat_ptr as *const FileStat)?;
                     // TODO: actually do something with this fucking struct.
                     // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
-                    Some(SyscallEvent::Stat(SyscallOutcome::Success))
+                    Some(SyscallEvent::Stat(
+                        Some(stat_struct),
+                        SyscallOutcome::Success,
+                    ))
                 }
-                -2 => Some(SyscallEvent::Stat(SyscallOutcome::Fail(
-                    SyscallFailure::FileDoesntExist,
-                ))),
-                -13 => Some(SyscallEvent::Stat(SyscallOutcome::Fail(
-                    SyscallFailure::PermissionDenied,
-                ))),
+                -2 => Some(SyscallEvent::Stat(
+                    None,
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                )),
+                -13 => Some(SyscallEvent::Stat(
+                    None,
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+                )),
                 e => panic!("Unexpected error returned by stat syscall!: {}", e),
             }
         }
