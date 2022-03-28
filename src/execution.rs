@@ -8,12 +8,12 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
 use crate::condition_generator::{
-    Conds, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
+    generate_hash, Conds, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -692,7 +692,7 @@ fn handle_open(
         creat_flag,
         excl_flag,
         file_existed_at_start,
-        &full_path,
+        full_path.clone(),
         offset_mode,
         open_mode,
         syscall_outcome,
@@ -959,7 +959,7 @@ fn generate_open_syscall_file_event(
     creat_flag: bool,
     excl_flag: bool,
     file_existed_at_start: bool,
-    full_path: &Path,
+    full_path: PathBuf,
     offset_mode: OFlag, // trunc, append, readonly. doesn't have to be a weird option anymore b/c
     open_mode: OFlag,
     syscall_outcome: Result<i32, i32>,
@@ -980,6 +980,13 @@ fn generate_open_syscall_file_event(
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
 
+    let starting_hash = if syscall_outcome.is_ok()
+        && (open_mode == OFlag::O_APPEND || open_mode == OFlag::O_RDONLY)
+    {
+        Some(generate_hash(full_path))
+    } else {
+        None
+    };
     if creat_flag {
         if excl_flag {
             match syscall_outcome {
@@ -1016,10 +1023,10 @@ fn generate_open_syscall_file_event(
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
                             (OFlag::O_APPEND, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success))
+                                Some(SyscallEvent::Open(OFlag::O_APPEND, starting_hash, SyscallOutcome::Success))
                             }
                             (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success))
+                                Some(SyscallEvent::Open(OFlag::O_TRUNC, starting_hash, SyscallOutcome::Success))
                             }
                             (offset_flag, mode_flag) => panic!("Unexpected offset flag: {:?} and mode flag: {:?}", offset_flag, mode_flag),
                         }
@@ -1047,9 +1054,11 @@ fn generate_open_syscall_file_event(
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
                 // Retval is pretty useless here but whatever.
-                (OFlag::O_RDONLY, OFlag::O_RDONLY) => {
-                    Some(SyscallEvent::Open(OFlag::O_RDONLY, SyscallOutcome::Success))
-                }
+                (OFlag::O_RDONLY, OFlag::O_RDONLY) => Some(SyscallEvent::Open(
+                    OFlag::O_RDONLY,
+                    starting_hash,
+                    SyscallOutcome::Success,
+                )),
                 (OFlag::O_TRUNC | OFlag::O_APPEND, OFlag::O_RDONLY) => {
                     panic!("Undefined by POSIX/LINUX.")
                 }
@@ -1058,12 +1067,16 @@ fn generate_open_syscall_file_event(
                 (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
                     panic!("Do not support O_WRONLY without offset flag!")
                 }
-                (OFlag::O_APPEND, OFlag::O_WRONLY) => {
-                    Some(SyscallEvent::Open(OFlag::O_APPEND, SyscallOutcome::Success))
-                }
-                (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
-                    Some(SyscallEvent::Open(OFlag::O_TRUNC, SyscallOutcome::Success))
-                }
+                (OFlag::O_APPEND, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
+                    OFlag::O_APPEND,
+                    starting_hash,
+                    SyscallOutcome::Success,
+                )),
+                (OFlag::O_TRUNC, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
+                    OFlag::O_TRUNC,
+                    starting_hash,
+                    SyscallOutcome::Success,
+                )),
                 (offset_flag, mode_flag) => panic!(
                     "Unexpected offset flag: {:?} and mode flag: {:?}",
                     offset_flag, mode_flag
@@ -1073,6 +1086,7 @@ fn generate_open_syscall_file_event(
                 // ENOENT
                 -2 => Some(SyscallEvent::Open(
                     offset_mode,
+                    starting_hash,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 )),
                 // EACCES
@@ -1080,10 +1094,12 @@ fn generate_open_syscall_file_event(
                 -13 => match offset_mode {
                     OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
                         offset_mode,
+                        starting_hash,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     _ => Some(SyscallEvent::Open(
                         offset_mode,
+                        starting_hash,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                 },

@@ -44,6 +44,15 @@ impl ExecCall {
         }
     }
 
+    pub fn add_file_postconditions(&mut self) {
+        match self {
+            ExecCall::Successful(file_events, _, _, postconditions) => {
+                postconditions.add_conditions(file_events.clone());
+            }
+            _ => panic!("Trying to add file postconditions to failed exec call!!"),
+        }
+    }
+
     pub fn add_identifiers(
         &mut self,
         args: Vec<String>,
@@ -68,16 +77,6 @@ impl ExecCall {
                 file_events.add_new_file_event(caller_pid, file_access, full_path)
             }
             _ => panic!("Trying to add file event to failed execve!"),
-        }
-    }
-
-    pub fn add_conditions(&mut self, exec_file_events: ExecFileEvents) {
-        match self {
-            ExecCall::Successful(_, _, preconds, postconds) => {
-                preconds.add_conditions(exec_file_events.clone());
-                postconds.add_conditions(exec_file_events);
-            }
-            _ => panic!("Trying to add preconditions to failed exec!!"),
         }
     }
 
@@ -345,19 +344,6 @@ impl ExecMetadata {
     }
 }
 
-// pub fn add_output_file_hashes(&mut self, caller_pid: Pid) -> anyhow::Result<()> {
-//     match self {
-//         Execution::Successful(_, accesses, _) => accesses.add_output_file_hashes(caller_pid),
-//         // Should this be some fancy kinda error? Meh?
-//         Execution::Failed(_) => {
-//             panic!("Should not be adding output file hashes to failed execution!")
-//         }
-//         Execution::PendingRoot => {
-//             panic!("Should not be adding output file hashes to pending root execution!")
-//         }
-//     }
-// }
-
 // fn add_final_hash(&mut self, full_path: PathBuf, hash: Vec<u8>) {
 //     match self {
 //         Execution::Successful(_, accesses, _) => accesses.add_final_hash(full_path, hash),
@@ -487,11 +473,6 @@ impl RcExecution {
         }
         true
     }
-    // pub fn add_output_file_hashes(&self, caller_pid: Pid) -> anyhow::Result<()> {
-    //     self.execution
-    //         .borrow_mut()
-    //         .add_output_file_hashes(caller_pid)
-    // }
 
     // pub fn add_starting_hash(&self, full_path: PathBuf, hash: Vec<u8>) {
     //     self.execution
@@ -862,13 +843,6 @@ impl RcExecution {
 
 // Wrapper for generating the hash.
 // Opens the file and calls process() to get the hash.
-// pub fn generate_hash(caller_pid: Pid, path: String) -> Vec<u8> {
-//     let s = span!(Level::INFO, stringify!(generate_hash), pid=?caller_pid);
-//     let _ = s.enter();
-//     s.in_scope(|| info!("Made it to generate_hash for path: {}", path));
-//     let mut file = fs::File::open(&path).expect("Could not open file to generate hash");
-//     process::<Sha256, _>(&mut file)
-// }
 
 // Serialize the execs and write them to the cache.
 // pub fn serialize_execs_to_cache(root_execution: RcExecution) -> anyhow::Result<()> {
