@@ -72,6 +72,10 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // first_execution.print_pathbuf_to_file_event_lists();
 
     first_execution.print_exec_calls_of_all();
+    first_execution.generate_pre_and_post_conditions();
+    first_execution.copy_outputs_to_cache();
+    // TODO: copy files over
+    // TODO: serialize to the cache.
 
     Ok(())
 }

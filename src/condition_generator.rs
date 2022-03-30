@@ -4,6 +4,7 @@ use nix::unistd::{AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -60,9 +61,10 @@ pub enum Fact {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum FileFact {
-    Contents(Vec<u8>),
     DoesntExist,
     Exists,
+    FinalContents,
+    StartingContents(Vec<u8>),
     StatStructMatches(FileStat),
     // HasPerms(Vec<Perm>)
     // NoPerms(Vec<Perm>)
@@ -298,6 +300,30 @@ impl CondsMap {
         let postconds = generate_postconditions(exec_file_events);
         self.conds = postconds;
     }
+
+    pub fn copy_outputs_to_cache(&self) {
+        let cache_dir = PathBuf::from("./IOTracker/cache");
+
+        if !cache_dir.exists() {
+            // TODO: not unwrap() but ?;
+            fs::create_dir(&cache_dir).unwrap();
+        }
+        for (path, facts) in self.conds.iter() {
+            if facts.contains(&Fact::File(FileFact::FinalContents)) {
+                let cache_file_path = cache_dir.join(path);
+                if cache_file_path.exists() {
+                    // TODO: maybe it should be
+                    // cache/executable_name/output_file_name
+                    // instead of cache/output_file_name so we can
+                    // have different execs have different versions of files?
+                    panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_file_path);
+                } else {
+                    // TODO: not unwrap() but ?;
+                    fs::copy(path, cache_file_path).unwrap();
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,6 +340,12 @@ impl Conds {
             Conds::Postconds(conds) => {
                 conds.add_postconditions(exec_file_events);
             }
+        }
+    }
+
+    pub fn copy_outputs_to_cache(&self) {
+        if let Conds::Postconds(map) = self {
+            map.copy_outputs_to_cache();
         }
     }
 }
@@ -669,7 +701,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             SyscallOutcome::Success => {
                                 let hash = hash_option.clone().unwrap();
                                 // This precondition needs to be added to the old path's precodns.
-                                old_path_preconds.insert(Fact::File(FileFact::Contents(hash)));
+                                old_path_preconds.insert(Fact::File(FileFact::StartingContents(hash)));
                                 old_path_preconds.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
@@ -687,7 +719,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
                                 let hash = hash_option.clone().unwrap();
                                 old_path_preconds.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
-                                old_path_preconds.insert(Fact::File(FileFact::Contents(hash)));
+                                old_path_preconds.insert(Fact::File(FileFact::StartingContents(hash)));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
@@ -743,7 +775,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             let hash = hash_option.clone().unwrap();
                             curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
                             curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
@@ -759,7 +791,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             let hash = hash_option.clone().unwrap();
                             curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
                             curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::R_OK)));
-                            curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::R_OK)));
@@ -799,7 +831,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
                             curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
                             curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
@@ -821,7 +853,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
                             curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
                             curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::R_OK)));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
@@ -1143,7 +1175,7 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
                         curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::Contents(hash.clone())));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
 
@@ -1154,49 +1186,39 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                     LastMod::Renamed(_, _),
                 ) => {
                     if outcome == &SyscallOutcome::Success {
-                        let path_clone = full_path.clone();
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
                         curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        let hash = generate_hash(path_clone);
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
-                        let path_clone = full_path.clone();
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let hash = generate_hash(path_clone);
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Created) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Deleted) => {
                     if outcome == &SyscallOutcome::Success {
-                        let path_clone = full_path.clone();
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Modified) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Renamed(_, _)) => {
                     if outcome == &SyscallOutcome::Success {
-                        let path_clone = full_path.clone();
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
                         curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::None) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::None, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
-                        let path_clone = full_path.clone();
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let hash = generate_hash(path_clone);
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (
@@ -1206,10 +1228,8 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::Contents(hash)));
+                        curr_set.remove(&Fact::File(FileFact::FinalContents));
                         curr_set.insert(Fact::File(FileFact::DoesntExist));
                     }
                 }
@@ -1220,10 +1240,8 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 ) => {
                     if outcome == &SyscallOutcome::Success && full_path == new_path {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::Contents(hash)));
+                        curr_set.remove(&Fact::File(FileFact::FinalContents));
                         curr_set.insert(Fact::File(FileFact::DoesntExist));
                     }
                 }
@@ -1252,7 +1270,7 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                         let path_clone = full_path.clone();
                         let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::Contents(hash)));
+                        curr_set.remove(&Fact::File(FileFact::FinalContents));
                         curr_set.insert(Fact::File(FileFact::DoesntExist));
                     }
                 }
@@ -1275,10 +1293,8 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 ) => {
                     if outcome == &SyscallOutcome::Success && full_path == new_path {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (
@@ -1304,9 +1320,7 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 // TODO: this isn't right lol
@@ -1317,9 +1331,7 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
-                        curr_set.insert(Fact::File(FileFact::Contents(hash)));
+                        curr_set.insert(Fact::File(FileFact::FinalContents));
                     }
                 }
                 (SyscallEvent::Open(flag, _, _), _, _) => {
@@ -1510,7 +1522,7 @@ mod tests {
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test")).unwrap();
 
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents(Vec::new()))]);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1547,7 +1559,7 @@ mod tests {
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents(Vec::new()))]);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1580,7 +1592,7 @@ mod tests {
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::Contents(Vec::new())),
+            Fact::File(FileFact::StartingContents(Vec::new())),
             Fact::File(FileFact::HasPermission(AccessFlags::R_OK)),
             Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
@@ -1590,7 +1602,7 @@ mod tests {
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents(Vec::new()))]);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1616,7 +1628,7 @@ mod tests {
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::Contents(Vec::new())),
+            Fact::File(FileFact::StartingContents(Vec::new())),
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
             Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
         ]);
@@ -1624,7 +1636,7 @@ mod tests {
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents(Vec::new()))]);
+        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1665,7 +1677,7 @@ mod tests {
         let preconditions_set_bar = preconditions.get(&PathBuf::from("bar")).unwrap();
         let correct_preconditions_foo = HashSet::from([
             Fact::File(FileFact::Exists),
-            Fact::File(FileFact::Contents(Vec::new())),
+            Fact::File(FileFact::StartingContents(Vec::new())),
             Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
             Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
             Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
