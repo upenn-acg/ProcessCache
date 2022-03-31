@@ -40,7 +40,7 @@ impl LastModStruct {
             }
             SyscallEvent::Rename(old_path, new_path, outcome) => {
                 if outcome == SyscallOutcome::Success {
-                    self.state = LastMod::Renamed(old_path.clone(), new_path);
+                    self.state = LastMod::Renamed(old_path, new_path);
                 }
             }
             // No change
@@ -326,30 +326,6 @@ impl CondsMap {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Conds {
-    Preconds(CondsMap),
-    Postconds(CondsMap),
-}
-impl Conds {
-    pub fn add_conditions(&mut self, exec_file_events: ExecFileEvents) {
-        match self {
-            Conds::Preconds(conds) => {
-                conds.add_preconditions(exec_file_events);
-            }
-            Conds::Postconds(conds) => {
-                conds.add_postconditions(exec_file_events);
-            }
-        }
-    }
-
-    pub fn copy_outputs_to_cache(&self) {
-        if let Conds::Postconds(map) = self {
-            map.copy_outputs_to_cache();
-        }
-    }
-}
-
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
@@ -364,7 +340,7 @@ pub enum SyscallEvent {
     Stat(Option<FileStat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub enum SyscallFailure {
     AlreadyExists,
     FileDoesntExist,
@@ -372,7 +348,7 @@ pub enum SyscallFailure {
 }
 
 // The i32 is the return value.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub enum SyscallOutcome {
     Fail(SyscallFailure),
     Success,
@@ -382,8 +358,12 @@ pub fn generate_hash(path: PathBuf) -> Vec<u8> {
     // let s = span!(Level::INFO, stringify!(generate_hash), pid=?caller_pid);
     // let _ = s.enter();
     // s.in_scope(|| info!("Made it to generate_hash for path: {}", path));
-    let mut file = File::open(&path).expect("Could not open file to generate hash");
-    process::<Sha256, _>(&mut file)
+    let file = File::open(&path);
+    if let Ok(mut f) = file {
+        process::<Sha256, _>(&mut f)
+    } else {
+        panic!("Cannot open file for hashing: {:?}", path);
+    }
 }
 
 // ------ Hashing stuff ------
@@ -1105,20 +1085,13 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
     curr_file_preconditions
 }
 
-fn no_mods_before_rename(
-    old_path: PathBuf,
-    new_path: PathBuf,
-    file_name_list: Vec<SyscallEvent>,
-) -> bool {
+fn no_mods_before_rename(file_name_list: Vec<SyscallEvent>) -> bool {
     let mut no_mods = true;
     for event in file_name_list {
         match event {
             SyscallEvent::Access(_, _) => (),
             SyscallEvent::Open(OFlag::O_RDONLY, _, _) => (),
             SyscallEvent::Stat(_, _) => (),
-            SyscallEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
-                break;
-            }
             SyscallEvent::Create(_, SyscallOutcome::Success)
             | SyscallEvent::Delete(SyscallOutcome::Success)
             | SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, SyscallOutcome::Success)
@@ -1133,7 +1106,9 @@ fn no_mods_before_rename(
 }
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf, HashSet<Fact>> {
+pub fn generate_postconditions(
+    exec_file_events: ExecFileEvents,
+) -> HashMap<PathBuf, HashSet<Fact>> {
     let sys_span = span!(Level::INFO, "generate_file_postconditions");
     let _ = sys_span.enter();
 
@@ -1144,7 +1119,6 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
         curr_file_postconditions.insert(full_path.clone(), HashSet::new());
     }
     for (full_path, event_list) in exec_file_events.file_event_list() {
-        let hash = generate_hash(full_path.clone());
         let mut first_state_struct = FirstStateStruct {
             state: FirstState::None,
         };
@@ -1267,8 +1241,6 @@ fn generate_postconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf,
                 (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        let path_clone = full_path.clone();
-                        let hash = generate_hash(path_clone);
                         curr_set.remove(&Fact::File(FileFact::Exists));
                         curr_set.remove(&Fact::File(FileFact::FinalContents));
                         curr_set.insert(Fact::File(FileFact::DoesntExist));

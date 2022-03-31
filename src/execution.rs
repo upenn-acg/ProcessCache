@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
 use crate::condition_generator::{
-    generate_hash, Conds, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
+    generate_hash, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -71,9 +71,10 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // Print all file event lists for the execution.
     // first_execution.print_pathbuf_to_file_event_lists();
 
-    first_execution.print_exec_calls_of_all();
+    first_execution.print_event_lists();
     first_execution.generate_pre_and_post_conditions();
-    first_execution.copy_outputs_to_cache();
+    first_execution.print_execs();
+    // first_execution.copy_outputs_to_cache();
     // TODO: copy files over
     // TODO: serialize to the cache.
 
@@ -119,8 +120,8 @@ pub async fn trace_process(
                     let new_exec_call = ExecCall::Successful(
                         ExecFileEvents::new(),
                         lost_metadata,
-                        Conds::Preconds(CondsMap::new()),
-                        Conds::Postconds(CondsMap::new()),
+                        CondsMap::new(),
+                        CondsMap::new(),
                     );
                     curr_execution.add_new_exec_call(new_exec_call);
                     lost_execve_metadata = None;
@@ -228,8 +229,8 @@ pub async fn trace_process(
                                     let mut new_exec_call = ExecCall::Successful(
                                         ExecFileEvents::new(),
                                         ExecMetadata::new(),
-                                        Conds::Preconds(CondsMap::new()),
-                                        Conds::Postconds(CondsMap::new()),
+                                        CondsMap::new(),
+                                        CondsMap::new(),
                                     );
 
                                     new_exec_call.add_identifiers(args, envp, executable);
