@@ -7,15 +7,6 @@ use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-// impl Serialize for i32 {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: Serializer,
-//     {
-//         serializer.serialize_i32(*self)
-//     }
-// }
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc(pub Pid);
 
@@ -257,29 +248,6 @@ impl Execution {
     }
 }
 
-// Only want to copy output files that had successful
-// accesses to the cache.
-// pub fn copy_outputs_to_cache(&self) -> anyhow::Result<()> {
-// for output in self.output_files.iter() {
-//     if let FileAccess::Success(full_path, _, _) = output {
-//         let file_name = full_path
-//             .file_name()
-//             .expect("Can't get file name in copy_outputs_to_cache()!");
-
-//         let cache_dir = PathBuf::from("./IOTracker/cache");
-//         let cache_path = cache_dir.join(file_name);
-
-//         if cache_path.exists() {
-//             panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_path);
-//         } else {
-//             fs::copy(full_path, cache_path)?;
-//         }
-//     }
-// }
-// Ok(())
-//     unimplemented!();
-// }
-
 // Info about the execution that we want to keep around
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
@@ -464,34 +432,10 @@ impl RcExecution {
 // Serialize the execs and write them to the cache.
 // pub fn serialize_execs_to_cache(root_execution: RcExecution) {
 //     const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
-
 //     let cache_path = PathBuf::from(CACHE_LOCATION);
 //     let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
-
-// if Path::new(CACHE_LOCATION).exists() {
-//     // If the cache file exists:
-//     // - make a copy of cache/cache at cache/cache_copy (just in case)
-//     fs::copy(&cache_path, &cache_copy_path)?;
-//     // - deserialize existing structure from cache/cache
-//     let mut existing_global_execs = deserialize_execs_from_cache();
-//     // - add the new root_execution to the vector
-//     existing_global_execs.add_new_execution(root_execution);
-//     // - serialize again
-//     let serialized_execs = rmp_serde::to_vec(&existing_global_execs).unwrap();
-//     // - remove old cache/cache file
-//     fs::remove_file(&cache_path)?;
-//     // - make a new cache/cache file and write the updated serialized execs to it
-//     fs::write(cache_path, serialized_execs)?;
-//     // - delete cache/cache_copy
-//     fs::remove_file(cache_copy_path)?;
-// } else {
-
 //     let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
-// - and write the serialized_execs to the cache/cache file we are making
-//   right here because that's what the write() function here does, creates
-//   if it doesn't exist, and then writes.
 //     fs::write(CACHE_LOCATION, serialized_exec).unwrap();
-//     // let serialized_execs = rmp_serde::to_vec(&root_exection).unwrap();
 // }
 
 // pub fn deserialize_execs_from_cache() -> GlobalExecutions {
