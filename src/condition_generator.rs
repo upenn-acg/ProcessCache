@@ -1,5 +1,5 @@
+use libc::c_int;
 use nix::fcntl::OFlag;
-use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -53,30 +53,20 @@ impl LastModStruct {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
-    File(FileFact),
-    Dir(DirFact),
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum FileFact {
     DoesntExist,
     Exists,
     FinalContents,
-    StartingContents(Vec<u8>),
-    StatStructMatches(FileStat),
-    // HasPerms(Vec<Perm>)
-    // NoPerms(Vec<Perm>)
     // Then we can have one fact holding all the perms we need to check for?
-    HasPermission(AccessFlags),
-    NoPermission(AccessFlags),
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum DirFact {
-    HasPermission(AccessFlags),
-    NoPermission(AccessFlags),
+    // c_int = AccessFlags
+    HasDirPermission(c_int),
+    HasPermission(c_int),
+    NoDirPermission(c_int),
+    NoPermission(c_int),
+    Or(Box<Fact>, Box<Fact>),
+    StartingContents(Vec<u8>),
+    StatStructMatches(MyStat),
 }
 
 #[derive(Eq, PartialEq)]
@@ -98,7 +88,7 @@ impl FirstStateStruct {
 }
 
 impl FirstStateStruct {
-    fn update_based_on_syscall(&mut self, curr_file_path: &PathBuf, syscall_event: SyscallEvent) {
+    fn update_based_on_syscall(&mut self, curr_file_path: &Path, syscall_event: SyscallEvent) {
         if *self.state() == FirstState::None {
             match syscall_event {
                 SyscallEvent::Access(_, SyscallOutcome::Success) => {
@@ -281,7 +271,7 @@ impl ExecFileEvents {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CondsMap {
     conds: HashMap<PathBuf, HashSet<Fact>>,
 }
@@ -309,7 +299,7 @@ impl CondsMap {
             fs::create_dir(&cache_dir).unwrap();
         }
         for (path, facts) in self.conds.iter() {
-            if facts.contains(&Fact::File(FileFact::FinalContents)) {
+            if facts.contains(&Fact::FinalContents) {
                 let cache_file_path = cache_dir.join(path);
                 if cache_file_path.exists() {
                     // TODO: maybe it should be
@@ -331,16 +321,38 @@ impl CondsMap {
 // "Create" meaning using O_CREAT
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
-    Access(HashSet<AccessFlags>, SyscallOutcome), // Vec<c_int> is list of F_OK (0), R_OK, W_OK, X_OK
+    Access(HashSet<AccessFlags>, SyscallOutcome),
+    // OFlag
     Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
+    // OFlag
     Open(OFlag, Option<Vec<u8>>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),     // Old, new, outcome
     // TODO: Handle stat struct too
-    Stat(Option<FileStat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
+    Stat(Option<MyStat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct MyStat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_nlink: u64,
+    pub st_mode: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallFailure {
     AlreadyExists,
     FileDoesntExist,
@@ -348,7 +360,7 @@ pub enum SyscallFailure {
 }
 
 // The i32 is the return value.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallOutcome {
     Fail(SyscallFailure),
     Success,
@@ -434,17 +446,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             if !flags.contains(&AccessFlags::F_OK) {
                                 for f in flags {
-                                    curr_set.insert(Fact::File(FileFact::HasPermission(*f)));
+                                    curr_set.insert(Fact::HasPermission(f.bits()));
                                 }
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             for f in flags {
                                 let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
-                                curr_set.insert(Fact::File(FileFact::NoPermission(*f)));
+                                let bits = f.bits();
+                                curr_set.insert(Fact::NoPermission(bits));
                             }
                         }
                         o => panic!("Unexpected access syscall failure: {:?}", o),
@@ -466,21 +479,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             if flags.contains(&AccessFlags::F_OK) {
-                                curr_set.insert(Fact::File(FileFact::Exists));
+                                curr_set.insert(Fact::Exists);
                             } else {
                                 for f in flags {
-                                    curr_set.insert(Fact::File(FileFact::HasPermission(*f)));
+                                    curr_set.insert(Fact::HasPermission(f.bits()));
                                 }
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             for f in flags {
-                                curr_set.insert(Fact::File(FileFact::NoPermission(*f)));
+                                curr_set.insert(Fact::NoPermission(f.bits()));
                             }
                         }
                         o => panic!("Unexpected access syscall failure: {:?}", o),
@@ -497,14 +510,13 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::DoesntExist);
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
 
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())), Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))));
                         }
                         f => panic!("Unexpected create {:?} file failure, didn't exist at start no other changes: {:?}", mode, f),
                     }
@@ -532,13 +544,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::DoesntExist);
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())), Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))));
                         }
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
@@ -547,16 +558,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::DoesntExist);
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                            curr_set.insert(Fact::File(FileFact::Exists));
+                            curr_set.insert(Fact::Exists);
                         }
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
@@ -598,13 +611,15 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
                             has_been_deleted = true;
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                         f => panic!("Delete failed for unexpected reason, exists, no mods: {:?}", f),
                     }
@@ -626,16 +641,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::File(FileFact::Exists));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Exists);
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                         f => panic!("Unexpected failure from delete event: {:?}", f),
                     }
@@ -681,12 +698,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             SyscallOutcome::Success => {
                                 let hash = hash_option.clone().unwrap();
                                 // This precondition needs to be added to the old path's precodns.
-                                old_path_preconds.insert(Fact::File(FileFact::StartingContents(hash)));
-                                old_path_preconds.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
+                                old_path_preconds.insert(Fact::StartingContents(hash));
+                                old_path_preconds.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 // This precondition needs to be added to the old path's precodns.
-                                old_path_preconds.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                                old_path_preconds.insert(Fact::NoPermission(AccessFlags::W_OK.bits()));
                             }
                             _ => (),
                         }
@@ -698,12 +715,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             SyscallOutcome::Success => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
                                 let hash = hash_option.clone().unwrap();
-                                old_path_preconds.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
-                                old_path_preconds.insert(Fact::File(FileFact::StartingContents(hash)));
+                                old_path_preconds.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
+                                old_path_preconds.insert(Fact::StartingContents(hash));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                                old_path_preconds.insert(Fact::NoPermission(AccessFlags::W_OK.bits()));
                             }
                             _ => (),
                         }
@@ -715,11 +732,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         match outcome {
                             SyscallOutcome::Success => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
+                                old_path_preconds.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                                old_path_preconds.insert(Fact::NoPermission(AccessFlags::W_OK.bits()));
                             }
                             _ => (),
                         }
@@ -753,12 +770,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
+                            curr_set.insert(Fact::StartingContents(hash));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::NoPermission(AccessFlags::W_OK.bits()));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
@@ -769,12 +786,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::R_OK)));
-                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::R_OK.bits()));
+                            curr_set.insert(Fact::StartingContents(hash));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::R_OK)));
+                            curr_set.insert(Fact::NoPermission(AccessFlags::R_OK.bits()));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
@@ -784,11 +801,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::NoPermission(AccessFlags::W_OK.bits()));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
@@ -810,19 +827,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::StartingContents(hash));
+                            curr_set.insert(Fact::HasPermission(AccessFlags::W_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open append, no info yet, failed because file already exists??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                     }
                 }
@@ -832,19 +851,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::StartingContents(hash)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::R_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::StartingContents(hash));
+                            curr_set.insert(Fact::HasPermission(AccessFlags::R_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open read only, no info yet, failed because file already exists??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::R_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::R_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                     }
                 }
@@ -853,8 +874,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::HasPermission(AccessFlags::W_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open trunc, no info yet, failed because file already exists??");
@@ -863,8 +884,10 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             panic!("Open trunc failed because file doesn't exist? So??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
-                            curr_set.insert(Fact::File(FileFact::NoPermission(AccessFlags::R_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::R_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                     }
                 }
@@ -901,8 +924,10 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     // Fail for already exists? No.
                     // Could fail for permissions though.
                     if *outcome == SyscallOutcome::Fail(SyscallFailure::PermissionDenied) {
-                        curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                        curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                        curr_set.insert(Fact::Or(
+                            Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                            Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                        ));
                     }
                 }
                 (SyscallEvent::Rename(_, _, _), FirstState::Exists, LastMod::Created, _) => {
@@ -940,11 +965,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     if old_path == full_path {
                         match outcome {
                             SyscallOutcome::Success => {
-                                curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
+                                curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 // We may not have permission to write to the directory.
-                                curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
+                                curr_set.insert(Fact::NoDirPermission(AccessFlags::W_OK.bits()));
                             }
                             o => panic!("Unexpected failure in rename syscall event: {:?}", o),
                         }
@@ -971,21 +996,23 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             if old_path == full_path {
                                 // First event is renaming and we see old path, add all the preconds.
-                                curr_set.insert(Fact::File(FileFact::Exists));
-                                curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)));
-                                curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                                curr_set.insert(Fact::Exists);
+                                curr_set.insert(Fact::HasDirPermission(AccessFlags::W_OK.bits()));
+                                curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             } else {
                                 // full_path = new path
-                                curr_set.insert(Fact::File(FileFact::DoesntExist));
+                                curr_set.insert(Fact::DoesntExist);
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
                             // Old path doesn't exist cool.
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits()))
+                            ));
                         }
                         o => panic!("Unexpected error for rename: {:?}", o),
                     }
@@ -1006,7 +1033,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::NoDirPermission(AccessFlags::X_OK.bits()));
                         }
                         f => panic!("Unexpected failure by stat syscall, first state was doesn't exist, last mod none: {:?}", f),
                     }
@@ -1028,9 +1055,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
-                            curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             if let Some(stat) = option_stat {
-                                curr_set.insert(Fact::File(FileFact::StatStructMatches(*stat)));
+                                curr_set.insert(Fact::StatStructMatches(stat.clone()));
                             } else {
                                 panic!("No stat struct found for successful stat syscall!");
                             }
@@ -1057,8 +1084,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(stat) = option_stat {
-                                curr_set.insert(Fact::File(FileFact::StatStructMatches(*stat)));
-                                curr_set.insert(Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)));
+                                curr_set.insert(Fact::StatStructMatches(stat.clone()));
+                                curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             } else {
                                 panic!("No stat struct found for successful stat syscall!");
                             }
@@ -1068,10 +1095,10 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             panic!("Unexpected stat failure: file already exists??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::File(FileFact::DoesntExist));
+                            curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::NoDirPermission(AccessFlags::X_OK.bits()));
                         }
                     }
                 }
@@ -1148,8 +1175,8 @@ pub fn generate_postconditions(
                 (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::Deleted) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.remove(&Fact::DoesntExist);
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
 
@@ -1161,38 +1188,38 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.remove(&Fact::DoesntExist);
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (SyscallEvent::Create(_, outcome), FirstState::DoesntExist, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Created) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Deleted) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.remove(&Fact::DoesntExist);
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::Modified) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::Exists, LastMod::Renamed(_, _)) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::DoesntExist));
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.remove(&Fact::Exists);
+                        curr_set.remove(&Fact::DoesntExist);
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (SyscallEvent::Create(_, _), FirstState::Exists, LastMod::None) => (),
                 (SyscallEvent::Create(_, outcome), FirstState::None, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (
@@ -1202,9 +1229,9 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::FinalContents));
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.remove(&Fact::Exists);
+                        curr_set.remove(&Fact::FinalContents);
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (
@@ -1214,9 +1241,9 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success && full_path == new_path {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::FinalContents));
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.remove(&Fact::Exists);
+                        curr_set.remove(&Fact::FinalContents);
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (SyscallEvent::Delete(_), FirstState::DoesntExist, LastMod::Deleted) => (),
@@ -1228,28 +1255,28 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::Renamed(_, _)) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (SyscallEvent::Delete(_), FirstState::Exists, LastMod::Deleted) => (),
                 (SyscallEvent::Delete(outcome), FirstState::Exists, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.remove(&Fact::File(FileFact::FinalContents));
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.remove(&Fact::Exists);
+                        curr_set.remove(&Fact::FinalContents);
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (SyscallEvent::Delete(outcome), FirstState::None, LastMod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::DoesntExist));
+                        curr_set.insert(Fact::DoesntExist);
                     }
                 }
                 (SyscallEvent::Open(OFlag::O_RDONLY, _, _), _, _) => (),
@@ -1265,8 +1292,8 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success && full_path == new_path {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.remove(&Fact::File(FileFact::Exists));
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.remove(&Fact::Exists);
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (
@@ -1292,7 +1319,7 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 // TODO: this isn't right lol
@@ -1303,7 +1330,7 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                        curr_set.insert(Fact::File(FileFact::FinalContents));
+                        curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (SyscallEvent::Open(flag, _, _), _, _) => {
@@ -1324,10 +1351,8 @@ pub fn generate_postconditions(
                         for post_cond in curr_set_clone.iter() {
                             new_path_post_set.insert(post_cond.clone());
                         }
-                        curr_file_postconditions.insert(
-                            full_path.clone(),
-                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                        );
+                        curr_file_postconditions
+                            .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (
@@ -1343,10 +1368,8 @@ pub fn generate_postconditions(
                         for post_cond in curr_set_clone.iter() {
                             new_path_post_set.insert(post_cond.clone());
                         }
-                        curr_file_postconditions.insert(
-                            old_path.clone(),
-                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                        );
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                         // It is the new path! We update its postconditions when we see this event in the
                         // old path's list.
                     }
@@ -1368,10 +1391,8 @@ pub fn generate_postconditions(
                         for post_cond in curr_set_clone.iter() {
                             new_path_post_set.insert(post_cond.clone());
                         }
-                        curr_file_postconditions.insert(
-                            full_path.clone(),
-                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                        );
+                        curr_file_postconditions
+                            .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (
@@ -1391,10 +1412,8 @@ pub fn generate_postconditions(
                         for post_cond in curr_set_clone.iter() {
                             new_path_post_set.insert(post_cond.clone());
                         }
-                        curr_file_postconditions.insert(
-                            full_path.clone(),
-                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                        );
+                        curr_file_postconditions
+                            .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Rename(_, _, _), FirstState::Exists, LastMod::Deleted) => (),
@@ -1417,17 +1436,17 @@ pub fn generate_postconditions(
                                     new_path_post_set.insert(post_cond.clone());
                                 }
 
-                                curr_file_postconditions.insert(
-                                    full_path.clone(),
-                                    HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                                );
+                                curr_file_postconditions
+                                    .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                             }
                         }
                         // These don't even make sense.
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             let curr_set = curr_file_postconditions.get_mut(full_path).unwrap();
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::W_OK)));
-                            curr_set.insert(Fact::Dir(DirFact::NoPermission(AccessFlags::X_OK)));
+                            curr_set.insert(Fact::Or(
+                                Box::new(Fact::NoDirPermission(AccessFlags::W_OK.bits())),
+                                Box::new(Fact::NoDirPermission(AccessFlags::X_OK.bits())),
+                            ));
                         }
                         _ => (),
                     }
@@ -1440,19 +1459,15 @@ pub fn generate_postconditions(
                     LastMod::None,
                 ) => {
                     if outcome == &SyscallOutcome::Success && full_path == old_path {
-                        curr_file_postconditions.insert(
-                            new_path.clone(),
-                            HashSet::from([Fact::File(FileFact::Exists)]),
-                        );
-                        curr_file_postconditions.insert(
-                            full_path.clone(),
-                            HashSet::from([Fact::File(FileFact::DoesntExist)]),
-                        );
+                        curr_file_postconditions
+                            .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                        curr_file_postconditions
+                            .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Stat(_, _), _, _) => (),
             }
-            first_state_struct.update_based_on_syscall(&full_path, event.clone());
+            first_state_struct.update_based_on_syscall(full_path, event.clone());
             last_mod_struct.update_based_on_syscall(event.clone());
         }
     }
@@ -1461,8 +1476,6 @@ pub fn generate_postconditions(
 
 #[cfg(test)]
 mod tests {
-    use std::mem;
-
     use super::*;
 
     // These tests assume you have test.txt, foo.txt, and bar.txt
@@ -1488,16 +1501,16 @@ mod tests {
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::DoesntExist),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+            Fact::DoesntExist,
+            Fact::HasDirPermission(AccessFlags::W_OK.bits()),
+            Fact::HasDirPermission(AccessFlags::X_OK.bits()),
         ]);
         assert_eq!(preconditions_set, &correct_preconditions);
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
 
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1526,22 +1539,21 @@ mod tests {
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::DoesntExist),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
+            Fact::DoesntExist,
+            Fact::HasDirPermission(AccessFlags::W_OK.bits()),
+            Fact::HasDirPermission(AccessFlags::X_OK.bits()),
         ]);
         assert_eq!(preconditions_set, &correct_preconditions);
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
     #[test]
     fn test_open_open_access() {
         let mut exec_file_events = ExecFileEvents::new();
-        let stat: libc::stat = unsafe { mem::zeroed() };
         exec_file_events.add_new_file_event(
             Pid::from_raw(0),
             // TODO
@@ -1558,26 +1570,20 @@ mod tests {
             SyscallEvent::Access(HashSet::from([AccessFlags::R_OK]), SyscallOutcome::Success),
             PathBuf::from("test.txt"),
         );
-        // exec_file_events.add_new_file_event(
-        //     Pid::from_raw(0),
-        //     SyscallEvent::Stat(Some(stat), SyscallOutcome::Success),
-        //     PathBuf::from("test.txt"),
-        // );
 
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::StartingContents(Vec::new())),
-            Fact::File(FileFact::HasPermission(AccessFlags::R_OK)),
-            Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
-            // Fact::File(FileFact::StatStructMatches(stat)),
+            Fact::StartingContents(Vec::new()),
+            Fact::HasPermission(AccessFlags::R_OK.bits()),
+            Fact::HasPermission(AccessFlags::W_OK.bits()),
+            Fact::HasDirPermission(AccessFlags::X_OK.bits()),
         ]);
         assert_eq!(preconditions_set, &correct_preconditions);
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1603,15 +1609,15 @@ mod tests {
         let preconditions = generate_preconditions(exec_file_events.clone());
         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
         let correct_preconditions = HashSet::from([
-            Fact::File(FileFact::StartingContents(Vec::new())),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
-            Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
+            Fact::StartingContents(Vec::new()),
+            Fact::HasDirPermission(AccessFlags::X_OK.bits()),
+            Fact::HasPermission(AccessFlags::W_OK.bits()),
         ]);
         assert_eq!(preconditions_set, &correct_preconditions);
 
         let postconditions = generate_postconditions(exec_file_events);
         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
-        let correct_postconditions = HashSet::from([Fact::File(FileFact::FinalContents)]);
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
         assert_eq!(postconditions_set, &correct_postconditions);
     }
 
@@ -1656,20 +1662,20 @@ mod tests {
             .get(&PathBuf::from("/home/kelly/research/IOTracker/bar.txt"))
             .unwrap();
         let correct_preconditions_foo = HashSet::from([
-            Fact::File(FileFact::Exists),
-            Fact::File(FileFact::StartingContents(Vec::new())),
-            Fact::File(FileFact::HasPermission(AccessFlags::W_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::X_OK)),
-            Fact::Dir(DirFact::HasPermission(AccessFlags::W_OK)),
+            Fact::Exists,
+            Fact::StartingContents(Vec::new()),
+            Fact::HasPermission(AccessFlags::W_OK.bits()),
+            Fact::HasDirPermission(AccessFlags::X_OK.bits()),
+            Fact::HasDirPermission(AccessFlags::W_OK.bits()),
         ]);
-        let correct_preconditions_bar = HashSet::from([Fact::File(FileFact::DoesntExist)]);
+        let correct_preconditions_bar = HashSet::from([Fact::DoesntExist]);
 
         assert_eq!(preconditions_set_foo, &correct_preconditions_foo);
         assert_eq!(preconditions_set_bar, &correct_preconditions_bar);
 
         // let postconditions = generate_postconditions(exec_file_events);
         // let postconditions_set = postconditions.get(&PathBuf::from("test")).unwrap();
-        // let correct_postconditions = HashSet::from([Fact::File(FileFact::Contents)]);
+        // let correct_postconditions = HashSet::from([Fact::Contents)]);
         // assert_eq!(postconditions_set, &correct_postconditions);
     }
 }

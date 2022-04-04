@@ -11,9 +11,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{ExecCall, ExecMetadata, Execution, RcExecution};
+use crate::cache::{
+    generate_cachable_exec, serialize_execs_to_cache, ExecCall, ExecMetadata, Execution,
+    RcExecution,
+};
 use crate::condition_generator::{
-    generate_hash, CondsMap, ExecFileEvents, SyscallEvent, SyscallFailure, SyscallOutcome,
+    generate_hash, ExecFileEvents, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -55,29 +58,12 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // Serialize the execs to the cache!
-    // Only serialize to cache if not PendingRoot?
-    // PendingRoot == we skipped the execution because
-    // it had a cached match and was therefore skippable.
-    // if !first_execution.is_pending_root() {
-    //     serialize_execs_to_cache(first_execution.clone())
-    //         .with_context(|| context!("Unable to serialize execs to our cache file."))?;
-    // }
-    // println!(
-    //     "number of child execs: {}",
-    //     first_execution.child_executions().len()
-    // );
-
-    // Print all file event lists for the execution.
-    // first_execution.print_pathbuf_to_file_event_lists();
-
-    first_execution.print_event_lists();
-    first_execution.generate_pre_and_post_conditions();
-    first_execution.print_execs();
-    // first_execution.copy_outputs_to_cache();
-    // TODO: copy files over
-    // TODO: serialize to the cache.
-
+    // Want: generate_cachable_exec(first_exec: RcExecution) -> CachedExecution
+    //       iterate through the execution and its child execs
+    //       create pre and postconditions
+    let cachable_exec = generate_cachable_exec(first_execution);
+    // Want: write_to_cache(cachable_exec: CachedExecution)
+    serialize_execs_to_cache(cachable_exec);
     Ok(())
 }
 
@@ -117,12 +103,7 @@ pub async fn trace_process(
                 // blown away.
                 if let Some(lost_metadata) = lost_execve_metadata {
                     // Our lost successful execve! Woo!
-                    let new_exec_call = ExecCall::Successful(
-                        ExecFileEvents::new(),
-                        lost_metadata,
-                        CondsMap::new(),
-                        CondsMap::new(),
-                    );
+                    let new_exec_call = ExecCall::Successful(ExecFileEvents::new(), lost_metadata);
                     curr_execution.add_new_exec_call(new_exec_call);
                     lost_execve_metadata = None;
                 }
@@ -229,8 +210,6 @@ pub async fn trace_process(
                                     let mut new_exec_call = ExecCall::Successful(
                                         ExecFileEvents::new(),
                                         ExecMetadata::new(),
-                                        CondsMap::new(),
-                                        CondsMap::new(),
                                     );
 
                                     new_exec_call.add_identifiers(args, envp, executable);
@@ -471,9 +450,9 @@ pub async fn trace_process(
                 // Create new RcExecution.
                 // Add it to the curr execution's child executions.
                 // Update curr_execution = new_child_execution
-                let new_rcexecution = RcExecution::new(Execution::new(child));
-                curr_execution.add_child_execution(new_rcexecution.clone());
-                curr_execution = new_rcexecution;
+                // let new_rcexecution = RcExecution::new(Execution::new(child));
+                // curr_execution.add_child_execution(new_rcexecution.clone());
+                // curr_execution = new_rcexecution;
             }
 
             TraceEvent::Posthook(_) => {
@@ -502,20 +481,18 @@ pub async fn trace_process(
     match tracer.get_next_event(None).await? {
         TraceEvent::ProcessExited(pid, exit_code) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
-
+            s.in_scope(|| debug!("Exit code: {}", exit_code));
             // Add exit code to the exec struct, if this is the
             // pid that exec'd the exec. execececececec.
             // TODO: Should these just be called from a function called
             // like "do_exit_stuff" (obviously something better but you
             // get me)
-            if !skip_execution {
-                // This is a new (or at least new version?) execution,
-                // add/update all the necessary stuff in the cache.
-                // TODO: ya know, properly cache
-                curr_execution.add_exit_code(exit_code);
-                // curr_execution.add_output_file_hashes(pid)?;
-                // curr_execution.copy_outputs_to_cache()?;
-            }
+            // This is a new (or at least new version?) execution,
+            // add/update all the necessary stuff in the cache.
+            // TODO: ya know, properly cache
+            curr_execution.add_exit_code(exit_code);
+            // curr_execution.add_output_file_hashes(pid)?;
+            // curr_execution.copy_outputs_to_cache()?;
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
@@ -837,12 +814,27 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
                 0 => {
                     let stat_ptr = regs.arg2::<u64>();
                     let stat_struct = tracer.read_value(stat_ptr as *const FileStat)?;
+                    let my_stat = MyStat {
+                        st_dev: stat_struct.st_dev,
+                        st_ino: stat_struct.st_ino,
+                        st_nlink: stat_struct.st_nlink,
+                        st_mode: stat_struct.st_mode,
+                        st_uid: stat_struct.st_uid,
+                        st_gid: stat_struct.st_gid,
+                        st_rdev: stat_struct.st_rdev,
+                        st_size: stat_struct.st_size,
+                        st_blksize: stat_struct.st_blksize,
+                        st_blocks: stat_struct.st_blocks,
+                        st_atime: stat_struct.st_atime,
+                        st_atime_nsec: stat_struct.st_atime_nsec,
+                        st_mtime: stat_struct.st_mtime,
+                        st_mtime_nsec: stat_struct.st_mtime_nsec,
+                        st_ctime: stat_struct.st_ctime,
+                        st_ctime_nsec: stat_struct.st_ctime_nsec,
+                    };
                     // TODO: actually do something with this fucking struct.
                     // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
-                    Some(SyscallEvent::Stat(
-                        Some(stat_struct),
-                        SyscallOutcome::Success,
-                    ))
+                    Some(SyscallEvent::Stat(Some(my_stat), SyscallOutcome::Success))
                 }
                 -2 => Some(SyscallEvent::Stat(
                     None,

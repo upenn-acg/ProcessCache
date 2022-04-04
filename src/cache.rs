@@ -1,9 +1,13 @@
-use crate::condition_generator::{
-    generate_postconditions, generate_preconditions, CondsMap, ExecFileEvents, SyscallEvent,
-};
+use crate::condition_generator::{CondsMap, ExecFileEvents, SyscallEvent};
 use nix::{unistd::Pid, NixPath};
+use serde::Serialize;
 // use sha2::{Digest, Sha256};
-use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    fs::{self, create_dir},
+    path::PathBuf,
+    rc::Rc,
+};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -24,28 +28,10 @@ pub enum ExecCall {
     // Before we find out if the root execution's "execve" call succeeds,
     // its kinda just pending. I want to know which one the root is
     // and doing it in the enum seems easiest.
-    Successful(ExecFileEvents, ExecMetadata, CondsMap, CondsMap),
+    Successful(ExecFileEvents, ExecMetadata),
 }
 
 impl ExecCall {
-    pub fn add_file_preconditions(&mut self) {
-        match self {
-            ExecCall::Successful(file_events, _, preconditions, _) => {
-                preconditions.add_preconditions(file_events.clone());
-            }
-            _ => panic!("Trying to add file preconditions to failed exec call!!"),
-        }
-    }
-
-    pub fn add_file_postconditions(&mut self) {
-        match self {
-            ExecCall::Successful(file_events, _, _, postconditions) => {
-                postconditions.add_postconditions(file_events.clone());
-            }
-            _ => panic!("Trying to add file postconditions to failed exec call!!"),
-        }
-    }
-
     pub fn add_identifiers(
         &mut self,
         args: Vec<String>,
@@ -53,7 +39,7 @@ impl ExecCall {
         executable: String,
     ) {
         match self {
-            ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata, _, _) => {
+            ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata) => {
                 metadata.add_identifiers(args, env_vars, executable);
             }
         }
@@ -66,34 +52,28 @@ impl ExecCall {
         full_path: PathBuf,
     ) {
         match self {
-            ExecCall::Successful(file_events, _, _, _) => {
+            ExecCall::Successful(file_events, _) => {
                 file_events.add_new_file_event(caller_pid, file_access, full_path)
             }
             _ => panic!("Trying to add file event to failed execve!"),
         }
     }
 
-    fn copy_outputs_to_cache(&self) {
-        if let ExecCall::Successful(_, _, _, postconds) = self {
-            postconds.copy_outputs_to_cache();
-        }
-    }
-
     fn executable(&self) -> String {
         match self {
-            ExecCall::Successful(_, meta, _, _) | ExecCall::Failed(meta) => meta.executable(),
+            ExecCall::Successful(_, meta) | ExecCall::Failed(meta) => meta.executable(),
         }
     }
 
     fn file_event_list(&self) -> &ExecFileEvents {
         match self {
-            ExecCall::Successful(file_events, _, _, _) => file_events,
+            ExecCall::Successful(file_events, _) => file_events,
             _ => panic!("Trying to get file event list for failed execve!!"),
         }
     }
 
     fn is_successful(&self) -> bool {
-        matches!(self, ExecCall::Successful(_, _, _, _))
+        matches!(self, ExecCall::Successful(_, _))
     }
 }
 
@@ -125,12 +105,6 @@ impl ExecCallList {
         last_exec.add_new_file_event(caller_pid, file_event, full_path);
     }
 
-    fn copy_outputs_to_cache(&self) {
-        let length = self.exec_calls.len();
-        let last_exec = self.exec_calls.as_slice().get(length - 1).unwrap();
-        // The last exec is the only one that can be successful!
-        last_exec.copy_outputs_to_cache();
-    }
     fn exec_calls(&self) -> Vec<ExecCall> {
         self.exec_calls.clone()
     }
@@ -138,13 +112,6 @@ impl ExecCallList {
     fn exec_file_event_map(&self) -> &ExecFileEvents {
         let last_exec = self.exec_calls.last().unwrap();
         last_exec.file_event_list()
-    }
-
-    fn generate_pre_and_post_conditions(&mut self) {
-        for exec in self.exec_calls.iter_mut() {
-            exec.add_file_preconditions();
-            exec.add_file_postconditions();
-        }
     }
 }
 
@@ -211,12 +178,12 @@ impl Execution {
         self.child_execs.clone()
     }
 
-    fn copy_outputs_to_cache(&self) {
-        self.exec_calls.copy_outputs_to_cache();
-        for child in self.child_execs.iter() {
-            child.copy_outputs_to_cache();
-        }
-    }
+    // fn copy_outputs_to_cache(&self) {
+    //     self.exec_calls.copy_outputs_to_cache();
+    //     for child in self.child_execs.iter() {
+    //         child.copy_outputs_to_cache();
+    //     }
+    // }
 
     fn execs(&self) -> Vec<ExecCall> {
         self.exec_calls.exec_calls()
@@ -226,12 +193,16 @@ impl Execution {
         self.exec_calls.exec_file_event_map()
     }
 
-    fn generate_pre_and_post_conditions(&mut self) {
-        self.exec_calls.generate_pre_and_post_conditions();
-        for child in self.child_execs.iter_mut() {
-            child.generate_pre_and_post_conditions();
-        }
+    fn exit_code(&self) -> Option<i32> {
+        self.exit_code
     }
+
+    // fn generate_pre_and_post_conditions(&mut self) {
+    //     self.exec_calls.generate_pre_and_post_conditions();
+    //     for child in self.child_execs.iter_mut() {
+    //         child.generate_pre_and_post_conditions();
+    //     }
+    // }
 
     fn get_child_exec_by_pid(&self, pid: Pid) -> RcExecution {
         let child_execs = self.child_executions();
@@ -252,7 +223,7 @@ impl Execution {
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
 // we expect it to fail and it succeeds).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ExecMetadata {
     args: Vec<String>,
     env_vars: Vec<String>,
@@ -309,6 +280,7 @@ impl RcExecution {
     }
 
     pub fn add_exit_code(&self, code: i32) {
+        println!("In add_exit_code()!!");
         self.execution.borrow_mut().add_exit_code(code);
     }
 
@@ -335,9 +307,9 @@ impl RcExecution {
         self.execution.borrow().child_executions()
     }
 
-    pub fn copy_outputs_to_cache(&self) {
-        self.execution.borrow().copy_outputs_to_cache()
-    }
+    // pub fn copy_outputs_to_cache(&self) {
+    //     self.execution.borrow().copy_outputs_to_cache()
+    // }
 
     pub fn exec_calls(&self) -> Vec<ExecCall> {
         self.execution.borrow().execs()
@@ -347,11 +319,15 @@ impl RcExecution {
         self.execution.borrow().exec_file_event_map().clone()
     }
 
-    pub fn generate_pre_and_post_conditions(&self) {
-        self.execution
-            .borrow_mut()
-            .generate_pre_and_post_conditions()
+    pub fn exit_code(&self) -> Option<i32> {
+        self.execution.borrow().exit_code()
     }
+
+    // pub fn generate_pre_and_post_conditions(&self) {
+    //     self.execution
+    //         .borrow_mut()
+    //         .generate_pre_and_post_conditions()
+    // }
 
     // This should only be called when the curr_exec of the child is
     // still the parent's. So we know we can just check the parent's
@@ -381,7 +357,7 @@ impl RcExecution {
             let successful = exec.is_successful();
             let executable = exec.executable();
             println!("Executable: {}, Success: {}", executable, successful);
-            if let ExecCall::Successful(file_events, _, _, _) = exec {
+            if let ExecCall::Successful(file_events, _) = exec {
                 println!("File events: {:?}", file_events);
             }
         }
@@ -401,43 +377,144 @@ impl RcExecution {
     // TODO: This doesn't print the child exec stuff.
     // Need to make a function to get the child execs as well.
     // For now, one layer deep is ok.
-    pub fn print_execs(&self) {
-        let exec_calls = self.exec_calls();
-        for exec in exec_calls {
-            if let ExecCall::Successful(_, _, preconds, postconds) = exec {
-                println!("PRECONDITIONS: {:?}", preconds);
-                println!("POSTCONDITIONS: {:?}", postconds)
-            }
-        }
+    // pub fn print_execs(&self) {
+    //     let exec_calls = self.exec_calls();
+    //     for exec in exec_calls {
+    //         if let ExecCall::Successful(_, _, preconds, postconds) = exec {
+    //             println!("PRECONDITIONS: {:?}", preconds);
+    //             println!("POSTCONDITIONS: {:?}", postconds)
+    //         }
+    //     }
 
-        for child in self.child_executions() {
-            let exec_calls = child.exec_calls();
-            for exec in exec_calls {
-                if let ExecCall::Successful(_, _, preconds, postconds) = exec {
-                    println!("PRECONDITIONS: {:?}", preconds);
-                    println!("POSTCONDITIONS: {:?}", postconds)
-                }
-            }
-        }
-    }
+    //     for child in self.child_executions() {
+    //         let exec_calls = child.exec_calls();
+    //         for exec in exec_calls {
+    //             if let ExecCall::Successful(_, _, preconds, postconds) = exec {
+    //                 println!("PRECONDITIONS: {:?}", preconds);
+    //                 println!("POSTCONDITIONS: {:?}", postconds)
+    //             }
+    //         }
+    //     }
+    // }
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.execution.borrow().starting_cwd()
     }
 }
 
+pub type CachedChildren = Vec<CachedExecution>;
+#[derive(Clone, Debug, PartialEq, Serialize)]
+enum CachedExecCall {
+    Failed(ExecMetadata),
+    // Preconditions, postconditions
+    Successful(ExecMetadata, CondsMap, CondsMap),
+}
+
+impl CachedExecCall {
+    fn copy_output_files_to_cache(&self) {
+        if let CachedExecCall::Successful(_, _, postconds) = self {
+            postconds.copy_outputs_to_cache()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CachedExecution {
+    child_execs: CachedChildren,
+    exec_calls: Vec<CachedExecCall>,
+    exit_code: i32,
+    starting_cwd: PathBuf,
+}
+
+impl CachedExecution {
+    fn new(
+        children: CachedChildren,
+        execs: Vec<CachedExecCall>,
+        exit: i32,
+        cwd: PathBuf,
+    ) -> CachedExecution {
+        CachedExecution {
+            child_execs: children,
+            exec_calls: execs,
+            exit_code: exit,
+            starting_cwd: cwd,
+        }
+    }
+
+    fn copy_output_files_to_cache(&self) {
+        let len = self.exec_calls.len();
+        let last_exec = self.exec_calls.as_slice().get(len - 1).unwrap();
+        last_exec.copy_output_files_to_cache();
+    }
+}
+struct GlobalExecutions {
+    global_execs: Vec<CachedExecution>,
+}
+
 // Wrapper for generating the hash.
 // Opens the file and calls process() to get the hash.
 
 // Serialize the execs and write them to the cache.
-// pub fn serialize_execs_to_cache(root_execution: RcExecution) {
-//     const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
-//     let cache_path = PathBuf::from(CACHE_LOCATION);
-//     let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
-//     let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
-//     fs::write(CACHE_LOCATION, serialized_exec).unwrap();
-// }
+// Also copy the output files over.
+pub fn serialize_execs_to_cache(root_execution: CachedExecution) {
+    // TODO: probably shouldn't be copying the output files before checking
+    // the cache.
+    // TODO: Get existing execs out and add to that.
+    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    let cache_path = PathBuf::from(CACHE_LOCATION);
+    if !cache_path.exists() {
+        create_dir(cache_path).unwrap();
+    }
+    // let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
+    let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
+    fs::write(CACHE_LOCATION, serialized_exec).unwrap();
 
+    root_execution.copy_output_files_to_cache();
+}
+
+pub fn generate_cachable_exec(root_execution: RcExecution) -> CachedExecution {
+    let mut exec_list = Vec::new();
+    for exec_call in root_execution.exec_calls() {
+        match exec_call {
+            ExecCall::Failed(meta) => {
+                exec_list.push(CachedExecCall::Failed(meta));
+            }
+            ExecCall::Successful(file_events, meta) => {
+                let mut preconditions = CondsMap::new();
+                let mut postconditions = CondsMap::new();
+                preconditions.add_preconditions(file_events.clone());
+                postconditions.add_postconditions(file_events);
+                exec_list.push(CachedExecCall::Successful(
+                    meta,
+                    preconditions,
+                    postconditions,
+                ));
+            }
+        }
+    }
+
+    let mut children = Vec::new();
+    // TODO: actually recurse lmao
+    for child in root_execution.child_executions() {
+        let cachable_child = generate_cachable_exec(child);
+        children.push(cachable_child);
+    }
+
+    // if let Some(code) = root_execution.exit_code() {
+    println!("execution: {:?}", root_execution);
+    // TODO: weird shit with exit code = none for root process
+    // let exit_code = if let Some(code) = root_execution.exit_code() {
+    //     code
+    // } else {
+    //     0
+    // };
+    CachedExecution::new(
+        children,
+        exec_list,
+        root_execution.exit_code().unwrap(),
+        root_execution.starting_cwd(),
+    )
+}
 // pub fn deserialize_execs_from_cache() -> GlobalExecutions {
 //     let exec_struct_bytes = fs::read("./research/IOTracker/cache/cache").expect("failed");
 //     if exec_struct_bytes.is_empty() {
