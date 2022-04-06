@@ -445,6 +445,23 @@ impl CachedExecution {
         let len = self.exec_calls.len();
         let last_exec = self.exec_calls.as_slice().get(len - 1).unwrap();
         last_exec.copy_output_files_to_cache();
+
+        for child in self.child_execs.clone() {
+            child.copy_output_files_to_cache();
+        }
+    }
+
+    pub fn print_pre_and_postconditions(&self) {
+        for call in self.exec_calls.clone() {
+            if let CachedExecCall::Successful(_, pres, posts) = call {
+                println!("Preconditions: {:?}", pres);
+                println!("Postconditions: {:?}", posts);
+            }
+        }
+
+        for child in self.child_execs.clone() {
+            child.print_pre_and_postconditions();
+        }
     }
 }
 struct GlobalExecutions {
@@ -460,15 +477,12 @@ pub fn serialize_execs_to_cache(root_execution: CachedExecution) {
     // TODO: probably shouldn't be copying the output files before checking
     // the cache.
     // TODO: Get existing execs out and add to that.
-    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
-    if !cache_path.exists() {
-        create_dir(cache_path).unwrap();
-    }
-    // let cache_copy_path = PathBuf::from(CACHE_LOCATION.to_owned() + "_copy");
-    let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
-    fs::write(CACHE_LOCATION, serialized_exec).unwrap();
 
+    let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
+
+    fs::write(cache_path, serialized_exec).unwrap();
     root_execution.copy_output_files_to_cache();
 }
 

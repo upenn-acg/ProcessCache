@@ -292,15 +292,12 @@ impl CondsMap {
     }
 
     pub fn copy_outputs_to_cache(&self) {
-        let cache_dir = PathBuf::from("./IOTracker/cache");
+        let cache_dir = PathBuf::from("./cache");
 
-        if !cache_dir.exists() {
-            // TODO: not unwrap() but ?;
-            fs::create_dir(&cache_dir).unwrap();
-        }
         for (path, facts) in self.conds.iter() {
             if facts.contains(&Fact::FinalContents) {
-                let cache_file_path = cache_dir.join(path);
+                let file_name = path.file_name().unwrap();
+                let cache_file_path = cache_dir.join(file_name);
                 if cache_file_path.exists() {
                     // TODO: maybe it should be
                     // cache/executable_name/output_file_name
@@ -309,6 +306,7 @@ impl CondsMap {
                     panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_file_path);
                 } else {
                     // TODO: not unwrap() but ?;
+                    println!("About to copy file to cache");
                     fs::copy(path, cache_file_path).unwrap();
                 }
             }

@@ -63,7 +63,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     //       create pre and postconditions
     let cachable_exec = generate_cachable_exec(first_execution);
     // Want: write_to_cache(cachable_exec: CachedExecution)
-    serialize_execs_to_cache(cachable_exec);
+    serialize_execs_to_cache(cachable_exec.clone());
+    cachable_exec.print_pre_and_postconditions();
     Ok(())
 }
 
@@ -621,23 +622,36 @@ fn handle_open(
 
         let option_flags = OFlag::from_bits(flag_arg);
         let (creat_flag, excl_flag, offset_mode, open_mode) = if let Some(flags) = option_flags {
-            let open_mode = if flags.contains(OFlag::O_RDONLY) {
-                OFlag::O_RDONLY
-            } else if flags.contains(OFlag::O_RDWR) {
-                OFlag::O_RDWR
-            } else if flags.contains(OFlag::O_WRONLY) {
-                OFlag::O_WRONLY
-            } else {
-                panic!("Unrecognized open mode!");
+            // let open_mode = if flags.contains(OFlag::O_RDONLY) {
+            //     println!("contains read only open mode!!");
+            //     OFlag::O_RDONLY
+            // } else if flags.contains(OFlag::O_RDWR) {
+            //     println!("contains read write!!");
+            //     OFlag::O_RDWR
+            // } else if flags.contains(OFlag::O_WRONLY) {
+            //     println!("contains write only!!");
+            //     OFlag::O_WRONLY
+            // } else {
+            //     panic!("Unrecognized open mode!");
+            // };
+
+            let open_mode = match flag_arg & O_ACCMODE {
+                O_RDONLY => OFlag::O_RDONLY,
+                O_RDWR => OFlag::O_RDWR,
+                O_WRONLY => OFlag::O_WRONLY,
+                _ => panic!("open flags do not match any mode!"),
             };
 
             let creat_flag = flags.contains(OFlag::O_CREAT);
             let excl_flag = flags.contains(OFlag::O_EXCL);
             let offset_mode = if flags.contains(OFlag::O_APPEND) {
+                println!("contains append!!");
                 OFlag::O_APPEND
             } else if flags.contains(OFlag::O_TRUNC) {
+                println!("contains trunc!!");
                 OFlag::O_TRUNC
             } else {
+                println!("is read only!!");
                 OFlag::O_RDONLY
             };
 
@@ -978,7 +992,7 @@ fn generate_open_syscall_file_event(
     }
 
     let starting_hash = if syscall_outcome.is_ok()
-        && (open_mode == OFlag::O_APPEND || open_mode == OFlag::O_RDONLY)
+        && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
     {
         Some(generate_hash(full_path))
     } else {
