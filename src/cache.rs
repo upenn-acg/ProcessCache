@@ -1,13 +1,8 @@
 use crate::condition_generator::{CondsMap, ExecFileEvents, SyscallEvent};
 use nix::{unistd::Pid, NixPath};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
-use std::{
-    cell::RefCell,
-    fs::{self, create_dir},
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -223,7 +218,7 @@ impl Execution {
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
 // we expect it to fail and it succeeds).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ExecMetadata {
     args: Vec<String>,
     env_vars: Vec<String>,
@@ -403,7 +398,7 @@ impl RcExecution {
 }
 
 pub type CachedChildren = Vec<CachedExecution>;
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 enum CachedExecCall {
     Failed(ExecMetadata),
     // Preconditions, postconditions
@@ -418,7 +413,7 @@ impl CachedExecCall {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CachedExecution {
     child_execs: CachedChildren,
     exec_calls: Vec<CachedExecCall>,
@@ -464,12 +459,33 @@ impl CachedExecution {
         }
     }
 }
-struct GlobalExecutions {
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct GlobalExecutions {
     global_execs: Vec<CachedExecution>,
 }
 
-// Wrapper for generating the hash.
-// Opens the file and calls process() to get the hash.
+impl GlobalExecutions {
+    fn new() -> GlobalExecutions {
+        GlobalExecutions {
+            global_execs: Vec::new(),
+        }
+    }
+    fn add_new_execution(&mut self, exec: CachedExecution) {
+        // TODO: check if it's there
+        self.global_execs.push(exec);
+    }
+}
+
+pub fn deserialize_execs_from_cache() -> GlobalExecutions {
+    let exec_struct_bytes =
+        fs::read(".//cache/cache").expect("failed to deserialize execs from cache");
+    if exec_struct_bytes.is_empty() {
+        GlobalExecutions::new()
+    } else {
+        rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
+    }
+}
 
 // Serialize the execs and write them to the cache.
 // Also copy the output files over.
@@ -480,7 +496,9 @@ pub fn serialize_execs_to_cache(root_execution: CachedExecution) {
     const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
 
-    let serialized_exec = rmp_serde::to_vec(&root_execution).unwrap();
+    let mut global_execs = GlobalExecutions::new();
+    global_execs.add_new_execution(root_execution.clone());
+    let serialized_exec = rmp_serde::to_vec(&global_execs).unwrap();
 
     fs::write(cache_path, serialized_exec).unwrap();
     root_execution.copy_output_files_to_cache();
@@ -529,11 +547,3 @@ pub fn generate_cachable_exec(root_execution: RcExecution) -> CachedExecution {
         root_execution.starting_cwd(),
     )
 }
-// pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-//     let exec_struct_bytes = fs::read("./research/IOTracker/cache/cache").expect("failed");
-//     if exec_struct_bytes.is_empty() {
-//         GlobalExecutions::new()
-//     } else {
-//         rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
-//     }
-// }

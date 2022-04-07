@@ -53,7 +53,7 @@ impl LastModStruct {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
     DoesntExist,
     Exists,
@@ -271,7 +271,7 @@ impl ExecFileEvents {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CondsMap {
     conds: HashMap<PathBuf, HashSet<Fact>>,
 }

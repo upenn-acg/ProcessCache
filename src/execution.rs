@@ -694,15 +694,6 @@ fn handle_open(
         syscall_outcome,
     );
 
-    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
-    //     Some(generate_hash(
-    //         pid,
-    //         full_path.clone().into_os_string().into_string().unwrap(),
-    //     ))
-    // } else {
-    //     None
-    // };
-
     if let Some(event) = open_syscall_event {
         execution.add_new_file_event(tracer.curr_proc, event, full_path);
     }
@@ -868,19 +859,6 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
     if let (Some(path), Some(event)) = (full_path, stat_syscall_event) {
         execution.add_new_file_event(tracer.curr_proc, event, path);
     }
-
-    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
-    //     Some(generate_hash(
-    //         pid,
-    //         full_path.clone().into_os_string().into_string().unwrap(),
-    //     ))
-    // } else {
-    //     None
-    // };
-
-    // if let Some(hash) = starting_hash {
-    //     execution.add_starting_hash(full_path, hash);
-    // }
     Ok(())
 }
 
@@ -1101,7 +1079,6 @@ fn generate_open_syscall_file_event(
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 )),
                 // EACCES
-                // -13 => Some(SyscallEvent::OpenAccessDenied),
                 -13 => match offset_mode {
                     OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
                         offset_mode,
