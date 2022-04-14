@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
-    generate_cachable_exec, serialize_execs_to_cache, ExecCall, ExecMetadata, Execution,
-    RcExecution,
+    generate_cachable_exec, lookup_exec_in_cache, serialize_execs_to_cache, ExecCall, ExecMetadata,
+    Execution, RcExecution,
 };
 use crate::condition_generator::{
     generate_hash, ExecFileEvents, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome,
@@ -61,9 +61,10 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // Want: generate_cachable_exec(first_exec: RcExecution) -> CachedExecution
     //       iterate through the execution and its child execs
     //       create pre and postconditions
-    let cachable_exec = generate_cachable_exec(first_execution);
+    let cachable_exec = generate_cachable_exec(first_execution.clone());
+    let (exec_full_path, args) = first_execution.get_exec_path_and_args();
     // Want: write_to_cache(cachable_exec: CachedExecution)
-    serialize_execs_to_cache(cachable_exec.clone());
+    serialize_execs_to_cache(exec_full_path, args, cachable_exec.clone());
     cachable_exec.print_pre_and_postconditions();
     Ok(())
 }
@@ -214,6 +215,9 @@ pub async fn trace_process(
                                     );
 
                                     new_exec_call.add_identifiers(args, envp, executable);
+                                    if lookup_exec_in_cache(new_exec_call.clone()).is_some() {
+                                        println!("Found the exec in the cache");
+                                    }
                                     curr_execution.add_new_exec_call(new_exec_call);
                                     curr_execution.add_starting_cwd(starting_cwd);
                                 }
