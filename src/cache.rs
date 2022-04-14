@@ -441,9 +441,9 @@ enum CachedExecCall {
 }
 
 impl CachedExecCall {
-    fn copy_output_files_to_cache(&self) {
+    fn copy_output_files_to_cache(&self, hash: u64) {
         if let CachedExecCall::Successful(_, _, postconds) = self {
-            postconds.copy_outputs_to_cache()
+            postconds.copy_outputs_to_cache(hash)
         }
     }
 
@@ -487,13 +487,13 @@ impl CachedExecution {
         }
     }
 
-    fn copy_output_files_to_cache(&self) {
+    fn copy_output_files_to_cache(&self, hash: u64) {
         let len = self.exec_calls.len();
         let last_exec = self.exec_calls.as_slice().get(len - 1).unwrap();
-        last_exec.copy_output_files_to_cache();
+        last_exec.copy_output_files_to_cache(hash);
 
         for child in self.child_execs.clone() {
-            child.copy_output_files_to_cache();
+            child.copy_output_files_to_cache(hash);
         }
     }
 
@@ -535,17 +535,7 @@ impl GlobalExecutions {
         }
     }
 
-    fn add_new_execution(
-        &mut self,
-        exec_path: PathBuf,
-        args_list: Vec<String>,
-        exec: CachedExecution,
-    ) {
-        let exec_id_str = ExecUniqId {
-            exec_full_path: exec_path,
-            args: args_list,
-        };
-        let hash = hash_exec_uniqid(exec_id_str);
+    fn add_new_execution(&mut self, hash: u64, exec: CachedExecution) {
         println!("Hash for exec is: {}", hash);
         // TODO: max file name size??
         // TODO: check if it's there
@@ -589,7 +579,7 @@ pub fn lookup_exec_in_cache(exec: ExecCall) -> Option<CachedExecution> {
 // Also copy the output files over.
 pub fn serialize_execs_to_cache(
     exec_path: PathBuf,
-    args: Vec<String>,
+    args_list: Vec<String>,
     root_execution: CachedExecution,
 ) {
     // TODO: probably shouldn't be copying the output files before checking
@@ -597,16 +587,22 @@ pub fn serialize_execs_to_cache(
     // TODO: Get existing execs out and add to that.
     const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
+    let exec_id_str = ExecUniqId {
+        exec_full_path: exec_path,
+        args: args_list,
+    };
+    let hash = hash_exec_uniqid(exec_id_str);
+    println!("Hash for exec is: {}", hash);
 
     let mut global_execs = deserialize_execs_from_cache();
-    global_execs.add_new_execution(exec_path, args, root_execution.clone());
+    global_execs.add_new_execution(hash, root_execution.clone());
 
     let serialized_exec = rmp_serde::to_vec(&global_execs).unwrap();
     if cache_path.exists() {
         fs::remove_file(&cache_path).unwrap();
     }
     fs::write(cache_path, serialized_exec).unwrap();
-    root_execution.copy_output_files_to_cache();
+    root_execution.copy_output_files_to_cache(hash);
 }
 
 pub fn generate_cachable_exec(root_execution: RcExecution) -> CachedExecution {

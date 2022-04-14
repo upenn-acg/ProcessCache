@@ -291,13 +291,13 @@ impl CondsMap {
         self.conds = postconds;
     }
 
-    pub fn copy_outputs_to_cache(&self) {
+    pub fn copy_outputs_to_cache(&self, hash: u64) {
         let cache_dir = PathBuf::from("./cache");
-
+        let hash_str = hash.to_string();
         for (path, facts) in self.conds.iter() {
             if facts.contains(&Fact::FinalContents) {
                 let file_name = path.file_name().unwrap();
-                let cache_file_path = cache_dir.join(file_name);
+                let cache_file_path = cache_dir.join(hash_str.clone()).join(file_name);
                 if cache_file_path.exists() {
                     // TODO: maybe it should be
                     // cache/executable_name/output_file_name
@@ -307,6 +307,12 @@ impl CondsMap {
                 } else {
                     // TODO: not unwrap() but ?;
                     println!("About to copy file to cache");
+                    println!("path is: {:?}", path);
+                    println!("cache_file_path: {:?}", cache_file_path);
+                    let uniq_exec_cache_path = cache_dir.join(hash_str.clone());
+                    if !uniq_exec_cache_path.as_path().is_dir() {
+                        fs::create_dir(uniq_exec_cache_path).unwrap();
+                    }
                     fs::copy(path, cache_file_path).unwrap();
                 }
             }
