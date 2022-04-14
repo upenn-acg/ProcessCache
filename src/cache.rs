@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     collections::{hash_map::DefaultHasher, HashMap},
-    fs,
+    fs::{self, File},
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 #[allow(unused_imports)]
@@ -37,7 +37,7 @@ impl ExecCall {
         &mut self,
         args: Vec<String>,
         env_vars: Vec<String>,
-        executable: String,
+        executable: PathBuf,
     ) {
         match self {
             ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata) => {
@@ -66,7 +66,7 @@ impl ExecCall {
         }
     }
 
-    fn executable(&self) -> String {
+    fn executable(&self) -> PathBuf {
         match self {
             ExecCall::Successful(_, meta) | ExecCall::Failed(meta) => meta.executable(),
         }
@@ -128,7 +128,7 @@ impl ExecCallList {
         last_exec.file_event_list()
     }
 
-    fn get_first_exec_and_args(&self) -> (String, Vec<String>) {
+    fn get_first_exec_and_args(&self) -> (PathBuf, Vec<String>) {
         let first = self.exec_calls.first().unwrap();
         (first.executable(), first.args())
     }
@@ -233,7 +233,7 @@ impl Execution {
         panic!("Child pid not found in child execs!");
     }
 
-    fn get_exec_path_and_args(&self) -> (String, Vec<String>) {
+    fn get_exec_path_and_args(&self) -> (PathBuf, Vec<String>) {
         self.exec_calls.get_first_exec_and_args()
     }
 
@@ -253,7 +253,7 @@ pub struct ExecMetadata {
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
-    executable: String,
+    executable: PathBuf,
 }
 
 impl ExecMetadata {
@@ -261,7 +261,7 @@ impl ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
             env_vars: Vec::new(),
-            executable: String::new(),
+            executable: PathBuf::new(),
         }
     }
 
@@ -269,7 +269,7 @@ impl ExecMetadata {
         &mut self,
         args: Vec<String>,
         env_vars: Vec<String>,
-        executable: String,
+        executable: PathBuf,
     ) {
         self.args = args;
         self.env_vars = env_vars;
@@ -280,7 +280,7 @@ impl ExecMetadata {
         self.args.clone()
     }
 
-    pub fn executable(&self) -> String {
+    pub fn executable(&self) -> PathBuf {
         self.executable.clone()
     }
 }
@@ -363,7 +363,7 @@ impl RcExecution {
         self.execution.borrow().get_child_exec_by_pid(pid)
     }
 
-    pub fn get_exec_path_and_args(&self) -> (String, Vec<String>) {
+    pub fn get_exec_path_and_args(&self) -> (PathBuf, Vec<String>) {
         self.execution.borrow().get_exec_path_and_args()
     }
     pub fn no_successful_exec_yet(&self) -> bool {
@@ -386,7 +386,7 @@ impl RcExecution {
         for exec in exec_calls {
             let successful = exec.is_successful();
             let executable = exec.executable();
-            println!("Executable: {}, Success: {}", executable, successful);
+            println!("Executable: {:?}, Success: {}", executable, successful);
             if let ExecCall::Successful(file_events, _) = exec {
                 println!("File events: {:?}", file_events);
             }
@@ -398,7 +398,7 @@ impl RcExecution {
             for exec in exec_calls {
                 let successful = exec.is_successful();
                 let executable = exec.executable();
-                println!("Executable: {}, Success: {}", executable, successful);
+                println!("Executable: {:?}, Success: {}", executable, successful);
                 println!();
             }
         }
@@ -513,7 +513,7 @@ impl CachedExecution {
 
 #[derive(Hash)]
 pub struct ExecUniqId {
-    exec_full_path: String,
+    exec_full_path: PathBuf,
     args: Vec<String>,
 }
 
@@ -537,7 +537,7 @@ impl GlobalExecutions {
 
     fn add_new_execution(
         &mut self,
-        exec_path: String,
+        exec_path: PathBuf,
         args_list: Vec<String>,
         exec: CachedExecution,
     ) {
@@ -546,6 +546,8 @@ impl GlobalExecutions {
             args: args_list,
         };
         let hash = hash_exec_uniqid(exec_id_str);
+        println!("Hash for exec is: {}", hash);
+        // TODO: max file name size??
         // TODO: check if it's there
         self.global_execs.insert(hash, exec);
     }
@@ -561,12 +563,21 @@ impl GlobalExecutions {
 }
 
 pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-    let exec_struct_bytes =
-        fs::read("./cache/cache").expect("failed to deserialize execs from cache");
-    if exec_struct_bytes.is_empty() {
+    // if Path::new("./cache/cache").exists() {
+    //     File::create("./cache/cache").unwrap();
+    //     GlobalExecutions::new()
+    // } else {
+    //     let exec_struct_bytes =
+    //     fs::read("./cache/cache").expect("failed to deserialize execs from cache");
+    //     rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
+    // }
+
+    let cache_path = Path::new("./cache/cache");
+    let cache_bytes = fs::read(cache_path).unwrap();
+    if cache_bytes.is_empty() {
         GlobalExecutions::new()
     } else {
-        rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
+        rmp_serde::from_read_ref(&cache_bytes).unwrap()
     }
 }
 
@@ -577,7 +588,7 @@ pub fn lookup_exec_in_cache(exec: ExecCall) -> Option<CachedExecution> {
 // Serialize the execs and write them to the cache.
 // Also copy the output files over.
 pub fn serialize_execs_to_cache(
-    exec_path: String,
+    exec_path: PathBuf,
     args: Vec<String>,
     root_execution: CachedExecution,
 ) {
@@ -587,10 +598,13 @@ pub fn serialize_execs_to_cache(
     const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
 
-    let mut global_execs = GlobalExecutions::new();
+    let mut global_execs = deserialize_execs_from_cache();
     global_execs.add_new_execution(exec_path, args, root_execution.clone());
-    let serialized_exec = rmp_serde::to_vec(&global_execs).unwrap();
 
+    let serialized_exec = rmp_serde::to_vec(&global_execs).unwrap();
+    if cache_path.exists() {
+        fs::remove_file(&cache_path).unwrap();
+    }
     fs::write(cache_path, serialized_exec).unwrap();
     root_execution.copy_output_files_to_cache();
 }

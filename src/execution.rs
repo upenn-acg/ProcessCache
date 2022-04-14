@@ -8,7 +8,7 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
@@ -185,7 +185,7 @@ pub async fn trace_process(
                             .with_context(|| context!("Failed to get regs in exec event"))?;
                         let arg = regs.arg1();
                         let executable = tracer.read_c_string(arg)?;
-                        debug!("Execve event, executable: {}", executable);
+
                         let args = tracer
                             .read_c_string_array(regs.arg2())
                             .with_context(|| context!("Reading arguments to execve"))?;
@@ -197,8 +197,12 @@ pub async fn trace_process(
                         let cwd = cwd_path.to_str().unwrap().to_owned();
                         let starting_cwd = PathBuf::from(cwd);
 
+                        let exec_path_buf = PathBuf::from(executable.clone());
+                        let full_exec_path = starting_cwd.join(exec_path_buf.file_name().unwrap());
+                        debug!("Execve event, executable: {:?}", full_exec_path.clone());
+
                         let next_event = tracer.get_next_event(None).await.with_context(|| {
-                            context!("Unable to get nstext event after execve prehook.")
+                            context!("Unable to get next event after execve prehook.")
                         })?;
 
                         if curr_execution.no_successful_exec_yet() {
@@ -214,7 +218,7 @@ pub async fn trace_process(
                                         ExecMetadata::new(),
                                     );
 
-                                    new_exec_call.add_identifiers(args, envp, executable);
+                                    new_exec_call.add_identifiers(args, envp, full_exec_path);
                                     if lookup_exec_in_cache(new_exec_call.clone()).is_some() {
                                         println!("Found the exec in the cache");
                                     }
@@ -243,11 +247,11 @@ pub async fn trace_process(
                                             new_exec_call.add_identifiers(
                                                 args,
                                                 envp,
-                                                executable.clone(),
+                                                full_exec_path.clone(),
                                             );
                                             println!(
-                                                "Executable after failed exec: {}",
-                                                executable
+                                                "Executable after failed exec: {:?}",
+                                                full_exec_path
                                             );
                                             curr_execution.add_new_exec_call(new_exec_call);
 
@@ -264,10 +268,14 @@ pub async fn trace_process(
                                             // welcome to the party I guess.
                                             let arg = regs.arg1();
                                             let executable = tracer.read_c_string(arg)?;
+                                            let exec_path_buf = PathBuf::from(executable.clone());
+                                            let full_exec_path = starting_cwd
+                                                .join(exec_path_buf.file_name().unwrap());
                                             debug!(
-                                                "Executable after getting new regs: {}",
-                                                executable
+                                                "Executable after getting new regs: {:?}",
+                                                full_exec_path
                                             );
+
                                             let args = tracer
                                                 .read_c_string_array(regs.arg2())
                                                 .with_context(|| {
@@ -275,14 +283,22 @@ pub async fn trace_process(
                                                 })?;
                                             let envp = tracer.read_c_string_array(regs.arg3())?;
                                             let mut new_metadata = ExecMetadata::new();
-                                            new_metadata.add_identifiers(args, envp, executable);
+                                            new_metadata.add_identifiers(
+                                                args,
+                                                envp,
+                                                full_exec_path,
+                                            );
                                             // save that in lost_execve_metadata
                                             lost_execve_metadata = Some(new_metadata);
                                         } else if name == "exit" || name == "exit_group" {
                                             // Add this failed execve to the curr execution.
                                             let mut new_exec_call =
                                                 ExecCall::Failed(ExecMetadata::new());
-                                            new_exec_call.add_identifiers(args, envp, executable);
+                                            new_exec_call.add_identifiers(
+                                                args,
+                                                envp,
+                                                full_exec_path,
+                                            );
                                             curr_execution.add_new_exec_call(new_exec_call);
                                         } else {
                                             s.in_scope(|| {
