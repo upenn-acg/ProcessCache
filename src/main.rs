@@ -154,6 +154,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_vfork)?;
     loader.intercept(libc::SYS_write)?;
     loader.intercept(libc::SYS_writev)?;
+    loader.intercept(libc::SYS_getdents64)?;
 
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
@@ -205,7 +206,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;
     loader.let_pass(libc::SYS_close)?;
-    loader.let_pass(libc::SYS_getdents64)?;
     loader.let_pass(libc::SYS_wait4)?;
 
     // TODO: Handle for empty main

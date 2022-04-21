@@ -6,6 +6,7 @@ use libc::{
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::unistd::Pid;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -26,6 +27,8 @@ use crate::{context, redirection};
 use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
+use libc::{c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, DT_UNKNOWN};
+use nix::dir;
 
 pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
@@ -87,6 +90,8 @@ pub async fn trace_process(
     let mut signal = None;
     let mut skip_execution = false;
     let mut iostream_redirected = false;
+    // TODO: Deal with PID recycling?
+    let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
 
     loop {
         let event = tracer
@@ -254,10 +259,6 @@ pub async fn trace_process(
 
                         if !iostream_redirected {
                             const STDOUT_FD: u32 = 1;
-                            // TODO: Deal with PID recycling?
-                            let stdout_file: String =
-                                format!("stdout_{:?}", tracer.curr_proc.as_raw());
-
                             // This is the first real system call this program is doing after exec-ing.
                             // We will redirect their stdout output here by writing it to a file.
                             redirection::redirect_io_stream(&stdout_file, STDOUT_FD, &mut tracer)
@@ -293,6 +294,11 @@ pub async fn trace_process(
                     }
                     "fstat" | "newfstatat" | "stat" => {
                         handle_stat(&curr_execution, &regs, name, &tracer)?
+                    }
+                    "getdents64" => {
+                        // TODO: Kelly, you can use this variable to know what directories were read.
+                        let _read_directories: Vec<(CString, dir::Type)> =
+                            handle_get_dents64(&regs, &tracer)?;
                     }
                     _ => {}
                 }
@@ -403,6 +409,10 @@ pub async fn trace_process(
         ),
     }
 
+    // Write stdout_file to stdout.
+    let contents = std::fs::read_to_string(stdout_file)
+        .with_context(|| context!("Unable to read stdout_file"))?;
+    print!("{}", contents);
     Ok(())
 }
 
@@ -709,5 +719,65 @@ fn generate_file_access(
         Some(FileAccess::Success(full_path, hash, syscall_name))
     } else {
         Some(FileAccess::Failure(full_path, syscall_name))
+    }
+}
+
+/// Read directories returned by an intercepted system call to get_dents64. Return the d_name and
+/// d_type fields from the get_dents64 struct.
+fn handle_get_dents64(
+    regs: &Regs<Unmodified>,
+    tracer: &Ptracer,
+) -> Result<Vec<(CString, dir::Type)>> {
+    // We only care about successful get_dents or when bytes were actually written.
+    if regs.retval::<i32>() <= 0 {
+        return Ok(Vec::new());
+    }
+
+    // Pointer to linux_dirent passed to get_dents64 system call.
+    let mut dirp: *const u8 = regs.arg2::<*const u8>();
+    // Number of bytes written by OS to dirp.
+    let bytes_read = regs.retval::<i32>() as usize;
+    let max_size = unsafe { dirp.add(bytes_read) };
+    let mut entries: Vec<(CString, dir::Type)> = Vec::new();
+
+    // Continue looping until out pointer jumps past dirp + bytes read.
+    while dirp < max_size {
+        let directory_entry = tracer
+            .read_value::<libc::dirent64>(dirp as *const _)
+            .with_context(|| context!("Cannot read first entry in dirp."))?;
+
+        let cstr = unsafe { CStr::from_ptr(directory_entry.d_name.as_ptr()) };
+        let file_name = cstr.to_owned();
+        let file_type = directory_entry.d_type;
+        let record_length = directory_entry.d_reclen;
+
+        // Set dirp pointer to next entry.
+        dirp = unsafe { dirp.add(record_length as usize) };
+
+        entries.push((file_name, getdents_file_type(file_type)));
+    }
+
+    Ok(entries)
+}
+
+fn getdents_file_type(file_type: c_uchar) -> dir::Type {
+    use nix::dir::Type;
+
+    if file_type == DT_BLK {
+        Type::BlockDevice
+    } else if file_type == DT_CHR {
+        Type::CharacterDevice
+    } else if file_type == DT_DIR {
+        Type::Directory
+    } else if file_type == DT_FIFO {
+        Type::Fifo
+    } else if file_type == DT_LNK {
+        Type::Symlink
+    } else if file_type == DT_REG {
+        Type::File
+    } else if file_type == DT_SOCK {
+        Type::Socket
+    } else {
+        panic!("Unknown file type: {}", file_type);
     }
 }
