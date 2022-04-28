@@ -243,6 +243,22 @@ impl Ptracer {
         Ok(event)
     }
 
+    pub(crate) async fn get_next_syscall(
+        &mut self,
+    ) -> anyhow::Result<TraceEvent> {
+        // This cannot be a posthook event. Those are explicitly caught in the
+        // seccomp handler.
+        ptrace_syscall(self.curr_proc, ContinueEvent::SystemCall, None)
+            .with_context(|| context!("Unable to get next system call event."))?;
+        // Wait for ptrace event from this pid here.
+        let event = AsyncPtrace {
+            pid: self.curr_proc,
+        }
+        .await
+        .into();
+        Ok(event)
+    }
+
     /// Nix does not yet have a way to fetch registers. We use our own instead.
     /// Given the pid of a process that is currently being traced. Return the registers
     /// for that process.

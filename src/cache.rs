@@ -1,18 +1,30 @@
-use crate::condition_generator::{CondsMap, ExecFileEvents, SyscallEvent};
+use crate::condition_generator::{ExecFileEvents, SyscallEvent};
 use nix::{unistd::Pid, NixPath};
-use serde::{Deserialize, Serialize};
-use std::{
-    cell::RefCell,
-    collections::{hash_map::DefaultHasher, HashMap},
-    fs::{self, File},
-    hash::{Hash, Hasher},
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+// use sha2::{Digest, Sha256};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, borrow::BorrowMut};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-#[derive(Clone, Debug, PartialEq)]
+// impl Serialize for i32 {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: Serializer,
+//     {
+//         serializer.serialize_i32(*self)
+//     }
+// }
+
+use anyhow::{bail, Context, Result};
+#[derive(Clone)]
+pub struct Command(pub String, pub Vec<String>);
+
+impl Command {
+    pub fn new(exe: String, args: Vec<String>) -> Self {
+        Command(exe, args)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Proc(pub Pid);
 
 impl Default for Proc {
@@ -24,26 +36,52 @@ impl Default for Proc {
 pub type ChildExecutions = Vec<RcExecution>;
 // pub type Postconditions = HashMap<PathBuf, HashSet<Fact>>;
 #[derive(Clone, Debug, PartialEq)]
-pub enum ExecCall {
-    Failed(ExecMetadata),
-    // Before we find out if the root execution's "execve" call succeeds,
-    // its kinda just pending. I want to know which one the root is
-    // and doing it in the enum seems easiest.
-    Successful(ExecFileEvents, ExecMetadata),
+pub struct Execution {
+    child_execs: ChildExecutions,
+    failed_execs: Vec<ExecMetadata>,
+    successful_execs: HashMap<ExecMetadata, ExecFileEvents>,
+    current_metadata: ExecMetadata,
 }
 
-impl ExecCall {
-    pub fn add_identifiers(
-        &mut self,
-        args: Vec<String>,
-        env_vars: Vec<String>,
-        executable: PathBuf,
-    ) {
-        match self {
-            ExecCall::Failed(metadata) | ExecCall::Successful(_, metadata) => {
-                metadata.add_identifiers(args, env_vars, executable);
-            }
+impl Execution {
+    pub fn new(command: Command, pid: Pid) -> Execution {
+        let metadata = ExecMetadata {
+            args: command.1,
+            // TODO: make sure this is right
+            starting_cwd: PathBuf::new(),
+            env_vars: Vec::new(),
+            executable: command.0,
+            exit_code: None,
+            caller_pid: Proc(pid),
+        };
+        let mut exec_map = HashMap::new();
+        exec_map.insert(metadata.clone(), ExecFileEvents::new());
+        Execution { 
+            child_execs: ChildExecutions::new(), 
+            failed_execs: Vec::new(), 
+            successful_execs: exec_map,
+            current_metadata: metadata,
         }
+    }
+
+    fn add_child_execution(&mut self, child_execution: RcExecution) {
+        self.child_execs.push(child_execution);
+    }
+
+    pub fn add_exit_code(&mut self, exit_code: i32, pid: Pid) {
+        // match self {
+        //     Execution::Failed(meta) | Execution::Successful(_, _, meta) => {
+        //         // Only want the exit code if this is the process
+        //         // that actually exec'd the process.
+        //         let exec_pid = meta.caller_pid();
+        //         if exec_pid == pid {
+        //             meta.add_exit_code(exit_code);
+        //         }
+        //     }
+        //     _ => {
+        //         panic!("Trying to add exit code to pending execution!")
+        //     }
+        // }
     }
 
     pub fn add_new_file_event(
@@ -302,7 +340,7 @@ impl RcExecution {
 
     pub fn add_child_execution(&self, child_execution: RcExecution) {
         self.execution
-            .borrow_mut()
+            .borrow()
             .add_child_execution(child_execution);
     }
 
@@ -322,7 +360,7 @@ impl RcExecution {
         full_path: PathBuf,
     ) {
         self.execution
-            .borrow_mut()
+            .borrow()
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 

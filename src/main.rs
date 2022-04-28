@@ -1,3 +1,4 @@
+use cache::Command;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
@@ -26,15 +27,6 @@ use structopt::StructOpt;
 #[allow(unused_imports)]
 use anyhow::{Context, Result};
 
-#[derive(Clone)]
-pub struct Command(String, Vec<String>);
-
-impl Command {
-    pub fn new(exe: String, args: Vec<String>) -> Self {
-        Command(exe, args)
-    }
-}
-
 // Super annoying thing: I can't seem to put them in the order I want, instead,
 // it is based on alphabetical order...
 // This is even after using the correct flag through clap.
@@ -61,6 +53,8 @@ fn main() -> anyhow::Result<()> {
         .without_time()
         .init();
 
+    // TODO: get env vars of first exec
+    // TODO: get starting cwd of first exec
     let opt = Opt::from_args();
     // let print_all_syscalls = opt.print_syscalls_on_error;
     // let output_file_name = opt.output_file;
@@ -84,7 +78,7 @@ fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
             Ptracer::set_trace_options(tracee_pid)
                 .with_context(|| context!("Unable to set ptracing options."))?;
 
-            execution::trace_program(tracee_pid)
+            execution::trace_program(command, tracee_pid)
                 .with_context(|| context!("Failed while tracing program."))?;
             Ok(())
         }
