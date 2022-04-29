@@ -8,9 +8,9 @@ use libc::{
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
-use tracing::warn;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
@@ -802,7 +802,11 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 }
 
 // Handling the stat system call.
-fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> anyhow::Result<()> {
+fn handle_stat(
+    execution: &RcExecution,
+    syscall_name: &str,
+    tracer: &Ptracer,
+) -> anyhow::Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 

@@ -1,7 +1,7 @@
 use crate::condition_generator::{ExecFileEvents, SyscallEvent};
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, borrow::BorrowMut};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -14,7 +14,7 @@ use tracing::{debug, error, info, span, trace, Level};
 //     }
 // }
 
-use anyhow::{bail, Context, Result};
+// use anyhow::{bail, Context, Result};
 #[derive(Clone)]
 pub struct Command(pub String, pub Vec<String>);
 
@@ -39,8 +39,8 @@ pub type ChildExecutions = Vec<RcExecution>;
 pub struct Execution {
     child_execs: ChildExecutions,
     failed_execs: Vec<ExecMetadata>,
-    successful_execs: HashMap<ExecMetadata, ExecFileEvents>,
-    current_metadata: ExecMetadata,
+    file_events: ExecFileEvents,
+    successful_exec: ExecMetadata,
 }
 
 impl Execution {
@@ -54,13 +54,11 @@ impl Execution {
             exit_code: None,
             caller_pid: Proc(pid),
         };
-        let mut exec_map = HashMap::new();
-        exec_map.insert(metadata.clone(), ExecFileEvents::new());
-        Execution { 
-            child_execs: ChildExecutions::new(), 
-            failed_execs: Vec::new(), 
-            successful_execs: exec_map,
-            current_metadata: metadata,
+        Execution {
+            child_execs: ChildExecutions::new(),
+            failed_execs: Vec::new(),
+            file_events: ExecFileEvents::new(),
+            successful_exec: metadata,
         }
     }
 
@@ -340,7 +338,7 @@ impl RcExecution {
 
     pub fn add_child_execution(&self, child_execution: RcExecution) {
         self.execution
-            .borrow()
+            .borrow_mut()
             .add_child_execution(child_execution);
     }
 
@@ -360,7 +358,7 @@ impl RcExecution {
         full_path: PathBuf,
     ) {
         self.execution
-            .borrow()
+            .borrow_mut()
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 

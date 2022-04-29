@@ -243,9 +243,7 @@ impl Ptracer {
         Ok(event)
     }
 
-    pub(crate) async fn get_next_syscall(
-        &mut self,
-    ) -> anyhow::Result<TraceEvent> {
+    pub(crate) async fn get_next_syscall(&mut self) -> anyhow::Result<TraceEvent> {
         // This cannot be a posthook event. Those are explicitly caught in the
         // seccomp handler.
         ptrace_syscall(self.curr_proc, ContinueEvent::SystemCall, None)
