@@ -1,4 +1,3 @@
-use anyhow::{bail, Context};
 #[allow(unused_imports)]
 use libc::{
     c_char, c_int, syscall, AT_FDCWD, AT_SYMLINK_NOFOLLOW, CLONE_THREAD, O_ACCMODE, O_APPEND,
@@ -10,7 +9,6 @@ use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tracing::warn;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{
@@ -32,7 +30,9 @@ use crate::{context, redirection};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-pub fn trace_program(command: Command, first_proc: Pid) -> anyhow::Result<()> {
+use anyhow::{bail, Context, Result};
+
+pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
@@ -525,7 +525,7 @@ pub async fn trace_process(
 }
 
 // Handling the access system call.
-fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> anyhow::Result<()> {
+fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -612,7 +612,7 @@ fn handle_open(
     file_existed_at_start: bool,
     syscall_name: &str,
     tracer: &Ptracer,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -802,11 +802,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 }
 
 // Handling the stat system call.
-fn handle_stat(
-    execution: &RcExecution,
-    syscall_name: &str,
-    tracer: &Ptracer,
-) -> anyhow::Result<()> {
+fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
