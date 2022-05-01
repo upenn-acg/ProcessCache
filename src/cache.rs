@@ -1,5 +1,5 @@
 use crate::condition_generator::{ExecFileEvents, SyscallEvent};
-use nix::unistd::Pid;
+use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
@@ -79,7 +79,7 @@ impl Execution {
     // [Success] or [Fail,...,Fail,Success]
     // Can only add file event to the successful one
     // Successful one should be last.
-    pub fn add_new_file_event(
+    fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
         // OBVIOUSLY, will handle any syscall event eventually.
@@ -88,6 +88,10 @@ impl Execution {
     ) {
         self.file_events
             .add_new_file_event(caller_pid, file_access, full_path);
+    }
+
+    fn is_empty_root_exec(&self) -> bool {
+        self.successful_exec.is_empty_root_exec()
     }
 
     fn print_basic_exec_info(&self) {
@@ -143,6 +147,10 @@ impl ExecMetadata {
         self.starting_cwd = starting_cwd;
     }
 
+    fn is_empty_root_exec(&self) -> bool {
+        self.executable.is_empty()
+    }
+
     fn print_basic_exec_info(&self) {
         println!(
             "Executable: {:?}, args: {:?}, starting_cwd: {:?}",
@@ -189,6 +197,10 @@ impl RcExecution {
         self.execution
             .borrow_mut()
             .add_new_file_event(caller_pid, file_event, full_path);
+    }
+
+    pub fn is_empty_root_exec(&self) -> bool {
+        self.execution.borrow().is_empty_root_exec()
     }
 
     pub fn print_basic_exec_info(&self) {

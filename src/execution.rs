@@ -203,7 +203,11 @@ pub async fn trace_process(
                                 // if lookup_exec_in_cache(new_exec_call.clone()).is_some() {
                                 //     println!("Found the exec in the cache");
                                 // }
-                                curr_execution.update_first_exec(new_exec_metadata);
+                                if curr_execution.is_empty_root_exec() {
+                                    curr_execution.update_first_exec(new_exec_metadata);
+                                } else {
+                                    panic!("Process already called succesful execve and is trying to do another!!");
+                                }
                             }
                             TraceEvent::Posthook(_) => {
                                 s.in_scope(|| {
@@ -567,13 +571,13 @@ fn handle_open(
             let creat_flag = flags.contains(OFlag::O_CREAT);
             let excl_flag = flags.contains(OFlag::O_EXCL);
             let offset_mode = if flags.contains(OFlag::O_APPEND) {
-                println!("contains append!!");
+                // println!("contains append!!");
                 OFlag::O_APPEND
             } else if flags.contains(OFlag::O_TRUNC) {
-                println!("contains trunc!!");
+                // println!("contains trunc!!");
                 OFlag::O_TRUNC
             } else {
-                println!("is read only!!");
+                // println!("is read only!!");
                 OFlag::O_RDONLY
             };
 
