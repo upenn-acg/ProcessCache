@@ -77,7 +77,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
-    curr_execution: RcExecution,
+    mut curr_execution: RcExecution,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -193,9 +193,6 @@ pub async fn trace_process(
                         match next_event {
                             TraceEvent::Exec(_) => {
                                 // The execve succeeded!
-                                // If we haven't seen a successful execve by this pid yet,
-                                // update.
-                                // Otherwise, panic.
                                 s.in_scope(|| {
                                     debug!("Execve succeeded!");
                                 });
@@ -203,8 +200,19 @@ pub async fn trace_process(
                                 // if lookup_exec_in_cache(new_exec_call.clone()).is_some() {
                                 //     println!("Found the exec in the cache");
                                 // }
+                                // If we haven't seen a successful execve by this pid yet,
+                                // update.
                                 if curr_execution.is_empty_root_exec() {
-                                    curr_execution.update_first_exec(new_exec_metadata);
+                                    curr_execution.update_successful_exec(new_exec_metadata);
+                                } else if curr_execution.pid() != tracer.curr_proc {
+                                    // New rc exec for the child exec.
+                                    // Add to parent's struct.
+                                    // set curr execution to the new one.
+                                    let mut new_child_exec = Execution::new();
+                                    new_child_exec.update_successful_exec(new_exec_metadata);
+                                    let new_rc_child_exec = RcExecution::new(new_child_exec);
+                                    curr_execution.add_child_execution(new_rc_child_exec.clone());
+                                    curr_execution = new_rc_child_exec;
                                 } else {
                                     panic!("Process already called succesful execve and is trying to do another!!");
                                 }
@@ -336,11 +344,7 @@ pub async fn trace_process(
                     debug!("Fork Event. Creating task for new child: {:?}", child);
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
-                // Create new RcExecution.
-                // Add it to the curr execution's child executions.
-                // Update curr_execution = new_child_execution
-                let new_rcexecution = RcExecution::new(Execution::new(child));
-                curr_execution.add_child_execution(new_rcexecution.clone());
+
                 // When a process forks, we pass the current execution struct to the
                 // child process' future as both the curr execution and the parent execution.
                 // If the child process then calls "execve",
@@ -373,13 +377,6 @@ pub async fn trace_process(
                     cache_dir.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
-
-                // Create new RcExecution.
-                // Add it to the curr execution's child executions.
-                // Update curr_execution = new_child_execution
-                // let new_rcexecution = RcExecution::new(Execution::new(child));
-                // curr_execution.add_child_execution(new_rcexecution.clone());
-                // curr_execution = new_rcexecution;
             }
 
             TraceEvent::Posthook(_) => {

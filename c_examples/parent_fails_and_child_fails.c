@@ -6,8 +6,8 @@
 #include <fcntl.h>
 
 int main() {
-    char* args[] = {"./hot_garbage", NULL};
-    execvp("./hot_garbage", args);
+    // char* args[] = {"./hot_garbage", NULL};
+    // execvp("./hot_garbage", args);
     if (fork() == 0) {
         // int fd = openat(AT_FDCWD, "yeah.txt", O_RDONLY);
         char* args[] = {"./garbage", NULL};

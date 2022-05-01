@@ -47,9 +47,9 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn new(proc: Pid) -> Execution {
+    pub fn new() -> Execution {
         Execution {
-            caller_pid: Proc(proc),
+            caller_pid: Proc::default(),
             child_execs: Vec::new(),
             exit_code: None,
             failed_execs: Vec::new(),
@@ -67,7 +67,7 @@ impl Execution {
         self.failed_execs.push(exec_metadata);
     }
 
-    pub fn update_first_exec(&mut self, exec_metadata: ExecMetadata) {
+    pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
         self.successful_exec = exec_metadata;
     }
 
@@ -94,6 +94,11 @@ impl Execution {
         self.successful_exec.is_empty_root_exec()
     }
 
+    fn pid(&self) -> Pid {
+        let Proc(pid) = self.caller_pid;
+        pid
+    }
+
     fn print_basic_exec_info(&self) {
         println!("Successful executable:");
         self.successful_exec.print_basic_exec_info();
@@ -101,6 +106,11 @@ impl Execution {
         println!("Failed executables:");
         for failed_exec in self.failed_execs.clone() {
             failed_exec.print_basic_exec_info();
+        }
+
+        println!("Now starting children:");
+        for child in self.child_execs.clone() {
+            child.print_basic_exec_info()
         }
     }
 
@@ -203,6 +213,10 @@ impl RcExecution {
         self.execution.borrow().is_empty_root_exec()
     }
 
+    pub fn pid(&self) -> Pid {
+        self.execution.borrow().pid()
+    }
+
     pub fn print_basic_exec_info(&self) {
         self.execution.borrow().print_basic_exec_info()
     }
@@ -215,10 +229,10 @@ impl RcExecution {
         self.execution.borrow().starting_cwd()
     }
 
-    pub fn update_first_exec(&self, new_exec_metadata: ExecMetadata) {
+    pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
         self.execution
             .borrow_mut()
-            .update_first_exec(new_exec_metadata);
+            .update_successful_exec(new_exec_metadata);
     }
 }
 
