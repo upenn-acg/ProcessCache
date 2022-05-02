@@ -67,10 +67,6 @@ impl Execution {
         self.failed_execs.push(exec_metadata);
     }
 
-    pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
-        self.successful_exec = exec_metadata;
-    }
-
     pub fn add_exit_code(&mut self, code: i32) {
         self.exit_code = Some(code);
     }
@@ -114,8 +110,24 @@ impl Execution {
         }
     }
 
+    fn print_file_events(&self) {
+        println!("Successful executable:");
+        println!();
+        self.file_events.print_file_events();
+
+        println!("Now starting children:");
+        println!();
+        for child in self.child_execs.clone() {
+            child.print_file_events();
+        }
+    }
+
     fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
+    }
+
+    pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
+        self.successful_exec = exec_metadata;
     }
 }
 
@@ -221,6 +233,9 @@ impl RcExecution {
         self.execution.borrow().print_basic_exec_info()
     }
 
+    pub fn print_file_events(&self) {
+        self.execution.borrow().print_file_events()
+    }
     // pub fn exit_code(&self) -> Option<i32> {
     //     self.execution.borrow().exit_code()
     // }

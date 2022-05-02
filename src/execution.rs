@@ -62,7 +62,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // // Want: write_to_cache(cachable_exec: CachedExecution)
     // serialize_execs_to_cache(exec_full_path, args, cachable_exec.clone());
     // cachable_exec.print_pre_and_postconditions();
-    first_execution.print_basic_exec_info();
+    // first_execution.print_basic_exec_info();
+
+    first_execution.print_file_events();
     Ok(())
 }
 

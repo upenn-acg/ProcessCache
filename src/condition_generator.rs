@@ -269,6 +269,15 @@ impl ExecFileEvents {
 
         &self.filename_to_events_map
     }
+
+    pub fn print_file_events(&self) {
+        for (pathname, event_list) in self.filename_to_events_map.iter() {
+            println!("Full path: {:?}", pathname);
+            for event in event_list {
+                println!("File event: {:?}", event);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
