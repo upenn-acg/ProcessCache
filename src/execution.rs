@@ -64,7 +64,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // cachable_exec.print_pre_and_postconditions();
     // first_execution.print_basic_exec_info();
 
-    first_execution.print_file_events();
+    first_execution.print_pre_and_postconditions();
     Ok(())
 }
 

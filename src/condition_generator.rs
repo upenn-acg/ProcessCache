@@ -411,6 +411,7 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
 }
 // Directory Preconditions (For now, just cwd), File Preconditions
 // Takes in all the events for ONE RESOURCE and generates its preconditions.
+// TODO: when we do the preconditions checking, take the FIRST stat only.
 pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathBuf, HashSet<Fact>> {
     let sys_span = span!(Level::INFO, "generate_preconditions");
     let _ = sys_span.enter();
@@ -1067,6 +1068,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                            // TODO: don't add if there's already a stat struct, they'll conflict.
+                            // Just going to check for duplicates in check_preconditions()?
 
                             curr_set.insert(Fact::HasDirPermission(AccessFlags::X_OK.bits()));
                             if let Some(stat) = option_stat {

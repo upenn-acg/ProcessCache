@@ -1,4 +1,6 @@
-use crate::condition_generator::{ExecFileEvents, SyscallEvent};
+use crate::condition_generator::{
+    generate_postconditions, generate_preconditions, ExecFileEvents, SyscallEvent,
+};
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
@@ -122,6 +124,30 @@ impl Execution {
         }
     }
 
+    fn print_pre_and_postconditions(&self) {
+        println!("Successful executable:");
+        println!();
+        let events = self.file_events.clone();
+        let preconditions = generate_preconditions(events.clone());
+        let postconditions = generate_postconditions(events);
+        println!("Preconditions:");
+        for (path, fact) in preconditions {
+            println!("Path: {:?}, Fact: {:?}", path, fact);
+        }
+        println!();
+        println!("Postconditions:");
+        for (path, fact) in postconditions {
+            println!("Path: {:?}, Fact: {:?}", path, fact);
+        }
+        println!();
+
+        println!("Now starting children:");
+        println!();
+        for child in self.child_execs.clone() {
+            child.print_pre_and_postconditions();
+        }
+    }
+
     fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
     }
@@ -236,6 +262,11 @@ impl RcExecution {
     pub fn print_file_events(&self) {
         self.execution.borrow().print_file_events()
     }
+
+    pub fn print_pre_and_postconditions(&self) {
+        self.execution.borrow().print_pre_and_postconditions()
+    }
+
     // pub fn exit_code(&self) -> Option<i32> {
     //     self.execution.borrow().exit_code()
     // }
