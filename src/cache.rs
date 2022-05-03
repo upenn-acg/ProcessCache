@@ -97,8 +97,8 @@ impl Execution {
 
     fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
         let curr_file_events = self.file_events.clone();
-        let pres = generate_preconditions(curr_file_events.clone());
-        let posts = generate_postconditions(curr_file_events);
+        let preconditions = generate_preconditions(curr_file_events.clone());
+        let postconditions = generate_postconditions(curr_file_events);
 
         let mut cachable_child_execs = Vec::new();
         let children = self.child_execs.clone();
@@ -110,8 +110,8 @@ impl Execution {
         let new_cachable_exec = CachedExecution {
             child_execs: cachable_child_execs,
             failed_execs: self.failed_execs.clone(),
-            preconditions: Conditions::Pre(pres),
-            postconditions: Conditions::Post(posts),
+            preconditions: Conditions(preconditions),
+            postconditions: Conditions(postconditions),
             successful_exec: self.successful_exec.clone(),
         };
 

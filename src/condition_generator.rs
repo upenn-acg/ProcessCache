@@ -4,11 +4,13 @@ use nix::unistd::{AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    os::unix::fs::MetadataExt,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -289,59 +291,51 @@ impl ExecFileEvents {
 }
 
 // TODO: is there a point for this enum?
-pub enum Conditions {
-    Pre(HashMap<PathBuf, HashSet<Fact>>),
-    Post(HashMap<PathBuf, HashSet<Fact>>),
+pub struct Conditions(pub HashMap<PathBuf, HashSet<Fact>>);
+
+impl Conditions {
+    fn check_preconditions(&self) -> bool {
+        let conditions = self.0.clone();
+
+        for (path_name, fact_set) in conditions {
+            for fact in fact_set {
+                match fact {
+                    Fact::DoesntExist => {
+                        if path_name.exists() { return false; } 
+                    }
+                    Fact::Exists => {
+                        if !path_name.exists() { return false; }
+                    }
+                    Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
+                    Fact::HasDirPermission(_) => todo!(),
+                    Fact::NoDirPermission(_) => todo!(),
+                    Fact::HasPermission(_) => todo!(),
+                    Fact::NoPermission(_) => todo!(),
+                    Fact::Or(_, _) => todo!(),
+                    Fact::StartingContents(_) => todo!(),
+                    Fact::StatStructMatches(old_stat) => {
+                        let metadata = fs::metadata(&path_name).unwrap();
+                        let new_stat = MyStat {
+                            st_dev: metadata.dev(),
+                            st_ino: metadata.ino(),
+                            st_nlink: metadata.nlink(),
+                            st_mode: metadata.mode(),
+                            st_uid: metadata.uid(),
+                            st_gid: metadata.gid(),
+                            st_rdev: metadata.rdev(),
+                            st_size: metadata.size() as i64,
+                            st_blksize: metadata.blksize() as i64,
+                            st_blocks: metadata.blocks() as i64,
+                        };
+
+                        if old_stat != new_stat { return false; }
+                    }
+                }
+            }
+        }
+        true
+    }
 }
-
-// #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-// pub struct CondsMap {
-//     conds: HashMap<PathBuf, HashSet<Fact>>,
-// }
-// impl CondsMap {
-//     pub fn new() -> CondsMap {
-//         CondsMap {
-//             conds: HashMap::new(),
-//         }
-//     }
-//     pub fn add_preconditions(&mut self, exec_file_events: ExecFileEvents) {
-//         let preconds = generate_preconditions(exec_file_events);
-//         self.conds = preconds;
-//     }
-
-//     pub fn add_postconditions(&mut self, exec_file_events: ExecFileEvents) {
-//         let postconds = generate_postconditions(exec_file_events);
-//         self.conds = postconds;
-//     }
-
-//     pub fn copy_outputs_to_cache(&self, hash: u64) {
-//         let cache_dir = PathBuf::from("./cache");
-//         let hash_str = hash.to_string();
-//         for (path, facts) in self.conds.iter() {
-//             if facts.contains(&Fact::FinalContents) {
-//                 let file_name = path.file_name().unwrap();
-//                 let cache_file_path = cache_dir.join(hash_str.clone()).join(file_name);
-//                 if cache_file_path.exists() {
-//                     // TODO: maybe it should be
-//                     // cache/executable_name/output_file_name
-//                     // instead of cache/output_file_name so we can
-//                     // have different execs have different versions of files?
-//                     panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_file_path);
-//                 } else {
-//                     // TODO: not unwrap() but ?;
-//                     println!("About to copy file to cache");
-//                     println!("path is: {:?}", path);
-//                     println!("cache_file_path: {:?}", cache_file_path);
-//                     let uniq_exec_cache_path = cache_dir.join(hash_str.clone());
-//                     if !uniq_exec_cache_path.as_path().is_dir() {
-//                         fs::create_dir(uniq_exec_cache_path).unwrap();
-//                     }
-//                     fs::copy(path, cache_file_path).unwrap();
-//                 }
-//             }
-//         }
-//     }
-// }
 
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
