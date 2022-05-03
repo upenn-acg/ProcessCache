@@ -14,6 +14,15 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
+#[derive(Clone)]
+pub struct Command(pub String, pub Vec<String>);
+
+impl Command {
+    pub fn new(exe: String, args: Vec<String>) -> Self {
+        Command(exe, args)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum LastMod {
     Created,
@@ -280,54 +289,59 @@ impl ExecFileEvents {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CondsMap {
-    conds: HashMap<PathBuf, HashSet<Fact>>,
+pub enum Conditions {
+    Pre(HashMap<PathBuf, HashSet<Fact>>),
+    Post(HashMap<PathBuf, HashSet<Fact>>),
 }
-impl CondsMap {
-    pub fn new() -> CondsMap {
-        CondsMap {
-            conds: HashMap::new(),
-        }
-    }
-    pub fn add_preconditions(&mut self, exec_file_events: ExecFileEvents) {
-        let preconds = generate_preconditions(exec_file_events);
-        self.conds = preconds;
-    }
 
-    pub fn add_postconditions(&mut self, exec_file_events: ExecFileEvents) {
-        let postconds = generate_postconditions(exec_file_events);
-        self.conds = postconds;
-    }
+// #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+// pub struct CondsMap {
+//     conds: HashMap<PathBuf, HashSet<Fact>>,
+// }
+// impl CondsMap {
+//     pub fn new() -> CondsMap {
+//         CondsMap {
+//             conds: HashMap::new(),
+//         }
+//     }
+//     pub fn add_preconditions(&mut self, exec_file_events: ExecFileEvents) {
+//         let preconds = generate_preconditions(exec_file_events);
+//         self.conds = preconds;
+//     }
 
-    pub fn copy_outputs_to_cache(&self, hash: u64) {
-        let cache_dir = PathBuf::from("./cache");
-        let hash_str = hash.to_string();
-        for (path, facts) in self.conds.iter() {
-            if facts.contains(&Fact::FinalContents) {
-                let file_name = path.file_name().unwrap();
-                let cache_file_path = cache_dir.join(hash_str.clone()).join(file_name);
-                if cache_file_path.exists() {
-                    // TODO: maybe it should be
-                    // cache/executable_name/output_file_name
-                    // instead of cache/output_file_name so we can
-                    // have different execs have different versions of files?
-                    panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_file_path);
-                } else {
-                    // TODO: not unwrap() but ?;
-                    println!("About to copy file to cache");
-                    println!("path is: {:?}", path);
-                    println!("cache_file_path: {:?}", cache_file_path);
-                    let uniq_exec_cache_path = cache_dir.join(hash_str.clone());
-                    if !uniq_exec_cache_path.as_path().is_dir() {
-                        fs::create_dir(uniq_exec_cache_path).unwrap();
-                    }
-                    fs::copy(path, cache_file_path).unwrap();
-                }
-            }
-        }
-    }
-}
+//     pub fn add_postconditions(&mut self, exec_file_events: ExecFileEvents) {
+//         let postconds = generate_postconditions(exec_file_events);
+//         self.conds = postconds;
+//     }
+
+//     pub fn copy_outputs_to_cache(&self, hash: u64) {
+//         let cache_dir = PathBuf::from("./cache");
+//         let hash_str = hash.to_string();
+//         for (path, facts) in self.conds.iter() {
+//             if facts.contains(&Fact::FinalContents) {
+//                 let file_name = path.file_name().unwrap();
+//                 let cache_file_path = cache_dir.join(hash_str.clone()).join(file_name);
+//                 if cache_file_path.exists() {
+//                     // TODO: maybe it should be
+//                     // cache/executable_name/output_file_name
+//                     // instead of cache/output_file_name so we can
+//                     // have different execs have different versions of files?
+//                     panic!("Trying to copy a file to the cache that is already present in the cache, at least with the same filename! : {:?}", cache_file_path);
+//                 } else {
+//                     // TODO: not unwrap() but ?;
+//                     println!("About to copy file to cache");
+//                     println!("path is: {:?}", path);
+//                     println!("cache_file_path: {:?}", cache_file_path);
+//                     let uniq_exec_cache_path = cache_dir.join(hash_str.clone());
+//                     if !uniq_exec_cache_path.as_path().is_dir() {
+//                         fs::create_dir(uniq_exec_cache_path).unwrap();
+//                     }
+//                     fs::copy(path, cache_file_path).unwrap();
+//                 }
+//             }
+//         }
+//     }
+// }
 
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
@@ -357,12 +371,6 @@ pub struct MyStat {
     pub st_size: i64,
     pub st_blksize: i64,
     pub st_blocks: i64,
-    pub st_atime: i64,
-    pub st_atime_nsec: i64,
-    pub st_mtime: i64,
-    pub st_mtime_nsec: i64,
-    pub st_ctime: i64,
-    pub st_ctime_nsec: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

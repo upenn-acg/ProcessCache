@@ -1,5 +1,5 @@
 use crate::condition_generator::{
-    generate_postconditions, generate_preconditions, ExecFileEvents, SyscallEvent,
+    generate_postconditions, generate_preconditions, Conditions, ExecFileEvents, SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
@@ -17,14 +17,6 @@ use tracing::{debug, error, info, span, trace, Level};
 // }
 
 // use anyhow::{bail, Context, Result};
-#[derive(Clone)]
-pub struct Command(pub String, pub Vec<String>);
-
-impl Command {
-    pub fn new(exe: String, args: Vec<String>) -> Self {
-        Command(exe, args)
-    }
-}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Proc(pub Pid);
@@ -284,6 +276,14 @@ impl RcExecution {
     }
 }
 
+// TODO: exit code
+pub struct CachedExecution {
+    child_execs: Vec<Rc<CachedExecution>>,
+    failed_execs: Vec<ExecMetadata>,
+    preconditions: Conditions,
+    postconditions: Conditions,
+    successful_exec: ExecMetadata,
+}
 // #[derive(Hash)]
 // pub struct ExecUniqId {
 //     exec_full_path: PathBuf,

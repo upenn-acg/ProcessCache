@@ -755,12 +755,6 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
                         st_size: stat_struct.st_size,
                         st_blksize: stat_struct.st_blksize,
                         st_blocks: stat_struct.st_blocks,
-                        st_atime: stat_struct.st_atime,
-                        st_atime_nsec: stat_struct.st_atime_nsec,
-                        st_mtime: stat_struct.st_mtime,
-                        st_mtime_nsec: stat_struct.st_mtime_nsec,
-                        st_ctime: stat_struct.st_ctime,
-                        st_ctime_nsec: stat_struct.st_ctime_nsec,
                     };
                     // TODO: actually do something with this fucking struct.
                     // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
