@@ -4,7 +4,6 @@ use nix::unistd::{AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -289,6 +288,7 @@ impl ExecFileEvents {
     }
 }
 
+// TODO: is there a point for this enum?
 pub enum Conditions {
     Pre(HashMap<PathBuf, HashSet<Fact>>),
     Post(HashMap<PathBuf, HashSet<Fact>>),

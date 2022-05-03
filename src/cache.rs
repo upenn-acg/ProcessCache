@@ -78,6 +78,45 @@ impl Execution {
             .add_new_file_event(caller_pid, file_access, full_path);
     }
 
+    // Generate the map of execs, where each child, and child of child,
+    // and so on, has its own entry which has ref counts to its subtree
+    // of computation.
+    // Pro: constant time lookup.
+    // Pro: Don't have multiple copies all over the place.
+    // To start:
+    // fn generate_cachable_map(&self) -> HashMap<Command, Rc<CachedExecution>> {
+    //     let curr_file_events = self.file_events;
+    //     let preconditions = generate_preconditions(curr_file_events);
+    //     let postconditions = generate_postconditions(curr_file_events);
+
+    //     CachedExecution {
+    //         preconditions: Conditions::Pre(preconditions),
+    //         postconditions: Conditions::Post(postconditions),
+    //     }
+    // }
+
+    fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
+        let curr_file_events = self.file_events.clone();
+        let pres = generate_preconditions(curr_file_events.clone());
+        let posts = generate_postconditions(curr_file_events);
+
+        let mut cachable_child_execs = Vec::new();
+        let children = self.child_execs.clone();
+        for child in children {
+            let cachable_child = child.generate_cachable_exec();
+            cachable_child_execs.push(cachable_child.clone());
+        }
+
+        let new_cachable_exec = CachedExecution {
+            child_execs: cachable_child_execs,
+            failed_execs: self.failed_execs.clone(),
+            preconditions: Conditions::Pre(pres),
+            postconditions: Conditions::Post(posts),
+            successful_exec: self.successful_exec.clone(),
+        };
+
+        Rc::new(new_cachable_exec)
+    }
     fn is_empty_root_exec(&self) -> bool {
         self.successful_exec.is_empty_root_exec()
     }
@@ -241,6 +280,10 @@ impl RcExecution {
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
+    pub fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
+        self.execution.borrow().generate_cachable_exec()
+    }
+
     pub fn is_empty_root_exec(&self) -> bool {
         self.execution.borrow().is_empty_root_exec()
     }
@@ -277,6 +320,8 @@ impl RcExecution {
 }
 
 // TODO: exit code
+// TODO: failed execs part of Conditions::Pre() and part of Facts (Fact::FailedExec)?
+// TODO: don't need all of exec metadata
 pub struct CachedExecution {
     child_execs: Vec<Rc<CachedExecution>>,
     failed_execs: Vec<ExecMetadata>,
@@ -284,140 +329,5 @@ pub struct CachedExecution {
     postconditions: Conditions,
     successful_exec: ExecMetadata,
 }
-// #[derive(Hash)]
-// pub struct ExecUniqId {
-//     exec_full_path: PathBuf,
-//     args: Vec<String>,
-// }
 
-// pub fn hash_exec_uniqid(hash_struct: ExecUniqId) -> u64 {
-//     let mut s = DefaultHasher::new();
-//     hash_struct.hash(&mut s);
-//     s.finish()
-// }
-
-// #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-// pub struct GlobalExecutions {
-//     global_execs: HashMap<u64, CachedExecution>,
-// }
-
-// impl GlobalExecutions {
-//     fn new() -> GlobalExecutions {
-//         GlobalExecutions {
-//             global_execs: HashMap::new(),
-//         }
-//     }
-
-//     fn add_new_execution(&mut self, hash: u64, exec: CachedExecution) {
-//         println!("Hash for exec is: {}", hash);
-//         // TODO: max file name size??
-//         // TODO: check if it's there
-//         self.global_execs.insert(hash, exec);
-//     }
-
-//     fn lookup(&self, exec: ExecCall) -> Option<CachedExecution> {
-//         let exec_id_str = ExecUniqId {
-//             exec_full_path: exec.executable(),
-//             args: exec.args(),
-//         };
-//         let hash_id = hash_exec_uniqid(exec_id_str);
-//         self.global_execs.get(&hash_id).cloned()
-//     }
-// }
-
-// pub fn deserialize_execs_from_cache() -> GlobalExecutions {
-//     // if Path::new("./cache/cache").exists() {
-//     //     File::create("./cache/cache").unwrap();
-//     //     GlobalExecutions::new()
-//     // } else {
-//     //     let exec_struct_bytes =
-//     //     fs::read("./cache/cache").expect("failed to deserialize execs from cache");
-//     //     rmp_serde::from_read_ref(&exec_struct_bytes).unwrap()
-//     // }
-
-//     let cache_path = Path::new("./cache/cache");
-//     let cache_bytes = fs::read(cache_path).unwrap();
-//     if cache_bytes.is_empty() {
-//         GlobalExecutions::new()
-//     } else {
-//         rmp_serde::from_read_ref(&cache_bytes).unwrap()
-//     }
-// }
-
-// pub fn lookup_exec_in_cache(exec: ExecCall) -> Option<CachedExecution> {
-//     let global_execs = deserialize_execs_from_cache();
-//     global_execs.lookup(exec)
-// }
-// // Serialize the execs and write them to the cache.
-// // Also copy the output files over.
-// pub fn serialize_execs_to_cache(
-//     exec_path: PathBuf,
-//     args_list: Vec<String>,
-//     root_execution: CachedExecution,
-// ) {
-//     // TODO: probably shouldn't be copying the output files before checking
-//     // the cache.
-//     // TODO: Get existing execs out and add to that.
-//     const CACHE_LOCATION: &str = "./cache/cache";
-//     let cache_path = PathBuf::from(CACHE_LOCATION);
-//     let exec_id_str = ExecUniqId {
-//         exec_full_path: exec_path,
-//         args: args_list,
-//     };
-//     let hash = hash_exec_uniqid(exec_id_str);
-//     println!("Hash for exec is: {}", hash);
-
-//     let mut global_execs = deserialize_execs_from_cache();
-//     global_execs.add_new_execution(hash, root_execution.clone());
-
-//     let serialized_exec = rmp_serde::to_vec(&global_execs).unwrap();
-//     if cache_path.exists() {
-//         fs::remove_file(&cache_path).unwrap();
-//     }
-//     fs::write(cache_path, serialized_exec).unwrap();
-//     root_execution.copy_output_files_to_cache(hash);
-// }
-
-// pub fn generate_cachable_exec(root_execution: RcExecution) -> CachedExecution {
-//     let mut exec_list = Vec::new();
-//     for exec_call in root_execution.exec_calls() {
-//         match exec_call {
-//             ExecCall::Failed(meta) => {
-//                 exec_list.push(CachedExecCall::Failed(meta));
-//             }
-//             ExecCall::Successful(file_events, meta) => {
-//                 let mut preconditions = CondsMap::new();
-//                 let mut postconditions = CondsMap::new();
-//                 preconditions.add_preconditions(file_events.clone());
-//                 postconditions.add_postconditions(file_events);
-//                 exec_list.push(CachedExecCall::Successful(
-//                     meta,
-//                     preconditions,
-//                     postconditions,
-//                 ));
-//             }
-//         }
-//     }
-
-//     let mut children = Vec::new();
-//     // TODO: actually recurse lmao
-//     for child in root_execution.child_executions() {
-//         let cachable_child = generate_cachable_exec(child);
-//         children.push(cachable_child);
-//     }
-
-//     // if let Some(code) = root_execution.exit_code() {
-//     println!("execution: {:?}", root_execution);
-//     // TODO: weird shit with exit code = none for root process
-//     // let exit_code = if let Some(code) = root_execution.exit_code() {
-//     //     code
-//     // } else {
-//     //     0
-//     // };
-//     CachedExecution::new(
-//         children,
-//         exec_list,
-//         root_execution.exit_code().unwrap(),
-//         root_execution.starting_cwd(),
-//     )
-// }
+impl CachedExecution {}
