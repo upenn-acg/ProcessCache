@@ -44,7 +44,6 @@ pub struct Execution {
     exit_code: Option<i32>,
     failed_execs: Vec<ExecMetadata>,
     file_events: ExecFileEvents,
-    starting_cwd: PathBuf,
     successful_exec: ExecMetadata,
 }
 
@@ -56,7 +55,6 @@ impl Execution {
             exit_code: None,
             failed_execs: Vec::new(),
             file_events: ExecFileEvents::new(),
-            starting_cwd: PathBuf::new(),
             successful_exec: ExecMetadata::new(),
         }
     }
@@ -148,8 +146,8 @@ impl Execution {
         }
     }
 
-    fn starting_cwd(&self) -> PathBuf {
-        self.starting_cwd.clone()
+    pub fn starting_cwd(&self) -> PathBuf {
+        self.successful_exec.starting_cwd()
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
@@ -204,6 +202,10 @@ impl ExecMetadata {
             "Executable: {:?}, args: {:?}, starting_cwd: {:?}",
             self.executable, self.args, self.starting_cwd
         );
+    }
+
+    fn starting_cwd(&self) -> PathBuf {
+        self.starting_cwd.clone()
     }
 }
 
