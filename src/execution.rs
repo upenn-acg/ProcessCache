@@ -7,7 +7,6 @@ use libc::{
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
@@ -457,36 +456,23 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
         // TODO: panic if more than one?
         let flags_arg = regs.arg2::<i32>();
         let access_flags: Option<AccessFlags> = AccessFlags::from_bits(flags_arg);
-        let mut flag_set = HashSet::new();
-        if let Some(flags) = access_flags {
-            if flags.contains(AccessFlags::F_OK) {
-                flag_set.insert(AccessFlags::F_OK);
-            } else {
-                if flags.contains(AccessFlags::R_OK) {
-                    flag_set.insert(AccessFlags::R_OK);
-                }
-                if flags.contains(AccessFlags::W_OK) {
-                    flag_set.insert(AccessFlags::W_OK);
-                }
-                if flags.contains(AccessFlags::X_OK) {
-                    flag_set.insert(AccessFlags::X_OK);
-                }
-            }
+        let flags = if let Some(flags) = access_flags {
+            flags
         } else {
             panic!("Access flags unexpected value!!");
-        }
+        };
 
         match ret_val {
-            0 => Some(SyscallEvent::Access(flag_set, SyscallOutcome::Success)),
+            0 => Some(SyscallEvent::Access(flags, SyscallOutcome::Success)),
             -2 => Some(SyscallEvent::Access(
-                flag_set,
+                flags,
                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
             )),
             // It could be that the user doesn't have one of the permissions they specified as a parameter
             // OR it could be that they don't have search permissions on some dir in the path to the resource.
             // And we don't know so permission is gonna have to be unknown.
             -13 => Some(SyscallEvent::Access(
-                flag_set,
+                flags,
                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
             )),
             e => panic!("Unexpected error returned by access syscall!: {}", e),
