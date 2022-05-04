@@ -64,6 +64,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // first_execution.print_basic_exec_info();
 
     first_execution.print_pre_and_postconditions();
+    // let events = first_execution.file_events();
+    // let preconditions = generate_preconditions(events);
+    // check_preconditions(preconditions);
     Ok(())
 }
 
@@ -444,57 +447,38 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     sys_span.in_scope(|| {
         debug!("Generating access syscall event!");
     });
-    let access_syscall_event = if full_path.starts_with("/dev/pts")
-        || full_path.starts_with("/dev/null")
-        || full_path.starts_with("/etc/")
-        || full_path.starts_with("/lib/")
-        || full_path.starts_with("/proc/")
-        || full_path.is_dir()
-    {
-        None
+    // let access_syscall_event = if full_path.starts_with("/dev/pts")
+    //     || full_path.starts_with("/dev/null")
+    //     || full_path.starts_with("/etc/")
+    //     || full_path.starts_with("/lib/")
+    //     || full_path.starts_with("/proc/")
+    //     || full_path.is_dir()
+    // {
+    //     None
+    // } else {
+    // TODO: panic if more than one?
+    let flags_arg = regs.arg2::<i32>();
+    let access_flags: Option<AccessFlags> = AccessFlags::from_bits(flags_arg);
+    let flags = if let Some(flags) = access_flags {
+        flags
     } else {
-        // TODO: panic if more than one?
-        let flags_arg = regs.arg2::<i32>();
-        let access_flags: Option<AccessFlags> = AccessFlags::from_bits(flags_arg);
-        let flags = if let Some(flags) = access_flags {
-            flags
-        } else {
-            panic!("Access flags unexpected value!!");
-        };
-
-        match ret_val {
-            0 => Some(SyscallEvent::Access(flags, SyscallOutcome::Success)),
-            -2 => Some(SyscallEvent::Access(
-                flags,
-                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-            )),
-            // It could be that the user doesn't have one of the permissions they specified as a parameter
-            // OR it could be that they don't have search permissions on some dir in the path to the resource.
-            // And we don't know so permission is gonna have to be unknown.
-            -13 => Some(SyscallEvent::Access(
-                flags,
-                SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-            )),
-            e => panic!("Unexpected error returned by access syscall!: {}", e),
-        }
+        panic!("Access flags unexpected value!!");
     };
 
-    if let Some(event) = access_syscall_event {
-        execution.add_new_file_event(tracer.curr_proc, event, full_path);
-    }
+    let event = match ret_val {
+        0 => SyscallEvent::Access(flags, SyscallOutcome::Success),
+        -2 => SyscallEvent::Access(flags, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+        // It could be that the user doesn't have one of the permissions they specified as a parameter
+        // OR it could be that they don't have search permissions on some dir in the path to the resource.
+        // And we don't know so permission is gonna have to be unknown.
+        -13 => SyscallEvent::Access(
+            flags,
+            SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+        ),
+        e => panic!("Unexpected error returned by access syscall!: {}", e),
+    };
 
-    // let starting_hash = if full_path.exists() && open_syscall_event.is_some() {
-    //     Some(generate_hash(
-    //         pid,
-    //         full_path.clone().into_os_string().into_string().unwrap(),
-    //     ))
-    // } else {
-    //     None
-    // };
-
-    // if let Some(hash) = starting_hash {
-    //     execution.add_starting_hash(full_path, hash);
-    // }
+    execution.add_new_file_event(tracer.curr_proc, event, full_path);
     Ok(())
 }
 
@@ -715,54 +699,35 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
         _ => panic!("Calling unrecognized syscall in handle_stat()"),
     };
 
-    let stat_syscall_event = if let Some(path) = &full_path {
-        if path.starts_with("/dev/pts")
-            || path.starts_with("/dev/null")
-            || path.starts_with("/etc/")
-            || path.starts_with("/lib/")
-            || path.starts_with("/proc/")
-            || path.starts_with("/usr/")
-            || path.is_dir()
-        {
-            None
-        } else {
-            match ret_val {
-                0 => {
-                    let stat_ptr = regs.arg2::<u64>();
-                    let stat_struct = tracer.read_value(stat_ptr as *const FileStat)?;
-                    let my_stat = MyStat {
-                        st_dev: stat_struct.st_dev,
-                        st_ino: stat_struct.st_ino,
-                        st_nlink: stat_struct.st_nlink,
-                        st_mode: stat_struct.st_mode,
-                        st_uid: stat_struct.st_uid,
-                        st_gid: stat_struct.st_gid,
-                        st_rdev: stat_struct.st_rdev,
-                        st_size: stat_struct.st_size,
-                        st_blksize: stat_struct.st_blksize,
-                        st_blocks: stat_struct.st_blocks,
-                    };
-                    // TODO: actually do something with this fucking struct.
-                    // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
-                    Some(SyscallEvent::Stat(Some(my_stat), SyscallOutcome::Success))
-                }
-                -2 => Some(SyscallEvent::Stat(
-                    None,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                )),
-                -13 => Some(SyscallEvent::Stat(
-                    None,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                )),
-                e => panic!("Unexpected error returned by stat syscall!: {}", e),
+    let stat_syscall_event = {
+        match ret_val {
+            0 => {
+                let stat_ptr = regs.arg2::<u64>();
+                let stat_struct = tracer.read_value(stat_ptr as *const FileStat)?;
+                let my_stat = MyStat {
+                    st_dev: stat_struct.st_dev,
+                    st_ino: stat_struct.st_ino,
+                    st_nlink: stat_struct.st_nlink,
+                    st_mode: stat_struct.st_mode,
+                    st_uid: stat_struct.st_uid,
+                    st_gid: stat_struct.st_gid,
+                    st_rdev: stat_struct.st_rdev,
+                    st_size: stat_struct.st_size,
+                    st_blksize: stat_struct.st_blksize,
+                    st_blocks: stat_struct.st_blocks,
+                };
+                // TODO: actually do something with this fucking struct.
+                // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
+                SyscallEvent::Stat(Some(my_stat), SyscallOutcome::Success)
             }
+            -2 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            -13 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+            e => panic!("Unexpected error returned by stat syscall!: {}", e),
         }
-    } else {
-        None
     };
 
-    if let (Some(path), Some(event)) = (full_path, stat_syscall_event) {
-        execution.add_new_file_event(tracer.curr_proc, event, path);
+    if let Some(path) = full_path {
+        execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, path);
     }
     Ok(())
 }
@@ -859,16 +824,16 @@ fn generate_open_syscall_file_event(
     syscall_outcome: Result<i32, i32>,
 ) -> Option<SyscallEvent> {
     // Trust me Dewey, you don't want no part of this.
-    if full_path.starts_with("/dev/pts")
-        || full_path.starts_with("/dev/null")
-        || full_path.starts_with("/etc/")
-        || full_path.starts_with("/lib/")
-        || full_path.starts_with("/proc/")
-        || full_path.starts_with("/usr/")
-        || full_path.is_dir()
-    {
-        return None;
-    }
+    // if full_path.starts_with("/dev/pts")
+    //     || full_path.starts_with("/dev/null")
+    //     || full_path.starts_with("/etc/")
+    //     || full_path.starts_with("/lib/")
+    //     || full_path.starts_with("/proc/")
+    //     || full_path.starts_with("/usr/")
+    //     || full_path.is_dir()
+    // {
+    //     return None;
+    // }
 
     if excl_flag && !creat_flag {
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");

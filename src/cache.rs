@@ -1,5 +1,6 @@
 use crate::condition_generator::{
-    generate_postconditions, generate_preconditions, Conditions, ExecFileEvents, SyscallEvent,
+    check_preconditions, generate_postconditions, generate_preconditions, Conditions,
+    ExecFileEvents, SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
@@ -95,6 +96,10 @@ impl Execution {
     //     }
     // }
 
+    fn file_events(&self) -> ExecFileEvents {
+        self.file_events.clone()
+    }
+
     fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
@@ -158,6 +163,7 @@ impl Execution {
         println!();
         let events = self.file_events.clone();
         let preconditions = generate_preconditions(events.clone());
+        check_preconditions(preconditions.clone());
         let postconditions = generate_postconditions(events);
         println!("Preconditions:");
         for (path, fact) in preconditions {
@@ -278,6 +284,10 @@ impl RcExecution {
         self.execution
             .borrow_mut()
             .add_new_file_event(caller_pid, file_event, full_path);
+    }
+
+    pub fn file_events(&self) -> ExecFileEvents {
+        self.execution.borrow().file_events()
     }
 
     pub fn generate_cachable_exec(&self) -> Rc<CachedExecution> {

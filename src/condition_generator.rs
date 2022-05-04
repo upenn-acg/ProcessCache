@@ -1,5 +1,5 @@
 use nix::fcntl::OFlag;
-use nix::unistd::{AccessFlags, Pid};
+use nix::unistd::{access, AccessFlags, Pid};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -292,56 +292,84 @@ impl ExecFileEvents {
 // TODO: is there a point for this enum?
 pub struct Conditions(pub HashMap<PathBuf, HashSet<Fact>>);
 
-impl Conditions {
-    fn check_preconditions(&self) -> bool {
-        let conditions = self.0.clone();
+impl Conditions {}
 
-        for (path_name, fact_set) in conditions {
-            for fact in fact_set {
-                match fact {
-                    Fact::DoesntExist => {
-                        if path_name.exists() {
-                            return false;
-                        }
-                    }
-                    Fact::Exists => {
-                        if !path_name.exists() {
-                            return false;
-                        }
-                    }
-                    Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
-                    Fact::HasDirPermission(_) => todo!(),
-                    Fact::NoDirPermission(_) => todo!(),
-                    Fact::HasPermission(_) => todo!(),
-                    Fact::NoPermission(_) => todo!(),
-                    Fact::Or(_, _) => todo!(),
-                    Fact::StartingContents(_) => todo!(),
-                    Fact::StatStructMatches(old_stat) => {
-                        let metadata = fs::metadata(&path_name).unwrap();
-                        let new_stat = MyStat {
-                            st_dev: metadata.dev(),
-                            st_ino: metadata.ino(),
-                            st_nlink: metadata.nlink(),
-                            st_mode: metadata.mode(),
-                            st_uid: metadata.uid(),
-                            st_gid: metadata.gid(),
-                            st_rdev: metadata.rdev(),
-                            st_size: metadata.size() as i64,
-                            st_blksize: metadata.blksize() as i64,
-                            st_blocks: metadata.blocks() as i64,
-                        };
+fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
+    debug!("Checking fact: {:?}", fact);
+    match fact {
+        Fact::DoesntExist => !path_name.exists(),
+        Fact::Exists => path_name.exists(),
+        Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
+        Fact::HasDirPermission(flags) => {
+            let parent_dir = path_name.parent().unwrap();
+            access(parent_dir, flags).is_ok()
+        }
+        Fact::NoDirPermission(flags) => {
+            let parent_dir = path_name.parent().unwrap();
+            access(parent_dir, flags).is_err()
+        }
+        Fact::HasPermission(flags) => access(&path_name, flags).is_ok(),
+        Fact::NoPermission(flags) => access(&path_name, flags).is_ok(),
+        Fact::Or(first, second) => {
+            // This should be only when we need to check perms
+            // of the dir and perms of the file.
+            // Example is open append failing for perms:
+            // write access OR exec dir access is missing
+            let first_perms_hold = match *first {
+                Fact::HasDirPermission(_)
+                | Fact::HasPermission(_)
+                | Fact::NoDirPermission(_)
+                | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone()),
+                e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
+            };
+            let second_perms_hold = match *second {
+                Fact::HasDirPermission(_)
+                | Fact::HasPermission(_)
+                | Fact::NoDirPermission(_)
+                | Fact::NoPermission(_) => check_fact_holds(*second, path_name),
+                e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
+            };
 
-                        if old_stat != new_stat {
-                            return false;
-                        }
-                    }
+            first_perms_hold || second_perms_hold
+        }
+        Fact::StartingContents(old_hash) => {
+            let new_hash = generate_hash(path_name);
+            old_hash == new_hash
+        }
+        Fact::StatStructMatches(old_stat) => {
+            // let metadata = fs::metadata(&path_name).unwrap();
+            let metadata_result = fs::metadata(&path_name);
+            match metadata_result {
+                Ok(metadata) => {
+                    let new_stat = MyStat {
+                        st_dev: metadata.dev(),
+                        st_ino: metadata.ino(),
+                        st_nlink: metadata.nlink(),
+                        st_mode: metadata.mode(),
+                        st_uid: metadata.uid(),
+                        st_gid: metadata.gid(),
+                        st_rdev: metadata.rdev(),
+                        st_size: metadata.size() as i64,
+                        st_blksize: metadata.blksize() as i64,
+                        st_blocks: metadata.blocks() as i64,
+                    };
+                    old_stat == new_stat
                 }
+                Err(_) => panic!("No file: {:?}", path_name),
             }
         }
-        true
     }
 }
 
+pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) {
+    for (path_name, fact_set) in conditions {
+        for fact in fact_set {
+            if !check_fact_holds(fact.clone(), path_name.clone()) {
+                debug!("Fact that doesn't hold: {:?}", fact);
+            }
+        }
+    }
+}
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
