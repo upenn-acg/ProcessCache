@@ -295,67 +295,71 @@ pub struct Conditions(pub HashMap<PathBuf, HashSet<Fact>>);
 impl Conditions {}
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
-    debug!("Checking fact: {:?}", fact);
-    match fact {
-        Fact::DoesntExist => !path_name.exists(),
-        Fact::Exists => path_name.exists(),
-        Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
-        Fact::HasDirPermission(flags) => {
-            let parent_dir = path_name.parent().unwrap();
-            access(parent_dir, flags).is_ok()
-        }
-        Fact::NoDirPermission(flags) => {
-            let parent_dir = path_name.parent().unwrap();
-            access(parent_dir, flags).is_err()
-        }
-        Fact::HasPermission(flags) => access(&path_name, flags).is_ok(),
-        Fact::NoPermission(flags) => access(&path_name, flags).is_ok(),
-        Fact::Or(first, second) => {
-            // This should be only when we need to check perms
-            // of the dir and perms of the file.
-            // Example is open append failing for perms:
-            // write access OR exec dir access is missing
-            let first_perms_hold = match *first {
-                Fact::HasDirPermission(_)
-                | Fact::HasPermission(_)
-                | Fact::NoDirPermission(_)
-                | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone()),
-                e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
-            };
-            let second_perms_hold = match *second {
-                Fact::HasDirPermission(_)
-                | Fact::HasPermission(_)
-                | Fact::NoDirPermission(_)
-                | Fact::NoPermission(_) => check_fact_holds(*second, path_name),
-                e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
-            };
+    debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
+    if path_name.starts_with("/proc") {
+        true
+    } else {
+        match fact {
+            Fact::DoesntExist => !path_name.exists(),
+            Fact::Exists => path_name.exists(),
+            Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
+            Fact::HasDirPermission(flags) => {
+                let parent_dir = path_name.parent().unwrap();
+                access(parent_dir, flags).is_ok()
+            }
+            Fact::NoDirPermission(flags) => {
+                let parent_dir = path_name.parent().unwrap();
+                access(parent_dir, flags).is_err()
+            }
+            Fact::HasPermission(flags) => access(&path_name, flags).is_ok(),
+            Fact::NoPermission(flags) => access(&path_name, flags).is_ok(),
+            Fact::Or(first, second) => {
+                // This should be only when we need to check perms
+                // of the dir and perms of the file.
+                // Example is open append failing for perms:
+                // write access OR exec dir access is missing
+                let first_perms_hold = match *first {
+                    Fact::HasDirPermission(_)
+                    | Fact::HasPermission(_)
+                    | Fact::NoDirPermission(_)
+                    | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone()),
+                    e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
+                };
+                let second_perms_hold = match *second {
+                    Fact::HasDirPermission(_)
+                    | Fact::HasPermission(_)
+                    | Fact::NoDirPermission(_)
+                    | Fact::NoPermission(_) => check_fact_holds(*second, path_name),
+                    e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
+                };
 
-            first_perms_hold || second_perms_hold
-        }
-        Fact::StartingContents(old_hash) => {
-            let new_hash = generate_hash(path_name);
-            old_hash == new_hash
-        }
-        Fact::StatStructMatches(old_stat) => {
-            // let metadata = fs::metadata(&path_name).unwrap();
-            let metadata_result = fs::metadata(&path_name);
-            match metadata_result {
-                Ok(metadata) => {
-                    let new_stat = MyStat {
-                        st_dev: metadata.dev(),
-                        st_ino: metadata.ino(),
-                        st_nlink: metadata.nlink(),
-                        st_mode: metadata.mode(),
-                        st_uid: metadata.uid(),
-                        st_gid: metadata.gid(),
-                        st_rdev: metadata.rdev(),
-                        st_size: metadata.size() as i64,
-                        st_blksize: metadata.blksize() as i64,
-                        st_blocks: metadata.blocks() as i64,
-                    };
-                    old_stat == new_stat
+                first_perms_hold || second_perms_hold
+            }
+            Fact::StartingContents(old_hash) => {
+                let new_hash = generate_hash(path_name);
+                old_hash == new_hash
+            }
+            Fact::StatStructMatches(old_stat) => {
+                // let metadata = fs::metadata(&path_name).unwrap();
+                let metadata_result = fs::metadata(&path_name);
+                match metadata_result {
+                    Ok(metadata) => {
+                        let new_stat = MyStat {
+                            st_dev: metadata.dev(),
+                            st_ino: metadata.ino(),
+                            st_nlink: metadata.nlink(),
+                            st_mode: metadata.mode(),
+                            st_uid: metadata.uid(),
+                            st_gid: metadata.gid(),
+                            st_rdev: metadata.rdev(),
+                            st_size: metadata.size() as i64,
+                            st_blksize: metadata.blksize() as i64,
+                            st_blocks: metadata.blocks() as i64,
+                        };
+                        old_stat == new_stat
+                    }
+                    Err(_) => panic!("No file: {:?}", path_name),
                 }
-                Err(_) => panic!("No file: {:?}", path_name),
             }
         }
     }
