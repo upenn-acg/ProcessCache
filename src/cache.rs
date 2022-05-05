@@ -73,8 +73,16 @@ impl Execution {
             .add_new_file_event(caller_pid, file_access, full_path);
     }
 
+    fn args(&self) -> Vec<String> {
+        self.successful_exec.args()
+    }
+
     fn env_vars(&self) -> Vec<String> {
         self.successful_exec.env_vars()
+    }
+
+    fn executable(&self) -> PathBuf {
+        self.successful_exec.executable()
     }
 
     // TODO: handle child execs... children of children...
@@ -85,15 +93,34 @@ impl Execution {
         let preconditions = generate_preconditions(curr_file_events.clone());
         let postconditions = generate_postconditions(curr_file_events);
 
+        let cached_exec = CachedExecution {
+            child_execs: Vec::new(),
+            env_vars: self.env_vars(),
+            preconditions: Conditions(preconditions),
+            postconditions: Conditions(postconditions),
+            starting_cwd: self.starting_cwd(),
+        };
+        let rc_cached_exec = RcCachedExec::new(cached_exec);
+        let command_key = Command(
+            self.executable().into_os_string().into_string().unwrap(),
+            self.args(),
+        );
+        exec_cache_map.insert(command_key, rc_cached_exec.clone());
 
-        let my_rc = Rc::new(CachableExec {
-
-        });
-        exec_cache_map.insert(my_rc.clone())
-        for child in self.child_execs {
-            let child_rc = Rc::new();
-            my_rc.add(child_rc)
-            child_rc.add_to_cachable_map(exec_cache_map)
+        for child in self.child_execs.iter() {
+            let child_file_events = child.file_events();
+            let child_preconditions = generate_preconditions(child_file_events.clone());
+            let child_postconditions = generate_postconditions(child_file_events);
+            let cached_child = CachedExecution {
+                child_execs: Vec::new(),
+                env_vars: child.env_vars(),
+                preconditions: Conditions(child_preconditions),
+                postconditions: Conditions(child_postconditions),
+                starting_cwd: child.starting_cwd(),
+            };
+            let child_rc = RcCachedExec::new(cached_child);
+            rc_cached_exec.add_child(child_rc.clone());
+            child.add_to_cachable_map(exec_cache_map);
         }
     }
 
@@ -209,6 +236,14 @@ impl ExecMetadata {
         self.starting_cwd = starting_cwd;
     }
 
+    fn args(&self) -> Vec<String> {
+        self.args.clone()
+    }
+
+    fn executable(&self) -> PathBuf {
+        self.executable.clone()
+    }
+
     fn env_vars(&self) -> Vec<String> {
         self.env_vars.clone()
     }
@@ -265,13 +300,21 @@ impl RcExecution {
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
+    pub fn add_to_cachable_map(&self, exec_cache_map: &mut HashMap<Command, RcCachedExec>) {
+        self.execution.borrow().add_to_cachable_map(exec_cache_map)
+    }
+
+    pub fn env_vars(&self) -> Vec<String> {
+        self.execution.borrow().env_vars()
+    }
+
     pub fn file_events(&self) -> ExecFileEvents {
         self.execution.borrow().file_events()
     }
 
-    pub fn generate_cachable_exec(&self) -> CachedExecution {
-        self.execution.borrow().generate_cachable_exec()
-    }
+    // pub fn generate_cachable_exec(&self) -> CachedExecution {
+    //     self.execution.borrow().generate_cachable_exec()
+    // }
 
     pub fn is_empty_root_exec(&self) -> bool {
         self.execution.borrow().is_empty_root_exec()
@@ -311,18 +354,32 @@ impl RcExecution {
 // pub struct Command(pub String, pub Vec<String>);
 struct ExecCacheMap(HashMap<Command, Rc<CachedExecution>>);
 
-impl ExecCacheMap {
+impl ExecCacheMap {}
 
-}
+// fn generate_exec_cache_map(root_exec: Execution) -> HashMap<Command, RcCachedExec> {
+//     let mut exec_cache_map = HashMap::new();
 
-fn generate_exec_cache_map(root_exec: Execution) -> HashMap<Command, RcCachedExec> {
-    let mut exec_cache_map = HashMap::new();
+// }
 
-    
-}
-
+#[derive(Clone, Debug, PartialEq)]
 pub struct RcCachedExec {
     cached_exec: Rc<RefCell<CachedExecution>>,
+}
+
+impl RcCachedExec {
+    fn new(cached_exec: CachedExecution) -> RcCachedExec {
+        RcCachedExec {
+            cached_exec: Rc::new(RefCell::new(cached_exec)),
+        }
+    }
+
+    fn add_child(&self, child: RcCachedExec) {
+        self.cached_exec.borrow_mut().add_child(child)
+    }
+
+    pub fn print_me(&self) {
+        self.cached_exec.borrow().print_me()
+    }
 }
 // The executable path and args
 // are the key to the map.
@@ -331,11 +388,23 @@ pub struct RcCachedExec {
 // TODO: exit code
 #[derive(Clone, Debug, PartialEq)]
 pub struct CachedExecution {
-    child_execs: Vec<Rc<CachedExecution>>,
+    child_execs: Vec<RcCachedExec>,
     env_vars: Vec<String>,
     preconditions: Conditions,
     postconditions: Conditions,
     starting_cwd: PathBuf,
 }
 
-impl CachedExecution {}
+impl CachedExecution {
+    fn add_child(&mut self, child: RcCachedExec) {
+        self.child_execs.push(child)
+    }
+
+    fn print_me(&self) {
+        println!("NEW CACHED EXEC:");
+        println!("Preconds: {:?}", self.preconditions);
+        for child in self.child_execs.clone() {
+            child.print_me()
+        }
+    }
+}

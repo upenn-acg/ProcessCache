@@ -7,13 +7,14 @@ use libc::{
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::{AccessFlags, Pid};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecMetadata, Execution, RcExecution};
 use crate::condition_generator::{
     check_preconditions, generate_hash, generate_preconditions, MyStat, SyscallEvent,
-    SyscallFailure, SyscallOutcome,
+    SyscallFailure, SyscallOutcome, Command,
 };
 
 use crate::context;
@@ -70,10 +71,18 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // let preconditions = generate_preconditions(events);
     // check_preconditions(preconditions);
 
-    println!(
-        "Cachable exec: {:?}",
-        first_execution.generate_cachable_exec()
-    );
+    // println!(
+    //     "Cachable exec: {:?}",
+    //     first_execution.generate_cachable_exec()
+    // );
+
+    let mut cache_map: HashMap<Command, RcExecution> = HashMap::new();
+    first_execution.add_to_cachable_map(cache_map);
+
+    for (command, cached_exec) in cache_map {
+        println!("Command: {:?}", command);
+        cached_exec.print_me();
+    }
     Ok(())
 }
 

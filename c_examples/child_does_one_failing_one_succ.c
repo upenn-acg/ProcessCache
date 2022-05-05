@@ -10,8 +10,8 @@ int main() {
         // int fd = openat(AT_FDCWD, "yeah.txt", O_RDONLY);
         char* args[] = {"./garbage", NULL};
         execvp("./garbage", args);
-        char* args2[] = {"./c_examples/empty_c", NULL};
-        execvp("./c_examples/empty_c", args2);
+        char* args2[] = {"./IOTracker/c_examples/empty_c", NULL};
+        execvp("./IOTracker/c_examples/empty_c", args2);
         exit(EXIT_SUCCESS);
     } 
     int status;
