@@ -291,6 +291,7 @@ impl ExecFileEvents {
 }
 
 // TODO: is there a point for this enum?
+#[derive(Clone, Debug, PartialEq)]
 pub struct Conditions(pub HashMap<PathBuf, HashSet<Fact>>);
 
 impl Conditions {}

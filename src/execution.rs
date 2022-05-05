@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{ExecMetadata, Execution, RcExecution};
 use crate::condition_generator::{
-    generate_hash, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome,
+    check_preconditions, generate_hash, generate_preconditions, MyStat, SyscallEvent,
+    SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -64,10 +65,15 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // first_execution.print_basic_exec_info();
 
     // first_execution.print_pre_and_postconditions();
-    first_execution.print_file_events();
+    // first_execution.print_file_events();
     // let events = first_execution.file_events();
     // let preconditions = generate_preconditions(events);
     // check_preconditions(preconditions);
+
+    println!(
+        "Cachable exec: {:?}",
+        first_execution.generate_cachable_exec()
+    );
     Ok(())
 }
 

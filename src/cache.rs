@@ -1,10 +1,10 @@
 use crate::condition_generator::{
-    check_preconditions, generate_postconditions, generate_preconditions, Conditions,
-    ExecFileEvents, SyscallEvent,
+    generate_postconditions, generate_preconditions, Command, Conditions, ExecFileEvents,
+    SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
 // use sha2::{Digest, Sha256};
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -73,49 +73,33 @@ impl Execution {
             .add_new_file_event(caller_pid, file_access, full_path);
     }
 
-    // Generate the map of execs, where each child, and child of child,
-    // and so on, has its own entry which has ref counts to its subtree
-    // of computation.
-    // Pro: constant time lookup.
-    // Pro: Don't have multiple copies all over the place.
-    // To start:
-    // fn generate_cachable_map(&self) -> HashMap<Command, Rc<CachedExecution>> {
-    //     let curr_file_events = self.file_events;
-    //     let preconditions = generate_preconditions(curr_file_events);
-    //     let postconditions = generate_postconditions(curr_file_events);
+    fn env_vars(&self) -> Vec<String> {
+        self.successful_exec.env_vars()
+    }
 
-    //     CachedExecution {
-    //         preconditions: Conditions::Pre(preconditions),
-    //         postconditions: Conditions::Post(postconditions),
-    //     }
-    // }
+    // TODO: handle child execs... children of children...
+    // CHILDREN OF MEN
+    // sorry I am tired
+    fn add_to_cachable_map(&self, exec_cache_map: &mut HashMap<Command, RcCachedExec>) {
+        let curr_file_events = self.file_events.clone();
+        let preconditions = generate_preconditions(curr_file_events.clone());
+        let postconditions = generate_postconditions(curr_file_events);
+
+
+        let my_rc = Rc::new(CachableExec {
+
+        });
+        exec_cache_map.insert(my_rc.clone())
+        for child in self.child_execs {
+            let child_rc = Rc::new();
+            my_rc.add(child_rc)
+            child_rc.add_to_cachable_map(exec_cache_map)
+        }
+    }
 
     fn file_events(&self) -> ExecFileEvents {
         self.file_events.clone()
     }
-
-    // fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
-    //     let curr_file_events = self.file_events.clone();
-    //     let preconditions = generate_preconditions(curr_file_events.clone());
-    //     let postconditions = generate_postconditions(curr_file_events);
-
-    //     let mut cachable_child_execs = Vec::new();
-    //     let children = self.child_execs.clone();
-    //     for child in children {
-    //         let cachable_child = child.generate_cachable_exec();
-    //         cachable_child_execs.push(cachable_child.clone());
-    //     }
-
-    //     let new_cachable_exec = CachedExecution {
-    //         child_execs: cachable_child_execs,
-    //         failed_execs: self.failed_execs.clone(),
-    //         preconditions: Conditions(preconditions),
-    //         postconditions: Conditions(postconditions),
-    //         successful_exec: self.successful_exec.clone(),
-    //     };
-
-    //     Rc::new(new_cachable_exec)
-    // }
 
     fn is_empty_root_exec(&self) -> bool {
         self.successful_exec.is_empty_root_exec()
@@ -225,6 +209,10 @@ impl ExecMetadata {
         self.starting_cwd = starting_cwd;
     }
 
+    fn env_vars(&self) -> Vec<String> {
+        self.env_vars.clone()
+    }
+
     fn is_empty_root_exec(&self) -> bool {
         self.executable.is_empty()
     }
@@ -281,9 +269,9 @@ impl RcExecution {
         self.execution.borrow().file_events()
     }
 
-    // pub fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
-    //     self.execution.borrow().generate_cachable_exec()
-    // }
+    pub fn generate_cachable_exec(&self) -> CachedExecution {
+        self.execution.borrow().generate_cachable_exec()
+    }
 
     pub fn is_empty_root_exec(&self) -> bool {
         self.execution.borrow().is_empty_root_exec()
@@ -320,13 +308,31 @@ impl RcExecution {
     }
 }
 
+// pub struct Command(pub String, pub Vec<String>);
+struct ExecCacheMap(HashMap<Command, Rc<CachedExecution>>);
+
+impl ExecCacheMap {
+
+}
+
+fn generate_exec_cache_map(root_exec: Execution) -> HashMap<Command, RcCachedExec> {
+    let mut exec_cache_map = HashMap::new();
+
+    
+}
+
+pub struct RcCachedExec {
+    cached_exec: Rc<RefCell<CachedExecution>>,
+}
+// The executable path and args
+// are the key to the map.
+// Having them be a part of this struct would
+// be redundant.
 // TODO: exit code
-// TODO: failed execs part of Conditions::Pre() and part of Facts (Fact::FailedExec)?
-// TODO: don't need all of exec metadata
+#[derive(Clone, Debug, PartialEq)]
 pub struct CachedExecution {
     child_execs: Vec<Rc<CachedExecution>>,
     env_vars: Vec<String>,
-    failed_execs: Vec<ExecMetadata>,
     preconditions: Conditions,
     postconditions: Conditions,
     starting_cwd: PathBuf,
