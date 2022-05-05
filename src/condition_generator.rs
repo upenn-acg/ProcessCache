@@ -225,6 +225,7 @@ impl FirstStateStruct {
                     }
                 }
                 SyscallEvent::Rename(_, _, _) => (),
+                SyscallEvent::FailedExec(_) => (),
             }
         }
     }
@@ -380,10 +381,9 @@ pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallEvent {
     Access(AccessFlags, SyscallOutcome),
-    // OFlag
     Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
-    // OFlag
+    FailedExec(SyscallFailure),
     Open(OFlag, Option<Vec<u8>>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),     // Old, new, outcome
     // TODO: Handle stat struct too
@@ -1180,6 +1180,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         }
                     }
                 }
+                (SyscallEvent::FailedExec(failure), _, _, _) => {
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    match failure {
+                        SyscallFailure::FileDoesntExist => {
+                            curr_set.insert(Fact::DoesntExist);
+                        }
+                        SyscallFailure::PermissionDenied => {
+                            curr_set.insert(Fact::NoDirPermission(AccessFlags::X_OK));
+                        }
+                        _ => panic!("Unexpected failure from execve!: {:?}", failure),
+                    }
+                }
             }
 
             // This function will only change the first_state if it is None.
@@ -1357,6 +1369,7 @@ pub fn generate_postconditions(
                         curr_set.insert(Fact::DoesntExist);
                     }
                 }
+                (SyscallEvent::FailedExec(_), _, _) => (),
                 (SyscallEvent::Open(OFlag::O_RDONLY, _, _), _, _) => (),
                 (
                     SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, _),

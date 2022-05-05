@@ -35,7 +35,6 @@ pub struct Execution {
     caller_pid: Proc,
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
-    failed_execs: Vec<ExecMetadata>,
     file_events: ExecFileEvents,
     successful_exec: ExecMetadata,
 }
@@ -46,7 +45,6 @@ impl Execution {
             caller_pid: Proc::default(),
             child_execs: Vec::new(),
             exit_code: None,
-            failed_execs: Vec::new(),
             file_events: ExecFileEvents::new(),
             successful_exec: ExecMetadata::new(),
         }
@@ -54,10 +52,6 @@ impl Execution {
 
     pub fn add_child_execution(&mut self, child_execution: RcExecution) {
         self.child_execs.push(child_execution);
-    }
-
-    pub fn add_failed_exec(&mut self, exec_metadata: ExecMetadata) {
-        self.failed_execs.push(exec_metadata);
     }
 
     pub fn add_exit_code(&mut self, code: i32) {
@@ -100,28 +94,29 @@ impl Execution {
         self.file_events.clone()
     }
 
-    fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
-        let curr_file_events = self.file_events.clone();
-        let preconditions = generate_preconditions(curr_file_events.clone());
-        let postconditions = generate_postconditions(curr_file_events);
+    // fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
+    //     let curr_file_events = self.file_events.clone();
+    //     let preconditions = generate_preconditions(curr_file_events.clone());
+    //     let postconditions = generate_postconditions(curr_file_events);
 
-        let mut cachable_child_execs = Vec::new();
-        let children = self.child_execs.clone();
-        for child in children {
-            let cachable_child = child.generate_cachable_exec();
-            cachable_child_execs.push(cachable_child.clone());
-        }
+    //     let mut cachable_child_execs = Vec::new();
+    //     let children = self.child_execs.clone();
+    //     for child in children {
+    //         let cachable_child = child.generate_cachable_exec();
+    //         cachable_child_execs.push(cachable_child.clone());
+    //     }
 
-        let new_cachable_exec = CachedExecution {
-            child_execs: cachable_child_execs,
-            failed_execs: self.failed_execs.clone(),
-            preconditions: Conditions(preconditions),
-            postconditions: Conditions(postconditions),
-            successful_exec: self.successful_exec.clone(),
-        };
+    //     let new_cachable_exec = CachedExecution {
+    //         child_execs: cachable_child_execs,
+    //         failed_execs: self.failed_execs.clone(),
+    //         preconditions: Conditions(preconditions),
+    //         postconditions: Conditions(postconditions),
+    //         successful_exec: self.successful_exec.clone(),
+    //     };
 
-        Rc::new(new_cachable_exec)
-    }
+    //     Rc::new(new_cachable_exec)
+    // }
+
     fn is_empty_root_exec(&self) -> bool {
         self.successful_exec.is_empty_root_exec()
     }
@@ -135,10 +130,10 @@ impl Execution {
         println!("Successful executable:");
         self.successful_exec.print_basic_exec_info();
 
-        println!("Failed executables:");
-        for failed_exec in self.failed_execs.clone() {
-            failed_exec.print_basic_exec_info();
-        }
+        // println!("Failed executables:");
+        // for failed_exec in self.failed_execs.clone() {
+        //     failed_exec.print_basic_exec_info();
+        // }
 
         println!("Now starting children:");
         for child in self.child_execs.clone() {
@@ -163,7 +158,7 @@ impl Execution {
         println!();
         let events = self.file_events.clone();
         let preconditions = generate_preconditions(events.clone());
-        check_preconditions(preconditions.clone());
+        // check_preconditions(preconditions.clone());
         let postconditions = generate_postconditions(events);
         println!("Preconditions:");
         for (path, fact) in preconditions {
@@ -271,10 +266,6 @@ impl RcExecution {
         self.execution.borrow_mut().add_exit_code(code);
     }
 
-    pub fn add_failed_exec(&self, failed_exec: ExecMetadata) {
-        self.execution.borrow_mut().add_failed_exec(failed_exec);
-    }
-
     pub fn add_new_file_event(
         &self,
         caller_pid: Pid,
@@ -290,9 +281,9 @@ impl RcExecution {
         self.execution.borrow().file_events()
     }
 
-    pub fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
-        self.execution.borrow().generate_cachable_exec()
-    }
+    // pub fn generate_cachable_exec(&self) -> Rc<CachedExecution> {
+    //     self.execution.borrow().generate_cachable_exec()
+    // }
 
     pub fn is_empty_root_exec(&self) -> bool {
         self.execution.borrow().is_empty_root_exec()
@@ -334,10 +325,11 @@ impl RcExecution {
 // TODO: don't need all of exec metadata
 pub struct CachedExecution {
     child_execs: Vec<Rc<CachedExecution>>,
+    env_vars: Vec<String>,
     failed_execs: Vec<ExecMetadata>,
     preconditions: Conditions,
     postconditions: Conditions,
-    successful_exec: ExecMetadata,
+    starting_cwd: PathBuf,
 }
 
 impl CachedExecution {}

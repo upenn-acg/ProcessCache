@@ -63,7 +63,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // cachable_exec.print_pre_and_postconditions();
     // first_execution.print_basic_exec_info();
 
-    first_execution.print_pre_and_postconditions();
+    // first_execution.print_pre_and_postconditions();
+    first_execution.print_file_events();
     // let events = first_execution.file_events();
     // let preconditions = generate_preconditions(events);
     // check_preconditions(preconditions);
@@ -190,7 +191,12 @@ pub async fn trace_process(
                             context!("Unable to get posthook after execve prehook.")
                         })?;
                         let mut new_exec_metadata = ExecMetadata::new();
-                        new_exec_metadata.add_identifiers(args, envp, full_exec_path, starting_cwd);
+                        new_exec_metadata.add_identifiers(
+                            args,
+                            envp,
+                            full_exec_path.clone(),
+                            starting_cwd,
+                        );
 
                         // TODO: handle child execs
                         // TODO: don't add 2 successful execs from same proc, panic instead.
@@ -225,7 +231,29 @@ pub async fn trace_process(
                                 s.in_scope(|| {
                                     debug!("Execve failed!");
                                 });
-                                curr_execution.add_failed_exec(new_exec_metadata);
+                                let regs = tracer.get_registers().with_context(|| {
+                                    context!("Failed to get regs in handle_stat()")
+                                })?;
+                                let ret_val = regs.retval::<i32>();
+                                let failed_exec = {
+                                    match ret_val {
+                                        -2 => SyscallEvent::FailedExec(
+                                            SyscallFailure::FileDoesntExist,
+                                        ),
+                                        -13 => SyscallEvent::FailedExec(
+                                            SyscallFailure::PermissionDenied,
+                                        ),
+                                        e => panic!(
+                                            "Unexpected error returned by stat syscall!: {}",
+                                            e
+                                        ),
+                                    }
+                                };
+                                curr_execution.add_new_file_event(
+                                    tracer.curr_proc,
+                                    failed_exec,
+                                    full_exec_path,
+                                );
                             }
                             e => panic!("Unexpected event after execve prehook: {:?}", e),
                         }
