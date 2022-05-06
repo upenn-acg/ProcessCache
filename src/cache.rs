@@ -19,16 +19,102 @@ use tracing::{debug, error, info, span, trace, Level};
 
 // use anyhow::{bail, Context, Result};
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct Proc(pub Pid);
+pub type ChildExecutions = Vec<RcExecution>;
+pub type ExecCacheMap = HashMap<Command, Rc<CachedExecution>>;
 
-impl Default for Proc {
-    fn default() -> Proc {
-        Proc(Pid::from_raw(0))
+// The executable path and args
+// are the key to the map.
+// Having them be a part of this struct would
+// be redundant.
+// TODO: exit code
+#[derive(Clone, Debug, PartialEq)]
+pub struct CachedExecution {
+    child_execs: Vec<RcCachedExec>,
+    env_vars: Vec<String>,
+    preconditions: Conditions,
+    postconditions: Conditions,
+    starting_cwd: PathBuf,
+}
+
+impl CachedExecution {
+    fn add_child(&mut self, child: RcCachedExec) {
+        self.child_execs.push(child)
+    }
+
+    fn print_me(&self) {
+        println!("NEW CACHED EXEC:");
+        println!("Preconds: {:?}", self.preconditions);
+        for child in self.child_execs.clone() {
+            child.print_me()
+        }
     }
 }
 
-pub type ChildExecutions = Vec<RcExecution>;
+// Info about the execution that we want to keep around
+// even if the execution fails (so we know it should fail
+// if we see it again, it would be some kinda error if
+// we expect it to fail and it succeeds).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecMetadata {
+    args: Vec<String>,
+    env_vars: Vec<String>,
+    // Currently this is just the first argument to execve
+    // so I am not making sure it's the abosolute path.
+    // May want to do that in the future?
+    executable: PathBuf,
+    starting_cwd: PathBuf,
+}
+
+impl ExecMetadata {
+    pub fn new() -> ExecMetadata {
+        ExecMetadata {
+            args: Vec::new(),
+            env_vars: Vec::new(),
+            executable: PathBuf::new(),
+            starting_cwd: PathBuf::new(),
+        }
+    }
+
+    pub fn add_identifiers(
+        &mut self,
+        args: Vec<String>,
+        env_vars: Vec<String>,
+        executable: PathBuf,
+        starting_cwd: PathBuf,
+    ) {
+        self.args = args;
+        self.env_vars = env_vars;
+        self.executable = executable;
+        self.starting_cwd = starting_cwd;
+    }
+
+    fn args(&self) -> Vec<String> {
+        self.args.clone()
+    }
+
+    fn executable(&self) -> PathBuf {
+        self.executable.clone()
+    }
+
+    fn env_vars(&self) -> Vec<String> {
+        self.env_vars.clone()
+    }
+
+    fn is_empty_root_exec(&self) -> bool {
+        self.executable.is_empty()
+    }
+
+    fn print_basic_exec_info(&self) {
+        println!(
+            "Executable: {:?}, args: {:?}, starting_cwd: {:?}",
+            self.executable, self.args, self.starting_cwd
+        );
+    }
+
+    fn starting_cwd(&self) -> PathBuf {
+        self.starting_cwd.clone()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Execution {
@@ -85,9 +171,6 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    // TODO: handle child execs... children of children...
-    // CHILDREN OF MEN
-    // sorry I am tired
     fn add_to_cachable_map(&self, exec_cache_map: &mut HashMap<Command, RcCachedExec>) {
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
@@ -200,72 +283,31 @@ impl Execution {
     }
 }
 
-// Info about the execution that we want to keep around
-// even if the execution fails (so we know it should fail
-// if we see it again, it would be some kinda error if
-// we expect it to fail and it succeeds).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExecMetadata {
-    args: Vec<String>,
-    env_vars: Vec<String>,
-    // Currently this is just the first argument to execve
-    // so I am not making sure it's the abosolute path.
-    // May want to do that in the future?
-    executable: PathBuf,
-    starting_cwd: PathBuf,
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Proc(pub Pid);
+
+impl Default for Proc {
+    fn default() -> Proc {
+        Proc(Pid::from_raw(0))
+    }
 }
 
-impl ExecMetadata {
-    pub fn new() -> ExecMetadata {
-        ExecMetadata {
-            args: Vec::new(),
-            env_vars: Vec::new(),
-            executable: PathBuf::new(),
-            starting_cwd: PathBuf::new(),
+#[derive(Clone, Debug, PartialEq)]
+pub struct RcCachedExec {
+    cached_exec: Rc<CachedExecution>,
+}
+
+impl RcCachedExec {
+    fn new(cached_exec: CachedExecution) -> RcCachedExec {
+        RcCachedExec {
+            cached_exec: Rc::new(cached_exec),
         }
     }
 
-    pub fn add_identifiers(
-        &mut self,
-        args: Vec<String>,
-        env_vars: Vec<String>,
-        executable: PathBuf,
-        starting_cwd: PathBuf,
-    ) {
-        self.args = args;
-        self.env_vars = env_vars;
-        self.executable = executable;
-        self.starting_cwd = starting_cwd;
-    }
-
-    fn args(&self) -> Vec<String> {
-        self.args.clone()
-    }
-
-    fn executable(&self) -> PathBuf {
-        self.executable.clone()
-    }
-
-    fn env_vars(&self) -> Vec<String> {
-        self.env_vars.clone()
-    }
-
-    fn is_empty_root_exec(&self) -> bool {
-        self.executable.is_empty()
-    }
-
-    fn print_basic_exec_info(&self) {
-        println!(
-            "Executable: {:?}, args: {:?}, starting_cwd: {:?}",
-            self.executable, self.args, self.starting_cwd
-        );
-    }
-
-    fn starting_cwd(&self) -> PathBuf {
-        self.starting_cwd.clone()
+    pub fn print_me(&self) {
+        self.cached_exec.print_me()
     }
 }
-
 // Rc stands for reference counted.
 // This is the wrapper around the Execution
 // enum.
@@ -350,63 +392,5 @@ impl RcExecution {
         self.execution
             .borrow_mut()
             .update_successful_exec(new_exec_metadata);
-    }
-}
-
-// pub struct Command(pub String, pub Vec<String>);
-struct ExecCacheMap(HashMap<Command, Rc<CachedExecution>>);
-
-impl ExecCacheMap {}
-
-// fn generate_exec_cache_map(root_exec: Execution) -> HashMap<Command, RcCachedExec> {
-//     let mut exec_cache_map = HashMap::new();
-
-// }
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RcCachedExec {
-    cached_exec: Rc<CachedExecution>,
-}
-
-impl RcCachedExec {
-    fn new(cached_exec: CachedExecution) -> RcCachedExec {
-        RcCachedExec {
-            cached_exec: Rc::new(cached_exec),
-        }
-    }
-
-    // fn add_child(&self, child: RcCachedExec) {
-    //     self.cached_exec.borrow_mut().add_child(child)
-    // }
-
-    pub fn print_me(&self) {
-        self.cached_exec.print_me()
-    }
-}
-// The executable path and args
-// are the key to the map.
-// Having them be a part of this struct would
-// be redundant.
-// TODO: exit code
-#[derive(Clone, Debug, PartialEq)]
-pub struct CachedExecution {
-    child_execs: Vec<RcCachedExec>,
-    env_vars: Vec<String>,
-    preconditions: Conditions,
-    postconditions: Conditions,
-    starting_cwd: PathBuf,
-}
-
-impl CachedExecution {
-    fn add_child(&mut self, child: RcCachedExec) {
-        self.child_execs.push(child)
-    }
-
-    fn print_me(&self) {
-        println!("NEW CACHED EXEC:");
-        println!("Preconds: {:?}", self.preconditions);
-        for child in self.child_execs.clone() {
-            child.print_me()
-        }
     }
 }
