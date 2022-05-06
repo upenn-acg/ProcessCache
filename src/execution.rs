@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{ExecMetadata, Execution, RcCachedExec, RcExecution};
+use crate::cache::{insert_execs_into_cache, ExecMetadata, Execution, RcCachedExec, RcExecution};
 use crate::condition_generator::{
     check_preconditions, generate_hash, generate_preconditions, Command, MyStat, SyscallEvent,
     SyscallFailure, SyscallOutcome,
@@ -78,11 +78,11 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 
     let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
     first_execution.add_to_cachable_map(&mut cache_map);
-
-    for (command, cached_exec) in cache_map {
-        println!("Command: {:?}", command);
-        cached_exec.print_me();
-    }
+    insert_execs_into_cache(cache_map.clone());
+    // for (command, cached_exec) in cache_map {
+    //     println!("Command: {:?}", command);
+    //     cached_exec.print_me();
+    // }
     Ok(())
 }
 
@@ -500,13 +500,7 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     //     None
     // } else {
     // TODO: panic if more than one?
-    let flags_arg = regs.arg2::<i32>();
-    let access_flags: Option<AccessFlags> = AccessFlags::from_bits(flags_arg);
-    let flags = if let Some(flags) = access_flags {
-        flags
-    } else {
-        panic!("Access flags unexpected value!!");
-    };
+    let flags = regs.arg2::<i32>();
 
     let event = match ret_val {
         0 => SyscallEvent::Access(flags, SyscallOutcome::Success),

@@ -1,10 +1,17 @@
 use crate::condition_generator::{
-    generate_postconditions, generate_preconditions, Command, Conditions, ExecFileEvents,
-    SyscallEvent,
+    generate_postconditions, generate_preconditions, Command, ExecFileEvents, Fact, SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
+use serde::Serialize;
 // use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    fs::{self, File},
+    hash::{Hash, Hasher},
+    path::PathBuf,
+    rc::Rc,
+};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
@@ -20,19 +27,18 @@ use tracing::{debug, error, info, span, trace, Level};
 // use anyhow::{bail, Context, Result};
 
 pub type ChildExecutions = Vec<RcExecution>;
-pub type ExecCacheMap = HashMap<Command, Rc<CachedExecution>>;
 
 // The executable path and args
 // are the key to the map.
 // Having them be a part of this struct would
 // be redundant.
 // TODO: exit code
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
     env_vars: Vec<String>,
-    preconditions: Conditions,
-    postconditions: Conditions,
+    preconditions: HashMap<PathBuf, HashSet<Fact>>,
+    postconditions: HashMap<PathBuf, HashSet<Fact>>,
     starting_cwd: PathBuf,
 }
 
@@ -47,6 +53,10 @@ impl CachedExecution {
         for child in self.child_execs.clone() {
             child.print_me()
         }
+    }
+
+    fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.postconditions.clone()
     }
 }
 
@@ -179,8 +189,8 @@ impl Execution {
         let mut cached_exec = CachedExecution {
             child_execs: Vec::new(),
             env_vars: self.env_vars(),
-            preconditions: Conditions(preconditions),
-            postconditions: Conditions(postconditions),
+            preconditions,
+            postconditions,
             starting_cwd: self.starting_cwd(),
         };
         // let rc_cached_exec = RcCachedExec::new(cached_exec);
@@ -192,13 +202,13 @@ impl Execution {
 
         for child in self.child_execs.iter() {
             let child_file_events = child.file_events();
-            let child_preconditions = generate_preconditions(child_file_events.clone());
-            let child_postconditions = generate_postconditions(child_file_events);
+            let preconditions = generate_preconditions(child_file_events.clone());
+            let postconditions = generate_postconditions(child_file_events);
             let cached_child = CachedExecution {
                 child_execs: Vec::new(),
                 env_vars: child.env_vars(),
-                preconditions: Conditions(child_preconditions),
-                postconditions: Conditions(child_postconditions),
+                preconditions,
+                postconditions,
                 starting_cwd: child.starting_cwd(),
             };
             let child_rc = RcCachedExec::new(cached_child);
@@ -292,7 +302,7 @@ impl Default for Proc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RcCachedExec {
     cached_exec: Rc<CachedExecution>,
 }
@@ -306,6 +316,10 @@ impl RcCachedExec {
 
     pub fn print_me(&self) {
         self.cached_exec.print_me()
+    }
+
+    pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.cached_exec.postconditions()
     }
 }
 // Rc stands for reference counted.
@@ -393,4 +407,48 @@ impl RcExecution {
             .borrow_mut()
             .update_successful_exec(new_exec_metadata);
     }
+}
+
+// I *THINK* I can just iterate through the keys and do this for each and
+fn copy_output_files_to_cache(exec_cache_map: HashMap<Command, RcCachedExec>) {
+    for (command, rc_cached_exec) in exec_cache_map {
+        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
+        let cache_dir = PathBuf::from(CACHE_LOCATION);
+        // We will put the files at /cache/hash(command)/
+        let mut hasher = DefaultHasher::new();
+        command.hash(&mut hasher);
+
+        let curr_command_subdir = hasher.finish();
+        let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
+        fs::create_dir(cache_subdir.clone()).unwrap();
+        debug!("cache subdir: {:?}", cache_subdir);
+        let postconditions = rc_cached_exec.postconditions();
+        for (full_path, facts) in postconditions {
+            for fact in facts {
+                if fact == Fact::FinalContents {
+                    let file_name = full_path.file_name().unwrap();
+                    debug!("file name: {:?}", file_name);
+                    let cache_file_path = cache_subdir.join(file_name);
+                    debug!("cache_file_path: {:?}", cache_file_path);
+                    debug!("full_path: {:?}", full_path);
+                    fs::copy(full_path.clone(), cache_file_path).unwrap();
+                }
+            }
+        }
+    }
+}
+
+// TODO: insert into an EXISTING cache
+pub fn insert_execs_into_cache(exec_map: HashMap<Command, RcCachedExec>) {
+    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    let cache_path = PathBuf::from(CACHE_LOCATION);
+    // Make the cache file if it doesn't exist.
+    if !cache_path.exists() {
+        File::create(cache_path).unwrap();
+    }
+    let serialized_exec_map = rmp_serde::to_vec(&exec_map).unwrap();
+
+    fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
+
+    copy_output_files_to_cache(exec_map);
 }
