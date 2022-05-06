@@ -8,8 +8,8 @@
 int main() {
     if (fork() == 0) {
         // int fd = openat(AT_FDCWD, "yeah.txt", O_RDONLY);
-        char* args[] = {"./garbage", NULL};
-        execvp("./garbage", args);
+        char* args[] = {"./IOTracker/c_examples/empty_c", NULL};
+        execvp("./IOTracker/c_examples/empty_c", args);
         // char* args2[] = {"./garbage2", NULL};
         // execvp("./garbage2", args2);
         exit(EXIT_SUCCESS);
