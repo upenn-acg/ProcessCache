@@ -93,19 +93,19 @@ impl Execution {
         let preconditions = generate_preconditions(curr_file_events.clone());
         let postconditions = generate_postconditions(curr_file_events);
 
-        let cached_exec = CachedExecution {
+        let mut cached_exec = CachedExecution {
             child_execs: Vec::new(),
             env_vars: self.env_vars(),
             preconditions: Conditions(preconditions),
             postconditions: Conditions(postconditions),
             starting_cwd: self.starting_cwd(),
         };
-        let rc_cached_exec = RcCachedExec::new(cached_exec);
+        // let rc_cached_exec = RcCachedExec::new(cached_exec);
         let command_key = Command(
             self.executable().into_os_string().into_string().unwrap(),
             self.args(),
         );
-        exec_cache_map.insert(command_key, rc_cached_exec.clone());
+        // exec_cache_map.insert(command_key, rc_cached_exec.clone());
 
         for child in self.child_execs.iter() {
             let child_file_events = child.file_events();
@@ -119,9 +119,11 @@ impl Execution {
                 starting_cwd: child.starting_cwd(),
             };
             let child_rc = RcCachedExec::new(cached_child);
-            rc_cached_exec.add_child(child_rc.clone());
+            cached_exec.add_child(child_rc.clone());
             child.add_to_cachable_map(exec_cache_map);
         }
+        let rc_cached_exec = RcCachedExec::new(cached_exec);
+        exec_cache_map.insert(command_key, rc_cached_exec);
     }
 
     fn file_events(&self) -> ExecFileEvents {
@@ -363,22 +365,22 @@ impl ExecCacheMap {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RcCachedExec {
-    cached_exec: Rc<RefCell<CachedExecution>>,
+    cached_exec: Rc<CachedExecution>,
 }
 
 impl RcCachedExec {
     fn new(cached_exec: CachedExecution) -> RcCachedExec {
         RcCachedExec {
-            cached_exec: Rc::new(RefCell::new(cached_exec)),
+            cached_exec: Rc::new(cached_exec),
         }
     }
 
-    fn add_child(&self, child: RcCachedExec) {
-        self.cached_exec.borrow_mut().add_child(child)
-    }
+    // fn add_child(&self, child: RcCachedExec) {
+    //     self.cached_exec.borrow_mut().add_child(child)
+    // }
 
     pub fn print_me(&self) {
-        self.cached_exec.borrow().print_me()
+        self.cached_exec.print_me()
     }
 }
 // The executable path and args
