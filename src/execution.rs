@@ -11,7 +11,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{insert_execs_into_cache, ExecMetadata, Execution, RcCachedExec, RcExecution};
+use crate::cache::{
+    insert_execs_into_cache, retrieve_existing_cache, ExecMetadata, Execution, RcCachedExec,
+    RcExecution,
+};
 use crate::condition_generator::{
     check_preconditions, generate_hash, generate_preconditions, Command, MyStat, SyscallEvent,
     SyscallFailure, SyscallOutcome,
@@ -198,9 +201,20 @@ pub async fn trace_process(
                         let full_exec_path = starting_cwd.join(exec_path_buf.file_name().unwrap());
                         debug!("Execve event, executable: {:?}", full_exec_path.clone());
 
-                        // let next_event = tracer.get_next_event(None).await.with_context(|| {
-                        //     context!("Unable to get next event after execve prehook.")
-                        // })?;
+                        // Check the cache for the thing
+                        if let Some(cache) = retrieve_existing_cache() {
+                            let command = Command(
+                                full_exec_path
+                                    .clone()
+                                    .into_os_string()
+                                    .into_string()
+                                    .unwrap(),
+                                args.clone(),
+                            );
+                            if cache.get(&command).is_some() {
+                                panic!("Got the exec in the cache!");
+                            }
+                        }
 
                         let next_event = tracer.get_next_syscall().await.with_context(|| {
                             context!("Unable to get posthook after execve prehook.")

@@ -2,7 +2,7 @@ use crate::condition_generator::{
     generate_postconditions, generate_preconditions, Command, ExecFileEvents, Fact, SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
@@ -33,7 +33,7 @@ pub type ChildExecutions = Vec<RcExecution>;
 // Having them be a part of this struct would
 // be redundant.
 // TODO: exit code
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
     env_vars: Vec<String>,
@@ -302,7 +302,7 @@ impl Default for Proc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RcCachedExec {
     cached_exec: Rc<CachedExecution>,
 }
@@ -451,4 +451,16 @@ pub fn insert_execs_into_cache(exec_map: HashMap<Command, RcCachedExec>) {
     fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
 
     copy_output_files_to_cache(exec_map);
+}
+
+pub fn retrieve_existing_cache() -> Option<HashMap<Command, RcCachedExec>> {
+    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    let cache_path = PathBuf::from(CACHE_LOCATION);
+    if cache_path.exists() {
+        let exec_struct_bytes =
+            fs::read("./IOTracker/cache/cache").expect("failed to deserialize execs from cache");
+        Some(rmp_serde::from_read_ref(&exec_struct_bytes).unwrap())
+    } else {
+        None
+    }
 }
