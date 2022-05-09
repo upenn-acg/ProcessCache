@@ -79,6 +79,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // );
 
     let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
+    first_execution.print_file_events();
     first_execution.add_to_cachable_map(&mut cache_map);
     insert_execs_into_cache(cache_map.clone());
     // for (command, cached_exec) in cache_map {
@@ -212,7 +213,28 @@ pub async fn trace_process(
                             );
                             if let Some(entry) = cache.get(&command) {
                                 if entry.check_all_preconditions() {
-                                    panic!("All preconds check out");
+                                    // Check if we should skip this execution.
+                                    // If we are gonna skip, we have to change:
+                                    // rax, orig_rax, arg1
+
+                                    // if skip_execution {
+                                    debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                    let regs = tracer.get_registers().with_context(|| {
+                                        context!("Failed to get regs in stat event")
+                                    })?;
+                                    let mut regs = regs.make_modified();
+                                    let exit_syscall_num = libc::SYS_exit as u64;
+
+                                    // Change the arg1 to correct exit code?
+                                    regs.write_arg1(0);
+                                    // Change the orig rax val don't ask me why
+                                    regs.write_syscall_number(exit_syscall_num);
+                                    // Change the rax val
+                                    regs.write_rax(exit_syscall_num);
+
+                                    tracer.set_regs(&mut regs)?;
+                                    continue;
+                                    // }
                                 } else {
                                     panic!("Preconds don't check out");
                                 }
