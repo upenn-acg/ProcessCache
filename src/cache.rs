@@ -28,7 +28,7 @@ use tracing::{debug, error, info, span, trace, Level};
 // use anyhow::{bail, Context, Result};
 
 pub type ChildExecutions = Vec<RcExecution>;
-
+pub type ExecCacheMap = HashMap<Command, RcCachedExec>;
 // The executable path and args
 // are the key to the map.
 // Having them be a part of this struct would
@@ -48,9 +48,6 @@ impl CachedExecution {
         self.child_execs.push(child)
     }
 
-    // TODO: short circuit the function
-    // TODO: properly recurse lol
-    // For now I want to be sure we are checking everything
     fn check_all_preconditions(&self) -> bool {
         let my_preconds = self.preconditions.clone();
 
@@ -60,16 +57,11 @@ impl CachedExecution {
 
         let children = self.child_execs.clone();
         for child in children {
-            let child_preconds = child.preconditions();
             if !child.check_all_preconditions() {
                 return false;
             }
         }
         true
-    }
-
-    fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.preconditions.clone()
     }
 
     fn print_me(&self) {
@@ -206,7 +198,7 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    fn add_to_cachable_map(&self, exec_cache_map: &mut HashMap<Command, RcCachedExec>) {
+    fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
         let postconditions = generate_postconditions(curr_file_events);
@@ -343,10 +335,6 @@ impl RcCachedExec {
         self.cached_exec.check_all_preconditions()
     }
 
-    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.cached_exec.preconditions()
-    }
-
     pub fn print_me(&self) {
         self.cached_exec.print_me()
     }
@@ -391,7 +379,7 @@ impl RcExecution {
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
-    pub fn add_to_cachable_map(&self, exec_cache_map: &mut HashMap<Command, RcCachedExec>) {
+    pub fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
         self.execution.borrow().add_to_cachable_map(exec_cache_map)
     }
 
@@ -443,7 +431,7 @@ impl RcExecution {
 }
 
 // I *THINK* I can just iterate through the keys and do this for each and
-fn copy_output_files_to_cache(exec_cache_map: HashMap<Command, RcCachedExec>) {
+fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
     for (command, rc_cached_exec) in exec_cache_map {
         const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
         let cache_dir = PathBuf::from(CACHE_LOCATION);
@@ -472,7 +460,7 @@ fn copy_output_files_to_cache(exec_cache_map: HashMap<Command, RcCachedExec>) {
 }
 
 // TODO: insert into an EXISTING cache
-pub fn insert_execs_into_cache(exec_map: HashMap<Command, RcCachedExec>) {
+pub fn insert_execs_into_cache(exec_map: ExecCacheMap) {
     const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     // Make the cache file if it doesn't exist.
@@ -501,7 +489,7 @@ pub fn insert_execs_into_cache(exec_map: HashMap<Command, RcCachedExec>) {
     copy_output_files_to_cache(exec_map);
 }
 
-pub fn retrieve_existing_cache() -> Option<HashMap<Command, RcCachedExec>> {
+pub fn retrieve_existing_cache() -> Option<ExecCacheMap> {
     const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     if cache_path.exists() {

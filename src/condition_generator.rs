@@ -1136,9 +1136,20 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 (SyscallEvent::Stat(_,_), FirstState::Exists, LastMod::Modified, false) => (),
                 // This file has been deleted, no way the stat struct is gonna be the same.
                 (SyscallEvent::Stat(_,_), FirstState::Exists, LastMod::Renamed(_,_), true) => (),
-                (SyscallEvent::Stat(_, _), FirstState::Exists, LastMod::Renamed(_, _), false) => {
-                    // first state exists, shouldn't be true for new path. so this should not show up.
-                    // for old_path does this do anything? no.
+                (SyscallEvent::Stat(stat_struct, _), FirstState::Exists, LastMod::Renamed(old_path, new_path), false) => {
+                    if new_path == full_path {
+                        // We actually have to add the stat struct matching to the old path's
+                        let old_path_list = exec_file_events.get_events_by_filename(old_path.clone());
+                        let no_mods_before_rename = no_mods_before_rename(old_path_list);
+                        if no_mods_before_rename {
+                            let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();
+                            if let Some(stat_str) = stat_struct {
+                                curr_set.insert(Fact::StatStructMatches(stat_str.clone()));
+                            } else {
+                                panic!("No stat struct found for successful stat event!");
+                            }
+                        }
+                    }
                 }
                 (SyscallEvent::Stat(option_stat, outcome), FirstState::Exists, LastMod::None, false) => {
                     match outcome {

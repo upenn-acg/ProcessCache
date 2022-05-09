@@ -79,7 +79,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // );
 
     let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
-    first_execution.print_file_events();
+    // first_execution.print_file_events();
     first_execution.add_to_cachable_map(&mut cache_map);
     insert_execs_into_cache(cache_map.clone());
     // for (command, cached_exec) in cache_map {
