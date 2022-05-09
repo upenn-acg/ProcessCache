@@ -301,17 +301,26 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
             Fact::Exists => path_name.exists(),
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
             Fact::HasDirPermission(flags) => {
+                debug!("Dir perm flags: {:?}", flags);
                 let parent_dir = path_name.parent().unwrap();
                 access(parent_dir, AccessFlags::from_bits(flags).unwrap()).is_ok()
             }
             Fact::NoDirPermission(flags) => {
                 let parent_dir = path_name.parent().unwrap();
+                debug!("Dir no perm flags: {:?}", flags);
                 access(parent_dir, AccessFlags::from_bits(flags).unwrap()).is_err()
             }
             Fact::HasPermission(flags) => {
+                debug!("Perm flags: {:?}", flags);
                 access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
+                // if path_name.as_os_str() == "/lib/x86_64-linux-gnu/libdl.so.2" {
+                //     true
+                // } else {
+                //     access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
+                // }
             }
             Fact::NoPermission(flags) => {
+                debug!("No perm flags: {:?}", flags);
                 access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
             }
             Fact::Or(first, second) => {
@@ -338,6 +347,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
             }
             Fact::StartingContents(old_hash) => {
                 let new_hash = generate_hash(path_name);
+                // debug!("New hash: {:?}", new_hash);
                 old_hash == new_hash
             }
             Fact::StatStructMatches(old_stat) => {
@@ -366,15 +376,18 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
     }
 }
 
-pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) {
+pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) -> bool {
     for (path_name, fact_set) in conditions {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone()) {
                 debug!("Fact that doesn't hold: {:?}", fact);
+                return false;
             }
         }
     }
+    true
 }
+
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
@@ -857,10 +870,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     match outcome {
                         SyscallOutcome::Success => {
                             let hash = hash_option.clone().unwrap();
-                            let mut flags = AccessFlags::empty();
-                            flags.insert(AccessFlags::R_OK);
-                            flags.insert(AccessFlags::X_OK);
-                            curr_set.insert(Fact::HasDirPermission(flags.bits()));
+                            curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits()));
+                            curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
                             curr_set.insert(Fact::StartingContents(hash));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {

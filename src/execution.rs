@@ -6,7 +6,7 @@ use libc::{
 #[allow(unused_imports)]
 use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
-use nix::unistd::{AccessFlags, Pid};
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -16,8 +16,7 @@ use crate::cache::{
     RcExecution,
 };
 use crate::condition_generator::{
-    check_preconditions, generate_hash, generate_preconditions, Command, MyStat, SyscallEvent,
-    SyscallFailure, SyscallOutcome,
+    generate_hash, Command, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome,
 };
 
 use crate::context;
@@ -211,8 +210,12 @@ pub async fn trace_process(
                                     .unwrap(),
                                 args.clone(),
                             );
-                            if cache.get(&command).is_some() {
-                                panic!("Got the exec in the cache!");
+                            if let Some(entry) = cache.get(&command) {
+                                if entry.check_all_preconditions() {
+                                    panic!("All preconds check out");
+                                } else {
+                                    panic!("Preconds don't check out");
+                                }
                             }
                         }
 

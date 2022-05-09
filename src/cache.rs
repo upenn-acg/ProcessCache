@@ -1,5 +1,6 @@
 use crate::condition_generator::{
-    generate_postconditions, generate_preconditions, Command, ExecFileEvents, Fact, SyscallEvent,
+    check_preconditions, generate_postconditions, generate_preconditions, Command, ExecFileEvents,
+    Fact, SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,30 @@ pub struct CachedExecution {
 impl CachedExecution {
     fn add_child(&mut self, child: RcCachedExec) {
         self.child_execs.push(child)
+    }
+
+    // TODO: short circuit the function
+    // TODO: properly recurse lol
+    // For now I want to be sure we are checking everything
+    fn check_all_preconditions(&self) -> bool {
+        let my_preconds = self.preconditions.clone();
+
+        if !check_preconditions(my_preconds) {
+            return false;
+        }
+
+        let children = self.child_execs.clone();
+        for child in children {
+            let child_preconds = child.preconditions();
+            if !child.check_all_preconditions() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.preconditions.clone()
     }
 
     fn print_me(&self) {
@@ -314,6 +339,14 @@ impl RcCachedExec {
         }
     }
 
+    pub fn check_all_preconditions(&self) -> bool {
+        self.cached_exec.check_all_preconditions()
+    }
+
+    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.cached_exec.preconditions()
+    }
+
     pub fn print_me(&self) {
         self.cached_exec.print_me()
     }
@@ -443,11 +476,26 @@ pub fn insert_execs_into_cache(exec_map: HashMap<Command, RcCachedExec>) {
     const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     // Make the cache file if it doesn't exist.
-    if !cache_path.exists() {
+    let mut existing_cache = if !cache_path.exists() {
         File::create(cache_path).unwrap();
-    }
-    let serialized_exec_map = rmp_serde::to_vec(&exec_map).unwrap();
+        HashMap::new()
+    } else if let Some(existing_cache) = retrieve_existing_cache() {
+        existing_cache
+    } else {
+        HashMap::new()
+    };
 
+    for (command, cached_exec) in exec_map.clone() {
+        if let std::collections::hash_map::Entry::Vacant(e) = existing_cache.entry(command.clone())
+        {
+            e.insert(cached_exec);
+        } else {
+            panic!("Cache already has command: {:?}", command);
+        }
+    }
+    let serialized_exec_map = rmp_serde::to_vec(&existing_cache).unwrap();
+
+    // This will replace the contents
     fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
 
     copy_output_files_to_cache(exec_map);
