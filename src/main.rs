@@ -35,6 +35,7 @@ use anyhow::{Context, Result};
 pub struct Opt {
     /// Executable to run. Will use $PATH.
     pub exe: String,
+    pub full_tracking: bool,
     /// Print system calls when they return -1, off by default.
     #[structopt(short, long)]
     pub print_syscalls_on_error: bool,
@@ -58,14 +59,18 @@ fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
     // let print_all_syscalls = opt.print_syscalls_on_error;
     // let output_file_name = opt.output_file;
-
+    let full_tracking_on = opt.full_tracking;
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command)?;
+    run_tracer_and_tracee(command, full_tracking_on)?;
     Ok(())
 }
 
-fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
+// full tracking = regardless of whether we CAN skip it,
+// we do all the tracing,
+// we do all iterative (repetitive) precondition checking,
+// and let it run normally in between. 
+fn run_tracer_and_tracee(command: Command, full_tracking_on: bool) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -78,7 +83,7 @@ fn run_tracer_and_tracee(command: Command) -> anyhow::Result<()> {
             Ptracer::set_trace_options(tracee_pid)
                 .with_context(|| context!("Unable to set ptracing options."))?;
 
-            execution::trace_program(tracee_pid)
+            execution::trace_program(tracee_pid, full_tracking_on)
                 .with_context(|| context!("Failed while tracing program."))?;
             Ok(())
         }

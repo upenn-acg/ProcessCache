@@ -292,7 +292,7 @@ impl ExecFileEvents {
 }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
-    debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
+    // debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
     if path_name.starts_with("/proc") {
         true
     } else {
@@ -376,6 +376,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
     }
 }
 
+// TODO: check env vars and starting cwd
 pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) -> bool {
     for (path_name, fact_set) in conditions {
         for fact in fact_set {
@@ -741,7 +742,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         f => panic!("Unexpected failure from delete event: {:?}", f),
                     }
                 }
-
+                (SyscallEvent::FailedExec(failure), _, _, _) => {
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    match failure {
+                        SyscallFailure::FileDoesntExist => {
+                            curr_set.insert(Fact::DoesntExist);
+                        }
+                        SyscallFailure::PermissionDenied => {
+                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits()));
+                        }
+                        _ => panic!("Unexpected failure from execve!: {:?}", failure),
+                    }
+                }
                 (
                     SyscallEvent::Open(_,  _,outcome),
                     FirstState::DoesntExist,
@@ -1203,18 +1215,6 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits()));
                         }
-                    }
-                }
-                (SyscallEvent::FailedExec(failure), _, _, _) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
-                    match failure {
-                        SyscallFailure::FileDoesntExist => {
-                            curr_set.insert(Fact::DoesntExist);
-                        }
-                        SyscallFailure::PermissionDenied => {
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits()));
-                        }
-                        _ => panic!("Unexpected failure from execve!: {:?}", failure),
                     }
                 }
             }

@@ -32,7 +32,7 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
 
-pub fn trace_program(first_proc: Pid) -> Result<()> {
+pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
@@ -50,6 +50,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 
     let f = trace_process(
         async_runtime.clone(),
+        full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
     );
@@ -99,6 +100,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
+    full_tracking_on: bool,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
 ) -> Result<()> {
@@ -212,12 +214,13 @@ pub async fn trace_process(
                                 args.clone(),
                             );
                             if let Some(entry) = cache.get(&command) {
+                                // First we check all the preconditions of ALL the subtrees.
+                                // If ALL of them hold, we skip from here.
+                                debug!("Checking all preconditions: root execution is: {:?}", command);
                                 if entry.check_all_preconditions() {
                                     // Check if we should skip this execution.
                                     // If we are gonna skip, we have to change:
                                     // rax, orig_rax, arg1
-
-                                    // if skip_execution {
                                     debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
                                     let regs = tracer.get_registers().with_context(|| {
                                         context!("Failed to get regs in stat event")
@@ -233,11 +236,9 @@ pub async fn trace_process(
                                     regs.write_rax(exit_syscall_num);
 
                                     tracer.set_regs(&mut regs)?;
-                                    continue;
-                                    // }
-                                } else {
-                                    panic!("Preconds don't check out");
+                                    // continue;
                                 }
+                                continue;
                             }
                         }
 
@@ -438,6 +439,7 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
+                    full_tracking_on,
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
@@ -458,6 +460,7 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
+                    full_tracking_on,
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
