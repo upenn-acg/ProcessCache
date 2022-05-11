@@ -79,10 +79,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     //     first_execution.generate_cachable_exec()
     // );
 
-    let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
-    // first_execution.print_file_events();
-    first_execution.add_to_cachable_map(&mut cache_map);
-    insert_execs_into_cache(cache_map.clone());
+    if !full_tracking_on {
+        let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
+        // first_execution.print_file_events();
+        first_execution.add_to_cachable_map(&mut cache_map);
+        insert_execs_into_cache(cache_map.clone());
+    }
     // for (command, cached_exec) in cache_map {
     //     println!("Command: {:?}", command);
     //     cached_exec.print_me();
@@ -220,6 +222,7 @@ pub async fn trace_process(
                                     "Checking all preconditions: root execution is: {:?}",
                                     command
                                 );
+                                // TODO this aint right
                                 if entry.check_all_preconditions() && !full_tracking_on {
                                     // Check if we should skip this execution.
                                     // If we are gonna skip, we have to change:

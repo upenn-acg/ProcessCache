@@ -59,10 +59,10 @@ fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
     // let print_all_syscalls = opt.print_syscalls_on_error;
     // let output_file_name = opt.output_file;
-    let full_tracking_on = opt.full_tracking;
+    // let full_tracking_on = opt.full_tracking;
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command, full_tracking_on)?;
+    run_tracer_and_tracee(command, true)?;
     Ok(())
 }
 

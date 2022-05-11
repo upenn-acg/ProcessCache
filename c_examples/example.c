@@ -7,8 +7,8 @@
 
 int main() {
     if (fork() == 0) {
-        char* args[] = {"./IOTracker/c_examples/empty_c", NULL};
-        execvp("./IOTracker/c_examples/empty_c", args);
+        char* args[] = {"./c_examples/empty_c", NULL};
+        execvp("./c_examples/empty_c", args);
         exit(EXIT_SUCCESS);
     } 
     int status;
