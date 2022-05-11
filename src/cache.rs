@@ -1,6 +1,9 @@
-use crate::condition_generator::{
-    check_preconditions, generate_postconditions, generate_preconditions, Command, ExecFileEvents,
-    Fact, SyscallEvent,
+use crate::{
+    condition_generator::{
+        check_preconditions, generate_postconditions, generate_preconditions, Command,
+        ExecFileEvents, Fact,
+    },
+    syscalls::SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
 use serde::{Deserialize, Serialize};
@@ -536,7 +539,7 @@ fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
 
 // TODO: insert into an EXISTING cache
 pub fn insert_execs_into_cache(exec_map: ExecCacheMap) {
-    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     // Make the cache file if it doesn't exist.
     let mut existing_cache = if !cache_path.exists() {
@@ -565,11 +568,11 @@ pub fn insert_execs_into_cache(exec_map: ExecCacheMap) {
 }
 
 pub fn retrieve_existing_cache() -> Option<ExecCacheMap> {
-    const CACHE_LOCATION: &str = "./IOTracker/cache/cache";
+    const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     if cache_path.exists() {
-        let exec_struct_bytes =
-            fs::read("./IOTracker/cache/cache").expect("failed to deserialize execs from cache");
+        let exec_struct_bytes = fs::read("/home/kelly/research/IOTracker/cache/cache")
+            .expect("failed to deserialize execs from cache");
         Some(rmp_serde::from_read_ref(&exec_struct_bytes).unwrap())
     } else {
         None

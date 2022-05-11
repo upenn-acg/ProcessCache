@@ -9,6 +9,7 @@ mod ptracer;
 mod redirection;
 mod regs;
 mod seccomp;
+mod syscalls;
 mod system_call_names;
 mod tracer;
 mod utils;

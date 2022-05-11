@@ -15,13 +15,12 @@ use crate::cache::{
     insert_execs_into_cache, retrieve_existing_cache, ExecMetadata, Execution, RcCachedExec,
     RcExecution,
 };
-use crate::condition_generator::{
-    generate_hash, Command, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome,
-};
+use crate::condition_generator::{generate_hash, Command};
 
 use crate::context;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
+use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
 use crate::Ptracer;
