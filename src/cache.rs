@@ -37,6 +37,7 @@ pub type ExecCacheMap = HashMap<Command, RcCachedExec>;
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
+    command: Command,
     env_vars: Vec<String>,
     preconditions: HashMap<PathBuf, HashSet<Fact>>,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
@@ -46,6 +47,24 @@ pub struct CachedExecution {
 impl CachedExecution {
     fn add_child(&mut self, child: RcCachedExec) {
         self.child_execs.push(child)
+    }
+    fn apply_all_transitions(&self) {
+        let postconditions = self.postconditions();
+        let cache_dir = PathBuf::from("./IOTracker/cache/");
+        let mut hasher = DefaultHasher::new();
+        let command = self.command();
+        command.hash(&mut hasher);
+        let curr_command_subdir = hasher.finish();
+        let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
+
+        for (file, fact_set) in postconditions {
+            apply_transition_function(cache_subdir.clone(), fact_set, file);
+        }
+
+        let children = self.child_execs.clone();
+        for child in children {
+            child.apply_all_transitions()
+        }
     }
 
     fn check_all_preconditions(&self) -> bool {
@@ -84,16 +103,20 @@ impl CachedExecution {
         true
     }
 
+    fn command(&self) -> Command {
+        self.command.clone()
+    }
+
+    fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.postconditions.clone()
+    }
+
     fn print_me(&self) {
         println!("NEW CACHED EXEC:");
         println!("Preconds: {:?}", self.preconditions);
         for child in self.child_execs.clone() {
             child.print_me()
         }
-    }
-
-    fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.postconditions.clone()
     }
 }
 
@@ -222,27 +245,31 @@ impl Execution {
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
         let postconditions = generate_postconditions(curr_file_events);
-
+        let command_key = Command(
+            self.executable().into_os_string().into_string().unwrap(),
+            self.args(),
+        );
         let mut cached_exec = CachedExecution {
             child_execs: Vec::new(),
+            command: command_key.clone(),
             env_vars: self.env_vars(),
             preconditions,
             postconditions,
             starting_cwd: self.starting_cwd(),
         };
-        // let rc_cached_exec = RcCachedExec::new(cached_exec);
-        let command_key = Command(
-            self.executable().into_os_string().into_string().unwrap(),
-            self.args(),
-        );
-        // exec_cache_map.insert(command_key, rc_cached_exec.clone());
 
         for child in self.child_execs.iter() {
             let child_file_events = child.file_events();
             let preconditions = generate_preconditions(child_file_events.clone());
             let postconditions = generate_postconditions(child_file_events);
+            let child_command = Command(
+                child.executable().into_os_string().into_string().unwrap(),
+                child.args(),
+            );
+
             let cached_child = CachedExecution {
                 child_execs: Vec::new(),
+                command: child_command,
                 env_vars: child.env_vars(),
                 preconditions,
                 postconditions,
@@ -355,6 +382,10 @@ impl RcCachedExec {
         self.cached_exec.check_all_preconditions()
     }
 
+    pub fn apply_all_transitions(&self) {
+        self.cached_exec.apply_all_transitions()
+    }
+
     pub fn print_me(&self) {
         self.cached_exec.print_me()
     }
@@ -403,10 +434,17 @@ impl RcExecution {
         self.execution.borrow().add_to_cachable_map(exec_cache_map)
     }
 
+    pub fn args(&self) -> Vec<String> {
+        self.execution.borrow().args()
+    }
+
     pub fn env_vars(&self) -> Vec<String> {
         self.execution.borrow().env_vars()
     }
 
+    pub fn executable(&self) -> PathBuf {
+        self.execution.borrow().executable()
+    }
     pub fn file_events(&self) -> ExecFileEvents {
         self.execution.borrow().file_events()
     }
@@ -450,6 +488,23 @@ impl RcExecution {
     }
 }
 
+fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, file: PathBuf) {
+    for fact in fact_set {
+        match fact {
+            Fact::DoesntExist => {
+                if file.exists() {
+                    fs::remove_file(file.clone()).unwrap();
+                }
+            }
+            Fact::FinalContents => {
+                let file_name = file.file_name().unwrap();
+                let cache_file_location = cache_subdir.join(file_name);
+                fs::copy(cache_file_location, file.clone()).unwrap();
+            }
+            _ => (),
+        }
+    }
+}
 // I *THINK* I can just iterate through the keys and do this for each and
 fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
     for (command, rc_cached_exec) in exec_cache_map {

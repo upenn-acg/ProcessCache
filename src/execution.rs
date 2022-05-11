@@ -220,7 +220,7 @@ pub async fn trace_process(
                                     "Checking all preconditions: root execution is: {:?}",
                                     command
                                 );
-                                if entry.check_all_preconditions() {
+                                if entry.check_all_preconditions() && !full_tracking_on {
                                     // Check if we should skip this execution.
                                     // If we are gonna skip, we have to change:
                                     // rax, orig_rax, arg1
@@ -239,6 +239,7 @@ pub async fn trace_process(
                                     regs.write_rax(exit_syscall_num);
 
                                     tracer.set_regs(&mut regs)?;
+                                    entry.apply_all_transitions();
                                     // continue;
                                 }
                                 continue;
