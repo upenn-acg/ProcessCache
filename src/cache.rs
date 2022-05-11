@@ -50,7 +50,27 @@ impl CachedExecution {
 
     fn check_all_preconditions(&self) -> bool {
         let my_preconds = self.preconditions.clone();
+        let vars = std::env::vars();
+        let mut vec_vars = Vec::new();
+        for (first, second) in vars {
+            vec_vars.push(format!("{}={}", first, second));
+        }
+        if self.env_vars != vec_vars {
+            debug!("env vars don't match");
+            debug!("old vars: {:?}", self.env_vars);
+            debug!("new vars: {:?}", vec_vars);
+            // panic!("vars");
+            return false;
+        }
 
+        let curr_cwd = std::env::current_dir().unwrap();
+        if self.starting_cwd != curr_cwd {
+            debug!("starting cwd doesn't match");
+            debug!("old cwd: {:?}", self.starting_cwd);
+            debug!("new cwd: {:?}", curr_cwd);
+            // panic!("cwd");
+            return false;
+        }
         if !check_preconditions(my_preconds) {
             return false;
         }

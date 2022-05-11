@@ -216,7 +216,10 @@ pub async fn trace_process(
                             if let Some(entry) = cache.get(&command) {
                                 // First we check all the preconditions of ALL the subtrees.
                                 // If ALL of them hold, we skip from here.
-                                debug!("Checking all preconditions: root execution is: {:?}", command);
+                                debug!(
+                                    "Checking all preconditions: root execution is: {:?}",
+                                    command
+                                );
                                 if entry.check_all_preconditions() {
                                     // Check if we should skip this execution.
                                     // If we are gonna skip, we have to change:

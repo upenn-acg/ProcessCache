@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
 // full tracking = regardless of whether we CAN skip it,
 // we do all the tracing,
 // we do all iterative (repetitive) precondition checking,
-// and let it run normally in between. 
+// and let it run normally in between.
 fn run_tracer_and_tracee(command: Command, full_tracking_on: bool) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
