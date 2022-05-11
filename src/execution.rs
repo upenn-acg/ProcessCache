@@ -15,7 +15,7 @@ use crate::cache::{
     insert_execs_into_cache, retrieve_existing_cache, ExecMetadata, Execution, RcCachedExec,
     RcExecution,
 };
-use crate::condition_generator::{generate_hash, Command};
+use crate::cache_utils::{generate_hash, Command};
 
 use crate::context;
 use crate::regs::Regs;

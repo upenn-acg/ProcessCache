@@ -1,8 +1,9 @@
 use crate::{
+    cache_utils::{hash_command, Command},
     condition_generator::{
-        check_preconditions, generate_postconditions, generate_preconditions, Command,
-        ExecFileEvents, Fact,
+        check_preconditions, generate_postconditions, generate_preconditions, ExecFileEvents,
     },
+    condition_utils::Fact,
     syscalls::SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
@@ -10,9 +11,9 @@ use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs::{self, File},
-    hash::{Hash, Hasher},
+    hash::Hash,
     path::PathBuf,
     rc::Rc,
 };
@@ -54,10 +55,8 @@ impl CachedExecution {
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
         let cache_dir = PathBuf::from("./IOTracker/cache/");
-        let mut hasher = DefaultHasher::new();
         let command = self.command();
-        command.hash(&mut hasher);
-        let curr_command_subdir = hasher.finish();
+        let curr_command_subdir = hash_command(command);
         let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
 
         for (file, fact_set) in postconditions {
@@ -514,10 +513,8 @@ fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
         const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
         let cache_dir = PathBuf::from(CACHE_LOCATION);
         // We will put the files at /cache/hash(command)/
-        let mut hasher = DefaultHasher::new();
-        command.hash(&mut hasher);
 
-        let curr_command_subdir = hasher.finish();
+        let curr_command_subdir = hash_command(command);
         let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
         fs::create_dir(cache_subdir.clone()).unwrap();
         debug!("cache subdir: {:?}", cache_subdir);
