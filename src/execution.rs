@@ -11,13 +11,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{
-    insert_execs_into_cache, retrieve_existing_cache, ExecMetadata, Execution, RcCachedExec,
-    RcExecution,
-};
+use crate::cache::{insert_execs_into_cache, retrieve_existing_cache, RcCachedExec};
 use crate::cache_utils::{generate_hash, Command};
 
 use crate::context;
+use crate::recording::{ExecMetadata, Execution, RcExecution};
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};

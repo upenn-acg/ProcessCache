@@ -9,6 +9,7 @@ mod condition_utils;
 mod execution;
 mod ptracer;
 mod redirection;
+mod recording;
 mod regs;
 mod seccomp;
 mod syscalls;
