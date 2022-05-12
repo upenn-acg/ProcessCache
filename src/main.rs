@@ -7,6 +7,7 @@ mod cache_utils;
 mod condition_generator;
 mod condition_utils;
 mod execution;
+mod execution_utils;
 mod ptracer;
 mod redirection;
 mod recording;
