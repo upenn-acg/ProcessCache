@@ -55,37 +55,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // Want: generate_cachable_exec(first_exec: RcExecution) -> CachedExecution
-    //       iterate through the execution and its child execs
-    //       create pre and postconditions
-    // let cachable_exec = generate_cachable_exec(first_execution.clone());
-    // let (exec_full_path, args) = first_execution.get_exec_path_and_args();
-    // // Want: write_to_cache(cachable_exec: CachedExecution)
-    // serialize_execs_to_cache(exec_full_path, args, cachable_exec.clone());
-    // cachable_exec.print_pre_and_postconditions();
-    // first_execution.print_basic_exec_info();
-
-    // first_execution.print_pre_and_postconditions();
-    // first_execution.print_file_events();
-    // let events = first_execution.file_events();
-    // let preconditions = generate_preconditions(events);
-    // check_preconditions(preconditions);
-
-    // println!(
-    //     "Cachable exec: {:?}",
-    //     first_execution.generate_cachable_exec()
-    // );
-
-    if !full_tracking_on {
+    if !full_tracking_on && !first_execution.is_empty_root_exec() {
         let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
         // first_execution.print_file_events();
         first_execution.add_to_cachable_map(&mut cache_map);
         insert_execs_into_cache(cache_map.clone());
     }
-    // for (command, cached_exec) in cache_map {
-    //     println!("Command: {:?}", command);
-    //     cached_exec.print_me();
-    // }
     Ok(())
 }
 
@@ -241,6 +216,8 @@ pub async fn trace_process(
                                     tracer.set_regs(&mut regs)?;
                                     entry.apply_all_transitions();
                                     // continue;
+                                } else {
+                                    panic!("Preconditions fail")
                                 }
                                 continue;
                             }
@@ -501,12 +478,7 @@ pub async fn trace_process(
             s.in_scope(|| debug!("Exit code: {}", exit_code));
             // Add exit code to the exec struct, if this is the
             // pid that exec'd the exec. execececececec.
-            // TODO: Should these just be called from a function called
-            // like "do_exit_stuff" (obviously something better but you
-            // get me)
-            // This is a new (or at least new version?) execution,
-            // add/update all the necessary stuff in the cache.
-            // TODO: ya know, properly cache
+
             curr_execution.add_exit_code(exit_code);
             // curr_execution.add_output_file_hashes(pid)?;
             // curr_execution.copy_outputs_to_cache()?;

@@ -77,13 +77,6 @@ impl CachedExecution {
         for (first, second) in vars {
             vec_vars.push(format!("{}={}", first, second));
         }
-        if self.env_vars != vec_vars {
-            debug!("env vars don't match");
-            debug!("old vars: {:?}", self.env_vars);
-            debug!("new vars: {:?}", vec_vars);
-            // panic!("vars");
-            return false;
-        }
 
         let curr_cwd = std::env::current_dir().unwrap();
         if self.starting_cwd != curr_cwd {

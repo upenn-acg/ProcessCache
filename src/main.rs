@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     // let full_tracking_on = opt.full_tracking;
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command, true)?;
+    run_tracer_and_tracee(command, false)?;
     Ok(())
 }
 

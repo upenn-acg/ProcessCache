@@ -163,7 +163,7 @@ pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) -> bool 
     for (path_name, fact_set) in conditions {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone()) {
-                debug!("Fact that doesn't hold: {:?}", fact);
+                debug!("Fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
                 return false;
             }
         }

@@ -1,0 +1,87 @@
+    Finished dev [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/get_all_syscalls_called_by_job`
+execve("/home/kelly/research/bioinfo/raxml/bin/raxml", ["/home/kelly/research/bioinfo/rax"..., "--silent", "-m", "GTRGAMMA", "-p", "12345", "-s", "/home/kelly/research/bioinfo/rax"..., "-w", "/home/kelly/research/bioinfo/rax"..., "-n", "1"], 0x7ffe6b5db610 /* 34 vars */) = 0
+access("/etc/ld.so.preload", R_OK)      = -1 ENOENT (No such file or directory)
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+fstat(3, {st_mode=S_IFREG|0644, st_size=152244, ...}) = 0
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libm.so.6", O_RDONLY|O_CLOEXEC) = 3
+fstat(3, {st_mode=S_IFREG|0644, st_size=1369352, ...}) = 0
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+fstat(3, {st_mode=S_IFREG|0755, st_size=2029560, ...}) = 0
+fstat(1, {st_mode=S_IFREG|0664, st_size=3382, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/in/1/1.fa", O_RDONLY) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=24265, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_RDONLY) = -1 ENOENT (No such file or directory)
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/in/1/1.fa.reduced", O_RDONLY) = -1 ENOENT (No such file or directory)
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=127, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=183, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/in/1/1.fa.reduced", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=283, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=374, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1623, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1664, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1682, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1688, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1694, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1700, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1706, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_parsimonyTree.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=22, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=44, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_result.1", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_result.1", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=66, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=88, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=110, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=132, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_log.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=154, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_result.1", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1708, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1802, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1906, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_result.1", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=1991, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=2122, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=2214, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_bestTree.1", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=0, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=2265, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=2351, ...}) = 0
+openat(AT_FDCWD, "/home/kelly/research/bioinfo/raxml/out/RAxML_info.1", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3
+fstat(3, {st_mode=S_IFREG|0664, st_size=2441, ...}) = 0
