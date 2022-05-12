@@ -259,25 +259,19 @@ impl Default for Proc {
 // This is the wrapper around the Execution
 // enum.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RcExecution {
-    execution: Rc<RefCell<Execution>>,
-}
+pub struct RcExecution(Rc<RefCell<Execution>>);
 
 impl RcExecution {
     pub fn new(execution: Execution) -> RcExecution {
-        RcExecution {
-            execution: Rc::new(RefCell::new(execution)),
-        }
+        RcExecution(Rc::new(RefCell::new(execution)))
     }
 
     pub fn add_child_execution(&self, child_execution: RcExecution) {
-        self.execution
-            .borrow_mut()
-            .add_child_execution(child_execution);
+        self.0.borrow_mut().add_child_execution(child_execution);
     }
 
     pub fn add_exit_code(&self, code: i32) {
-        self.execution.borrow_mut().add_exit_code(code);
+        self.0.borrow_mut().add_exit_code(code);
     }
 
     pub fn add_new_file_event(
@@ -286,52 +280,48 @@ impl RcExecution {
         file_event: SyscallEvent,
         full_path: PathBuf,
     ) {
-        self.execution
+        self.0
             .borrow_mut()
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
     pub fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
-        self.execution.borrow().add_to_cachable_map(exec_cache_map)
+        self.0.borrow().add_to_cachable_map(exec_cache_map)
     }
 
     pub fn args(&self) -> Vec<String> {
-        self.execution.borrow().args()
+        self.0.borrow().args()
     }
 
     pub fn env_vars(&self) -> Vec<String> {
-        self.execution.borrow().env_vars()
+        self.0.borrow().env_vars()
     }
 
     pub fn executable(&self) -> PathBuf {
-        self.execution.borrow().executable()
+        self.0.borrow().executable()
     }
     pub fn file_events(&self) -> ExecFileEvents {
-        self.execution.borrow().file_events()
+        self.0.borrow().file_events()
     }
 
-    // pub fn generate_cachable_exec(&self) -> CachedExecution {
-    //     self.execution.borrow().generate_cachable_exec()
-    // }
-
     pub fn is_empty_root_exec(&self) -> bool {
-        self.execution.borrow().is_empty_root_exec()
+        self.0.borrow().is_empty_root_exec()
     }
 
     pub fn pid(&self) -> Pid {
-        self.execution.borrow().pid()
+        self.0.borrow().pid()
     }
 
     pub fn print_basic_exec_info(&self) {
-        self.execution.borrow().print_basic_exec_info()
+        self.0.borrow().print_basic_exec_info()
     }
 
     pub fn print_file_events(&self) {
-        self.execution.borrow().print_file_events()
+        self.0.borrow().print_file_events()
     }
 
     pub fn print_pre_and_postconditions(&self) {
-        self.execution.borrow().print_pre_and_postconditions()
+        self.0.borrow().print_pre_and_postconditions()
     }
 
     // pub fn exit_code(&self) -> Option<i32> {
@@ -339,11 +329,11 @@ impl RcExecution {
     // }
 
     pub fn starting_cwd(&self) -> PathBuf {
-        self.execution.borrow().starting_cwd()
+        self.0.borrow().starting_cwd()
     }
 
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
-        self.execution
+        self.0
             .borrow_mut()
             .update_successful_exec(new_exec_metadata);
     }

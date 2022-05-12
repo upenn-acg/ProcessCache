@@ -140,35 +140,31 @@ impl CachedExecution {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RcCachedExec {
-    cached_exec: Rc<CachedExecution>,
-}
+pub struct RcCachedExec(Rc<CachedExecution>);
 
 impl RcCachedExec {
     pub fn new(cached_exec: CachedExecution) -> RcCachedExec {
-        RcCachedExec {
-            cached_exec: Rc::new(cached_exec),
-        }
+        RcCachedExec(Rc::new(cached_exec))
     }
 
     pub fn check_all_preconditions(&self) -> bool {
-        self.cached_exec.check_all_preconditions()
+        self.0.check_all_preconditions()
     }
 
     pub fn check_all_preconditions_regardless(&self) {
-        self.cached_exec.check_all_preconditions_regardless()
+        self.0.check_all_preconditions_regardless()
     }
 
     pub fn apply_all_transitions(&self) {
-        self.cached_exec.apply_all_transitions()
+        self.0.apply_all_transitions()
     }
 
     pub fn print_me(&self) {
-        self.cached_exec.print_me()
+        self.0.print_me()
     }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.cached_exec.postconditions()
+        self.0.postconditions()
     }
 }
 

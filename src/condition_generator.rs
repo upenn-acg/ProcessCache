@@ -19,15 +19,11 @@ use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecFileEvents {
-    filename_to_events_map: HashMap<PathBuf, Vec<SyscallEvent>>,
-}
+pub struct ExecFileEvents(HashMap<PathBuf, Vec<SyscallEvent>>);
 
 impl ExecFileEvents {
     pub fn new() -> ExecFileEvents {
-        ExecFileEvents {
-            filename_to_events_map: HashMap::new(),
-        }
+        ExecFileEvents(HashMap::new())
     }
 
     // Add new access to the struct.
@@ -42,29 +38,29 @@ impl ExecFileEvents {
 
         s.in_scope(|| "in add_new_file_event");
         // First case, we already saw this file and now we are adding another event to it.
-        if let Some(event_list) = self.filename_to_events_map.get_mut(&full_path) {
+        if let Some(event_list) = self.0.get_mut(&full_path) {
             s.in_scope(|| "adding to existing event list");
             event_list.push(file_event);
         } else {
             let event_list = vec![file_event];
             s.in_scope(|| "adding new event list");
-            self.filename_to_events_map.insert(full_path, event_list);
+            self.0.insert(full_path, event_list);
         }
     }
 
     pub fn get_events_by_filename(&self, file_name: PathBuf) -> Vec<SyscallEvent> {
-        self.filename_to_events_map.get(&file_name).unwrap().clone()
+        self.0.get(&file_name).unwrap().clone()
     }
 
     pub fn file_event_list(&self) -> &HashMap<PathBuf, Vec<SyscallEvent>> {
         let s = span!(Level::INFO, stringify!(file_event_list));
         let _ = s.enter();
 
-        &self.filename_to_events_map
+        &self.0
     }
 
     pub fn print_file_events(&self) {
-        for (pathname, event_list) in self.filename_to_events_map.iter() {
+        for (pathname, event_list) in self.0.iter() {
             println!("Full path: {:?}", pathname);
             for event in event_list {
                 println!("File event: {:?}", event);

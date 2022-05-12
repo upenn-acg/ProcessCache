@@ -869,7 +869,6 @@ fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
-
 fn generate_open_syscall_file_event(
     creat_flag: bool,
     excl_flag: bool,
@@ -879,18 +878,6 @@ fn generate_open_syscall_file_event(
     open_mode: OFlag,
     syscall_outcome: Result<i32, i32>,
 ) -> Option<SyscallEvent> {
-    // Trust me Dewey, you don't want no part of this.
-    // if full_path.starts_with("/dev/pts")
-    //     || full_path.starts_with("/dev/null")
-    //     || full_path.starts_with("/etc/")
-    //     || full_path.starts_with("/lib/")
-    //     || full_path.starts_with("/proc/")
-    //     || full_path.starts_with("/usr/")
-    //     || full_path.is_dir()
-    // {
-    //     return None;
-    // }
-
     if excl_flag && !creat_flag {
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
