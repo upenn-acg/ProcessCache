@@ -195,7 +195,9 @@ pub async fn trace_process(
                                     command
                                 );
                                 // TODO this aint right
-                                if entry.check_all_preconditions() && !full_tracking_on {
+                                if full_tracking_on {
+                                    entry.check_all_preconditions_regardless();
+                                } else if entry.check_all_preconditions() {
                                     // Check if we should skip this execution.
                                     // If we are gonna skip, we have to change:
                                     // rax, orig_rax, arg1
@@ -215,12 +217,11 @@ pub async fn trace_process(
 
                                     tracer.set_regs(&mut regs)?;
                                     entry.apply_all_transitions();
-                                    // continue;
                                 } else {
                                     panic!("Preconditions fail")
                                 }
-                                continue;
                             }
+                            continue;
                         }
 
                         let next_event = tracer.get_next_syscall().await.with_context(|| {

@@ -74,7 +74,7 @@ impl ExecFileEvents {
 }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
-    // debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
+    debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
     if path_name.starts_with("/proc") {
         true
     } else {

@@ -99,6 +99,29 @@ impl CachedExecution {
         true
     }
 
+    fn check_all_preconditions_regardless(&self) {
+        let my_preconds = self.preconditions.clone();
+        // let vars = std::env::vars();
+        // let mut vec_vars = Vec::new();
+        // for (first, second) in vars {
+        //     vec_vars.push(format!("{}={}", first, second));
+        // }
+
+        let curr_cwd = std::env::current_dir().unwrap();
+        if self.starting_cwd != curr_cwd {
+            debug!("starting cwd doesn't match");
+            debug!("old cwd: {:?}", self.starting_cwd);
+            debug!("new cwd: {:?}", curr_cwd);
+        }
+
+        check_preconditions(my_preconds);
+
+        let children = self.child_execs.clone();
+        for child in children {
+            child.check_all_preconditions_regardless();
+        }
+    }
+
     fn command(&self) -> Command {
         self.command.clone()
     }
@@ -130,6 +153,10 @@ impl RcCachedExec {
 
     pub fn check_all_preconditions(&self) -> bool {
         self.cached_exec.check_all_preconditions()
+    }
+
+    pub fn check_all_preconditions_regardless(&self) {
+        self.cached_exec.check_all_preconditions_regardless()
     }
 
     pub fn apply_all_transitions(&self) {
