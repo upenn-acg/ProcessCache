@@ -8,7 +8,9 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::Pid;
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{insert_execs_into_cache, retrieve_existing_cache, RcCachedExec};
@@ -17,13 +19,13 @@ use crate::cache_utils::Command;
 use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
 use crate::recording::{ExecMetadata, Execution, RcExecution};
+use crate::redirection;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
 use crate::Ptracer;
-use crate::{context, redirection};
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -38,7 +40,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
 
-    let first_execution = RcExecution::new(Execution::PendingRoot);
+    let first_execution = RcExecution::new(Execution::new());
     // CWD of the root process + "/cache/"
     let mut cache_dir = std::env::current_dir().with_context(|| context!("Cannot get CWD."))?;
     cache_dir.push("cache/");
@@ -51,6 +53,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
+        Rc::new(cache_dir.clone()),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -78,11 +81,11 @@ pub async fn trace_process(
     full_tracking_on: bool,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
+    cache_dir: Rc<PathBuf>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
-    let mut skip_execution = false;
     let mut iostream_redirected = false;
 
     loop {
@@ -308,29 +311,6 @@ pub async fn trace_process(
                         nlinks_before = meta.nlink();
                     }
                     _ => {
-                        // Check if we should skip this execution.
-                        // If we are gonna skip, we have to change:
-                        // rax, orig_rax, arg1
-
-                        if skip_execution {
-                            debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                            let regs = tracer
-                                .get_registers()
-                                .with_context(|| context!("Failed to get regs in stat event"))?;
-                            let mut regs = regs.make_modified();
-                            let exit_syscall_num = libc::SYS_exit as u64;
-
-                            // Change the arg1 to correct exit code?
-                            regs.write_arg1(0);
-                            // Change the orig rax val don't ask me why
-                            regs.write_syscall_number(exit_syscall_num);
-                            // Change the rax val
-                            regs.write_rax(exit_syscall_num);
-
-                            tracer.set_regs(&mut regs)?;
-                            continue;
-                        }
-
                         if !iostream_redirected {
                             const STDOUT_FD: u32 = 1;
                             // TODO: Deal with PID recycling?

@@ -63,7 +63,7 @@ pub async fn redirect_io_stream(
 
     // restore registers and rewind IP.
     let regs = injected
-        .restore_state(&tracer)
+        .restore_state(tracer)
         .with_context(|| context!("Unable to restore register state."))?;
 
     // Tell ptrace to get us back to the pre-hook (same RIP as before) we are "replaying" this same
@@ -101,7 +101,7 @@ pub async fn redirect_io_stream(
     }
 
     injected
-        .restore_state(&tracer)
+        .restore_state(tracer)
         .with_context(|| context!("Unable to restore register state."))?;
 
     info!("Output redirected to file!");
