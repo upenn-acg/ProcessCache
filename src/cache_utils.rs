@@ -22,11 +22,15 @@ pub fn generate_hash(path: PathBuf) -> Vec<u8> {
     // let s = span!(Level::INFO, stringify!(generate_hash), pid=?caller_pid);
     // let _ = s.enter();
     // s.in_scope(|| info!("Made it to generate_hash for path: {}", path));
-    let file = File::open(&path);
-    if let Ok(mut f) = file {
-        process::<Sha256, _>(&mut f)
+    if !path.is_dir() {
+        let file = File::open(&path);
+        if let Ok(mut f) = file {
+            process::<Sha256, _>(&mut f)
+        } else {
+            panic!("Cannot open file for hashing: {:?}", path);
+        }
     } else {
-        panic!("Cannot open file for hashing: {:?}", path);
+        Vec::new()
     }
 }
 

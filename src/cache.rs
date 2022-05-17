@@ -194,17 +194,15 @@ fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
 
         let curr_command_subdir = hash_command(command);
         let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
-        fs::create_dir(cache_subdir.clone()).unwrap();
-        debug!("cache subdir: {:?}", cache_subdir);
+        if !cache_subdir.exists() {
+            fs::create_dir(cache_subdir.clone()).unwrap();
+        }
         let postconditions = rc_cached_exec.postconditions();
         for (full_path, facts) in postconditions {
             for fact in facts {
                 if fact == Fact::FinalContents {
                     let file_name = full_path.file_name().unwrap();
-                    debug!("file name: {:?}", file_name);
                     let cache_file_path = cache_subdir.join(file_name);
-                    debug!("cache_file_path: {:?}", cache_file_path);
-                    debug!("full_path: {:?}", full_path);
                     fs::copy(full_path.clone(), cache_file_path).unwrap();
                 }
             }

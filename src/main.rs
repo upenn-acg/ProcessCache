@@ -40,6 +40,7 @@ use anyhow::{Context, Result};
 pub struct Opt {
     /// Executable to run. Will use $PATH.
     pub exe: String,
+    #[structopt(short, long)]
     pub full_tracking: bool,
     /// Print system calls when they return -1, off by default.
     #[structopt(short, long)]
@@ -62,12 +63,10 @@ fn main() -> anyhow::Result<()> {
     // TODO: get env vars of first exec
     // TODO: get starting cwd of first exec
     let opt = Opt::from_args();
-    // let print_all_syscalls = opt.print_syscalls_on_error;
-    // let output_file_name = opt.output_file;
-    // let full_tracking_on = opt.full_tracking;
+    let full_tracking_on = opt.full_tracking;
     let command = Command::new(opt.exe, opt.args);
 
-    run_tracer_and_tracee(command, false)?;
+    run_tracer_and_tracee(command, full_tracking_on)?;
     Ok(())
 }
 

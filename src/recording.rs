@@ -16,6 +16,7 @@ pub type ChildExecutions = Vec<RcExecution>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecMetadata {
     args: Vec<String>,
+    caller_pid: Proc,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
@@ -25,9 +26,10 @@ pub struct ExecMetadata {
 }
 
 impl ExecMetadata {
-    pub fn new() -> ExecMetadata {
+    pub fn new(caller_pid: Proc) -> ExecMetadata {
         ExecMetadata {
             args: Vec::new(),
+            caller_pid,
             env_vars: Vec::new(),
             executable: PathBuf::new(),
             starting_cwd: PathBuf::new(),
@@ -49,6 +51,11 @@ impl ExecMetadata {
 
     fn args(&self) -> Vec<String> {
         self.args.clone()
+    }
+
+    fn caller_pid(&self) -> Pid {
+        let Proc(pid) = self.caller_pid;
+        pid
     }
 
     fn executable(&self) -> PathBuf {
@@ -77,7 +84,6 @@ impl ExecMetadata {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Execution {
-    caller_pid: Proc,
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
     file_events: ExecFileEvents,
@@ -85,13 +91,12 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn new() -> Execution {
+    pub fn new(calling_pid: Proc) -> Execution {
         Execution {
-            caller_pid: Proc::default(),
             child_execs: Vec::new(),
             exit_code: None,
             file_events: ExecFileEvents::new(),
-            successful_exec: ExecMetadata::new(),
+            successful_exec: ExecMetadata::new(calling_pid),
         }
     }
 
@@ -181,8 +186,7 @@ impl Execution {
     }
 
     fn pid(&self) -> Pid {
-        let Proc(pid) = self.caller_pid;
-        pid
+        self.successful_exec.caller_pid()
     }
 
     fn print_basic_exec_info(&self) {

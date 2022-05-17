@@ -32,6 +32,10 @@ pub fn generate_open_syscall_file_event(
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
 
+    if full_path.starts_with("/dev/null") {
+        return None;
+    }
+
     let starting_hash = if syscall_outcome.is_ok()
         && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
     {

@@ -8,17 +8,22 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::Pid;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::{
+    fs,
+    io::{self, Write},
+};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{insert_execs_into_cache, retrieve_existing_cache, RcCachedExec};
-use crate::cache_utils::Command;
+use crate::cache_utils::{hash_command, Command};
 
 use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
-use crate::recording::{ExecMetadata, Execution, RcExecution};
+use crate::recording::{ExecMetadata, Execution, Proc, RcExecution};
 use crate::redirection;
 use crate::regs::Regs;
 use crate::regs::Unmodified;
@@ -40,7 +45,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
 
-    let first_execution = RcExecution::new(Execution::new());
+    let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
     // CWD of the root process + "/cache/"
     let mut cache_dir = std::env::current_dir().with_context(|| context!("Cannot get CWD."))?;
     cache_dir.push("cache/");
@@ -81,7 +86,7 @@ pub async fn trace_process(
     full_tracking_on: bool,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
-    cache_dir: Rc<PathBuf>,
+    cache_dir: Rc<PathBuf>, // TODO: what is this??
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -231,7 +236,7 @@ pub async fn trace_process(
                         let next_event = tracer.get_next_syscall().await.with_context(|| {
                             context!("Unable to get posthook after execve prehook.")
                         })?;
-                        let mut new_exec_metadata = ExecMetadata::new();
+                        let mut new_exec_metadata = ExecMetadata::new(Proc(tracer.curr_proc));
                         new_exec_metadata.add_identifiers(
                             args,
                             envp,
@@ -259,7 +264,7 @@ pub async fn trace_process(
                                     // New rc exec for the child exec.
                                     // Add to parent's struct.
                                     // set curr execution to the new one.
-                                    let mut new_child_exec = Execution::new();
+                                    let mut new_child_exec = Execution::new(Proc(tracer.curr_proc));
                                     new_child_exec.update_successful_exec(new_exec_metadata);
                                     let new_rc_child_exec = RcExecution::new(new_child_exec);
                                     curr_execution.add_child_execution(new_rc_child_exec.clone());
@@ -304,7 +309,7 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
-                    "unlink" | "unlinkat " => {
+                    "unlink" | "unlinkat" => {
                         use std::os::unix::fs::MetadataExt;
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
                         let meta = full_path.as_path().metadata().unwrap();
@@ -314,8 +319,23 @@ pub async fn trace_process(
                         if !iostream_redirected {
                             const STDOUT_FD: u32 = 1;
                             // TODO: Deal with PID recycling?
-                            let stdout_file: String =
-                                format!("stdout_{:?}", tracer.curr_proc.as_raw());
+                            let exec = curr_execution.executable();
+                            let args = curr_execution.args();
+                            let comm_hash = hash_command(Command(
+                                exec.into_os_string().into_string().unwrap(),
+                                args,
+                            ));
+                            let cache_subdir =
+                                format!("/home/kelly/research/IOTracker/cache/{:?}", comm_hash);
+                            let cache_subdir = PathBuf::from(cache_subdir);
+                            if !cache_subdir.exists() {
+                                fs::create_dir(cache_subdir.clone()).unwrap();
+                            }
+                            let stdout_file: String = format!(
+                                "/home/kelly/research/IOTracker/cache/{:?}/stdout_{:?}",
+                                comm_hash,
+                                tracer.curr_proc.as_raw()
+                            );
 
                             // This is the first real system call this program is doing after exec-ing.
                             // We will redirect their stdout output here by writing it to a file.
@@ -460,10 +480,37 @@ pub async fn trace_process(
             s.in_scope(|| debug!("Exit code: {}", exit_code));
             // Add exit code to the exec struct, if this is the
             // pid that exec'd the exec. execececececec.
-
+            // TODO: don't add this here if skipping?
             curr_execution.add_exit_code(exit_code);
-            // curr_execution.add_output_file_hashes(pid)?;
-            // curr_execution.copy_outputs_to_cache()?;
+
+            // If this is tracing round, and current exec
+            // has written to stdout, we must write that stuff
+            // to stdout at the end because we have it redirected
+            // to a file.
+            // TODO: check that it's not skipping?
+            if tracer.curr_proc == curr_execution.pid() {
+                let comm_hash = hash_command(Command(
+                    curr_execution
+                        .executable()
+                        .into_os_string()
+                        .into_string()
+                        .unwrap(),
+                    curr_execution.args(),
+                ));
+                let cache_dir = format!("/home/kelly/research/IOTracker/cache/{:?}", comm_hash);
+                let cache_dir = PathBuf::from(cache_dir);
+                if cache_dir.exists() {
+                    let stdout_file = cache_dir.join(format!("stdout_{}", pid));
+                    if stdout_file.exists() {
+                        let mut f = File::open(stdout_file).unwrap();
+                        let mut buf = Vec::new();
+                        let bytes = f.read_to_end(&mut buf).unwrap();
+                        if bytes != 0 {
+                            io::stdout().write_all(&buf).unwrap();
+                        }
+                    }
+                }
+            }
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
@@ -490,15 +537,7 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     sys_span.in_scope(|| {
         debug!("Generating access syscall event!");
     });
-    // let access_syscall_event = if full_path.starts_with("/dev/pts")
-    //     || full_path.starts_with("/dev/null")
-    //     || full_path.starts_with("/etc/")
-    //     || full_path.starts_with("/lib/")
-    //     || full_path.starts_with("/proc/")
-    //     || full_path.is_dir()
-    // {
-    //     None
-    // } else {
+
     // TODO: panic if more than one?
     let flags = regs.arg2::<i32>();
 
@@ -554,19 +593,6 @@ fn handle_open(
 
         let option_flags = OFlag::from_bits(flag_arg);
         let (creat_flag, excl_flag, offset_mode, open_mode) = if let Some(flags) = option_flags {
-            // let open_mode = if flags.contains(OFlag::O_RDONLY) {
-            //     println!("contains read only open mode!!");
-            //     OFlag::O_RDONLY
-            // } else if flags.contains(OFlag::O_RDWR) {
-            //     println!("contains read write!!");
-            //     OFlag::O_RDWR
-            // } else if flags.contains(OFlag::O_WRONLY) {
-            //     println!("contains write only!!");
-            //     OFlag::O_WRONLY
-            // } else {
-            //     panic!("Unrecognized open mode!");
-            // };
-
             let open_mode = match flag_arg & O_ACCMODE {
                 O_RDONLY => OFlag::O_RDONLY,
                 O_RDWR => OFlag::O_RDWR,
@@ -577,13 +603,10 @@ fn handle_open(
             let creat_flag = flags.contains(OFlag::O_CREAT);
             let excl_flag = flags.contains(OFlag::O_EXCL);
             let offset_mode = if flags.contains(OFlag::O_APPEND) {
-                // println!("contains append!!");
                 OFlag::O_APPEND
             } else if flags.contains(OFlag::O_TRUNC) {
-                // println!("contains trunc!!");
                 OFlag::O_TRUNC
             } else {
-                // println!("is read only!!");
                 OFlag::O_RDONLY
             };
 
@@ -629,10 +652,6 @@ fn handle_open(
     if let Some(event) = open_syscall_event {
         execution.add_new_file_event(tracer.curr_proc, event, full_path);
     }
-
-    // if let Some(hash) = starting_hash {
-    //     execution.add_starting_hash(full_path, hash);
-    // }
     Ok(())
 }
 
