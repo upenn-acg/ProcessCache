@@ -7,14 +7,14 @@ use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File},
+    fs,
     path::PathBuf,
     rc::Rc,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-pub type ExecCacheMap = HashMap<Command, RcCachedExec>;
+pub type ExecCacheMap = HashMap<Command, Vec<RcCachedExec>>;
 // The executable path and args
 // are the key to the map.
 // Having them be a part of this struct would
@@ -185,59 +185,15 @@ fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, fil
         }
     }
 }
-// I *THINK* I can just iterate through the keys and do this for each and
-fn copy_output_files_to_cache(exec_cache_map: ExecCacheMap) {
-    for (command, rc_cached_exec) in exec_cache_map {
-        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
-        let cache_dir = PathBuf::from(CACHE_LOCATION);
-        // We will put the files at /cache/hash(command)/
-
-        let curr_command_subdir = hash_command(command);
-        let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
-        if !cache_subdir.exists() {
-            fs::create_dir(cache_subdir.clone()).unwrap();
-        }
-        let postconditions = rc_cached_exec.postconditions();
-        for (full_path, facts) in postconditions {
-            for fact in facts {
-                if fact == Fact::FinalContents {
-                    let file_name = full_path.file_name().unwrap();
-                    let cache_file_path = cache_subdir.join(file_name);
-                    fs::copy(full_path.clone(), cache_file_path).unwrap();
-                }
-            }
-        }
-    }
-}
 
 // TODO: insert into an EXISTING cache
-pub fn insert_execs_into_cache(exec_map: ExecCacheMap) {
+pub fn serialize_execs_to_cache(exec_map: ExecCacheMap) {
+    let serialized_exec_map = rmp_serde::to_vec(&exec_map).unwrap();
     const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
-    let cache_path = PathBuf::from(CACHE_LOCATION);
-    // Make the cache file if it doesn't exist.
-    let mut existing_cache = if !cache_path.exists() {
-        File::create(cache_path).unwrap();
-        HashMap::new()
-    } else if let Some(existing_cache) = retrieve_existing_cache() {
-        existing_cache
-    } else {
-        HashMap::new()
-    };
-
-    for (command, cached_exec) in exec_map.clone() {
-        if let std::collections::hash_map::Entry::Vacant(e) = existing_cache.entry(command.clone())
-        {
-            e.insert(cached_exec);
-        } else {
-            panic!("Cache already has command: {:?}", command);
-        }
-    }
-    let serialized_exec_map = rmp_serde::to_vec(&existing_cache).unwrap();
 
     // This will replace the contents
     fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
-
-    copy_output_files_to_cache(exec_map);
+    // copy_output_files_to_cache(exec_map);
 }
 
 pub fn retrieve_existing_cache() -> Option<ExecCacheMap> {

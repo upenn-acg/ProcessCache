@@ -21,3 +21,11 @@ tracing-subscriber = "0.2"
 # sha2 = "0.9"
 rmp-serde = "0.15.5"
 serde = { version = "1.0", features = ["derive", "rc"] }
+
+[[bin]]
+name = "simplest_example"
+path = "/home/kelly/research/IOTracker/simplest_example.rs"
+
+[[bin]]
+name = "simplest_ex_child"
+path = "/home/kelly/research/IOTracker/simplest_ex_child.rs"

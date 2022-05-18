@@ -1,11 +1,13 @@
 use crate::{
     cache::{CachedExecution, ExecCacheMap, RcCachedExec},
-    cache_utils::Command,
+    cache_utils::{hash_command, Command},
     condition_generator::{generate_postconditions, generate_preconditions, ExecFileEvents},
+    condition_utils::Fact,
     syscalls::SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
-use std::{cell::RefCell, hash::Hash, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, fs, hash::Hash, path::PathBuf, rc::Rc};
+use tracing::debug;
 
 pub type ChildExecutions = Vec<RcExecution>;
 
@@ -135,10 +137,23 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
+    // change from add_to_cachable_map(&mut execachemap)
+    // to update_curr_cache_map(&mut existing_cache_map_)
+    // recurse through the Execution and children and children of children...
+    // yada yada yada
+    // updating existing cache structure by
+    // 1) checking if Execution's command exists in the map
+    // 2) it does? great. add to  command -> [first exec, second, etc...]
+    //
+    // 3) no? add to the overall map
+    // 4) is a child? add to parent
+    fn update_curr_cache_map(&self, existing_cache_map: &mut ExecCacheMap) {
+        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
+        let cache_dir = PathBuf::from(CACHE_LOCATION);
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
         let postconditions = generate_postconditions(curr_file_events);
+
         let command_key = Command(
             self.executable().into_os_string().into_string().unwrap(),
             self.args(),
@@ -148,7 +163,7 @@ impl Execution {
             command_key.clone(),
             self.env_vars(),
             preconditions,
-            postconditions,
+            postconditions.clone(),
             self.starting_cwd(),
         );
 
@@ -166,16 +181,87 @@ impl Execution {
                 child_command,
                 child.env_vars(),
                 preconditions,
-                postconditions,
+                postconditions.clone(),
                 child.starting_cwd(),
             );
             let child_rc = RcCachedExec::new(cached_child);
             cached_exec.add_child(child_rc.clone());
-            child.add_to_cachable_map(exec_cache_map);
+            child.update_curr_cache_map(existing_cache_map);
         }
+
         let rc_cached_exec = RcCachedExec::new(cached_exec);
-        exec_cache_map.insert(command_key, rc_cached_exec);
+        let exec_list = existing_cache_map
+            .entry(command_key.clone())
+            .or_insert(Vec::new());
+        exec_list.push(rc_cached_exec);
+        let index = exec_list.len() - 1;
+        // Now copy the output files to the appropriate places.
+        let hashed_command = hash_command(command_key);
+        let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
+
+        let stdout_file_name = format!("stdout_{:?}", self.successful_exec.caller_pid().as_raw());
+        let curr_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name.clone());
+        let cache_subdir_hash_and_idx = cache_subdir_hashed_command.join(index.to_string());
+        if !cache_subdir_hash_and_idx.exists() {
+            fs::create_dir(cache_subdir_hash_and_idx.clone()).unwrap();
+        }
+        let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
+        debug!("NEW STD OUT FILE PATH: {:?}", new_stdout_file_path);
+        debug!("OLD STD OUT FILE PATH: {:?}", curr_stdout_file_path);
+        fs::copy(curr_stdout_file_path.clone(), new_stdout_file_path).unwrap();
+        fs::remove_file(curr_stdout_file_path).unwrap();
+        for (full_path, facts) in postconditions {
+            for fact in facts {
+                if fact == Fact::FinalContents {
+                    let file_name = full_path.file_name().unwrap();
+                    let cache_file_path = cache_subdir_hash_and_idx.join(file_name);
+                    fs::copy(full_path.clone(), cache_file_path).unwrap();
+                }
+            }
+        }
     }
+
+    // fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
+    //     let curr_file_events = self.file_events.clone();
+    //     let preconditions = generate_preconditions(curr_file_events.clone());
+    //     let postconditions = generate_postconditions(curr_file_events);
+    //     let command_key = Command(
+    //         self.executable().into_os_string().into_string().unwrap(),
+    //         self.args(),
+    //     );
+    //     let mut cached_exec = CachedExecution::new(
+    //         Vec::new(),
+    //         command_key.clone(),
+    //         self.env_vars(),
+    //         preconditions,
+    //         postconditions,
+    //         self.starting_cwd(),
+    //     );
+
+    //     for child in self.child_execs.iter() {
+    //         let child_file_events = child.file_events();
+    //         let preconditions = generate_preconditions(child_file_events.clone());
+    //         let postconditions = generate_postconditions(child_file_events);
+    //         let child_command = Command(
+    //             child.executable().into_os_string().into_string().unwrap(),
+    //             child.args(),
+    //         );
+
+    //         let cached_child = CachedExecution::new(
+    //             Vec::new(),
+    //             child_command,
+    //             child.env_vars(),
+    //             preconditions,
+    //             postconditions,
+    //             child.starting_cwd(),
+    //         );
+    //         let child_rc = RcCachedExec::new(cached_child);
+    //         cached_exec.add_child(child_rc.clone());
+    //         child.add_to_cachable_map(exec_cache_map);
+    //     }
+    //     let rc_cached_exec = RcCachedExec::new(cached_exec);
+    //     exec_cache_map.insert(command_key, rc_cached_exec);
+    // }
 
     fn file_events(&self) -> ExecFileEvents {
         self.file_events.clone()
@@ -289,9 +375,9 @@ impl RcExecution {
             .add_new_file_event(caller_pid, file_event, full_path);
     }
 
-    pub fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
-        self.0.borrow().add_to_cachable_map(exec_cache_map)
-    }
+    // pub fn add_to_cachable_map(&self, exec_cache_map: &mut ExecCacheMap) {
+    //     self.0.borrow().add_to_cachable_map(exec_cache_map)
+    // }
 
     pub fn args(&self) -> Vec<String> {
         self.0.borrow().args()
@@ -334,6 +420,10 @@ impl RcExecution {
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.0.borrow().starting_cwd()
+    }
+
+    pub fn update_curr_cache_map(&self, existing_cache_map: &mut ExecCacheMap) {
+        self.0.borrow().update_curr_cache_map(existing_cache_map)
     }
 
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {

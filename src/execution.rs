@@ -18,7 +18,7 @@ use std::{
 };
 
 use crate::async_runtime::AsyncRuntime;
-use crate::cache::{insert_execs_into_cache, retrieve_existing_cache, RcCachedExec};
+use crate::cache::{retrieve_existing_cache, serialize_execs_to_cache};
 use crate::cache_utils::{hash_command, Command};
 
 use crate::context;
@@ -64,11 +64,27 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
+    // Get existing cache if it exists.
+    // Call add_to_curr_cache() or whatever.
+    // Serialize the data structure and write it to the cache.
+    // Copy output files... carefully --> can't just do /cache/commandhash/yada
+    // because of potential collisions on the hash.
+    // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
     if !full_tracking_on && !first_execution.is_empty_root_exec() {
-        let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
-        // first_execution.print_file_events();
-        first_execution.add_to_cachable_map(&mut cache_map);
-        insert_execs_into_cache(cache_map.clone());
+        // let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
+        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
+        let cache_path = PathBuf::from(CACHE_LOCATION);
+        // Make the cache file if it doesn't exist.
+        let mut existing_cache = if !cache_path.exists() {
+            File::create(cache_path).unwrap();
+            HashMap::new()
+        } else if let Some(existing_cache) = retrieve_existing_cache() {
+            existing_cache
+        } else {
+            HashMap::new()
+        };
+        first_execution.update_curr_cache_map(&mut existing_cache);
+        serialize_execs_to_cache(existing_cache);
     }
     Ok(())
 }
@@ -196,41 +212,35 @@ pub async fn trace_process(
                                     .unwrap(),
                                 args.clone(),
                             );
-                            if let Some(entry) = cache.get(&command) {
-                                // First we check all the preconditions of ALL the subtrees.
-                                // If ALL of them hold, we skip from here.
-                                debug!(
-                                    "Checking all preconditions: root execution is: {:?}",
-                                    command
-                                );
-                                // TODO this aint right
-                                if full_tracking_on {
-                                    entry.check_all_preconditions_regardless();
-                                } else if entry.check_all_preconditions() {
-                                    // Check if we should skip this execution.
-                                    // If we are gonna skip, we have to change:
-                                    // rax, orig_rax, arg1
-                                    debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                                    let regs = tracer.get_registers().with_context(|| {
-                                        context!("Failed to get regs in stat event")
-                                    })?;
-                                    let mut regs = regs.make_modified();
-                                    let exit_syscall_num = libc::SYS_exit as u64;
+                            if let Some(entry_list) = cache.get(&command) {
+                                debug!("Checking all preconditions: execution is: {:?}", command);
 
-                                    // Change the arg1 to correct exit code?
-                                    regs.write_arg1(0);
-                                    // Change the orig rax val don't ask me why
-                                    regs.write_syscall_number(exit_syscall_num);
-                                    // Change the rax val
-                                    regs.write_rax(exit_syscall_num);
+                                for entry in entry_list {
+                                    if entry.check_all_preconditions() {
+                                        // Check if we should skip this execution.
+                                        // If we are gonna skip, we have to change:
+                                        // rax, orig_rax, arg1
+                                        debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                        let regs = tracer.get_registers().with_context(|| {
+                                            context!("Failed to get regs in stat event")
+                                        })?;
+                                        let mut regs = regs.make_modified();
+                                        let exit_syscall_num = libc::SYS_exit as u64;
 
-                                    tracer.set_regs(&mut regs)?;
-                                    entry.apply_all_transitions();
-                                } else {
-                                    panic!("Preconditions fail")
+                                        // Change the arg1 to correct exit code?
+                                        regs.write_arg1(0);
+                                        // Change the orig rax val don't ask me why
+                                        regs.write_syscall_number(exit_syscall_num);
+                                        // Change the rax val
+                                        regs.write_rax(exit_syscall_num);
+
+                                        tracer.set_regs(&mut regs)?;
+                                        entry.apply_all_transitions();
+                                        continue;
+                                    }
                                 }
                             }
-                            continue;
+                            // continue;
                         }
 
                         let next_event = tracer.get_next_syscall().await.with_context(|| {
@@ -253,9 +263,6 @@ pub async fn trace_process(
                                     debug!("Execve succeeded!");
                                 });
 
-                                // if lookup_exec_in_cache(new_exec_call.clone()).is_some() {
-                                //     println!("Found the exec in the cache");
-                                // }
                                 // If we haven't seen a successful execve by this pid yet,
                                 // update.
                                 if curr_execution.is_empty_root_exec() {
@@ -270,7 +277,7 @@ pub async fn trace_process(
                                     curr_execution.add_child_execution(new_rc_child_exec.clone());
                                     curr_execution = new_rc_child_exec;
                                 } else {
-                                    panic!("Process already called succesful execve and is trying to do another!!");
+                                    panic!("Process already called successful execve and is trying to do another!!");
                                 }
                             }
                             TraceEvent::Posthook(_) => {
