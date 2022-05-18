@@ -215,6 +215,7 @@ pub async fn trace_process(
                             if let Some(entry_list) = cache.get(&command) {
                                 debug!("Checking all preconditions: execution is: {:?}", command);
 
+                                let mut found_one = false;
                                 for entry in entry_list {
                                     if entry.check_all_preconditions() {
                                         // Check if we should skip this execution.
@@ -222,7 +223,7 @@ pub async fn trace_process(
                                         // rax, orig_rax, arg1
                                         debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
                                         let regs = tracer.get_registers().with_context(|| {
-                                            context!("Failed to get regs in stat event")
+                                            context!("Failed to get regs in skip exec event")
                                         })?;
                                         let mut regs = regs.make_modified();
                                         let exit_syscall_num = libc::SYS_exit as u64;
@@ -236,8 +237,12 @@ pub async fn trace_process(
 
                                         tracer.set_regs(&mut regs)?;
                                         entry.apply_all_transitions();
-                                        continue;
+                                        found_one = true;
+                                        break;
                                     }
+                                }
+                                if found_one {
+                                    continue;
                                 }
                             }
                             // continue;
