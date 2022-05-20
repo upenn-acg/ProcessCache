@@ -330,6 +330,7 @@ pub async fn trace_process(
                     _ => {
                         if !iostream_redirected {
                             const STDOUT_FD: u32 = 1;
+                            const STDERR_FD: u32 = 2;
                             // TODO: Deal with PID recycling?
                             let exec = curr_execution.executable();
                             let args = curr_execution.args();
@@ -348,13 +349,19 @@ pub async fn trace_process(
                                 comm_hash,
                                 tracer.curr_proc.as_raw()
                             );
-
+                            let stderr_file: String = format!(
+                                "/home/kelly/research/IOTracker/cache/{:?}/stderr_{:?}",
+                                comm_hash,
+                                tracer.curr_proc.as_raw()
+                            );
                             // This is the first real system call this program is doing after exec-ing.
-                            // We will redirect their stdout output here by writing it to a file.
+                            // We will redirect their stdout and stderr output here by writing them to files.
                             redirection::redirect_io_stream(&stdout_file, STDOUT_FD, &mut tracer)
                                 .await
                                 .with_context(|| context!("Unable to redirect stdout."))?;
-
+                            redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
+                                .await
+                                .with_context(|| context!("Unable to redirect stderr."))?;
                             // TODO: Add stderr redirection.
 
                             iostream_redirected = true;
@@ -496,8 +503,8 @@ pub async fn trace_process(
             curr_execution.add_exit_code(exit_code);
 
             // If this is tracing round, and current exec
-            // has written to stdout, we must write that stuff
-            // to stdout at the end because we have it redirected
+            // has written to stdout/stderr, we must write that stuff
+            // to stdout/stderr at the end because we have it redirected
             // to a file.
             // TODO: check that it's not skipping?
             if tracer.curr_proc == curr_execution.pid() {
@@ -513,12 +520,21 @@ pub async fn trace_process(
                 let cache_dir = PathBuf::from(cache_dir);
                 if cache_dir.exists() {
                     let stdout_file = cache_dir.join(format!("stdout_{}", pid));
+                    let stderr_file = cache_dir.join(format!("stderr_{}", pid));
                     if stdout_file.exists() {
                         let mut f = File::open(stdout_file).unwrap();
                         let mut buf = Vec::new();
                         let bytes = f.read_to_end(&mut buf).unwrap();
                         if bytes != 0 {
                             io::stdout().write_all(&buf).unwrap();
+                        }
+                    }
+                    if stderr_file.exists() {
+                        let mut f = File::open(stderr_file).unwrap();
+                        let mut buf = Vec::new();
+                        let bytes = f.read_to_end(&mut buf).unwrap();
+                        if bytes != 0 {
+                            io::stderr().write_all(&buf).unwrap();
                         }
                     }
                 }
