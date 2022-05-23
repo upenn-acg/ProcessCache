@@ -189,7 +189,7 @@ fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, fil
 // TODO: insert into an EXISTING cache
 pub fn serialize_execs_to_cache(exec_map: ExecCacheMap) {
     let serialized_exec_map = rmp_serde::to_vec(&exec_map).unwrap();
-    const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
+    const CACHE_LOCATION: &str = "./cache/cache";
 
     // This will replace the contents
     fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
@@ -197,11 +197,11 @@ pub fn serialize_execs_to_cache(exec_map: ExecCacheMap) {
 }
 
 pub fn retrieve_existing_cache() -> Option<ExecCacheMap> {
-    const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
+    const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     if cache_path.exists() {
-        let exec_struct_bytes = fs::read("/home/kelly/research/IOTracker/cache/cache")
-            .expect("failed to deserialize execs from cache");
+        let exec_struct_bytes =
+            fs::read("./cache/cache").expect("failed to deserialize execs from cache");
         Some(rmp_serde::from_read_ref(&exec_struct_bytes).unwrap())
     } else {
         None

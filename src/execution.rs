@@ -84,7 +84,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
             HashMap::new()
         };
         first_execution.update_curr_cache_map(&mut existing_cache);
-        // serialize_execs_to_cache(existing_cache.clone());
+        serialize_execs_to_cache(existing_cache.clone());
     }
     Ok(())
 }

@@ -1367,39 +1367,35 @@ mod tests {
         exec_file_events.add_new_file_event(
             Pid::from_raw(0),
             SyscallEvent::Rename(
-                PathBuf::from("/home/kelly/research/IOTracker/foo.txt"),
-                PathBuf::from("/home/kelly/research/IOTracker/bar.txt"),
+                PathBuf::from("foo.txt"),
+                PathBuf::from("bar.txt"),
                 SyscallOutcome::Success,
             ),
-            PathBuf::from("/home/kelly/research/IOTracker/foo.txt"),
+            PathBuf::from("foo.txt"),
         );
         exec_file_events.add_new_file_event(
             Pid::from_raw(0),
             SyscallEvent::Rename(
-                PathBuf::from("/home/kelly/research/IOTracker/foo.txt"),
-                PathBuf::from("/home/kelly/research/IOTracker/bar.txt"),
+                PathBuf::from("foo.txt"),
+                PathBuf::from("bar.txt"),
                 SyscallOutcome::Success,
             ),
-            PathBuf::from("/home/kelly/research/IOTracker/bar.txt"),
+            PathBuf::from("bar.txt"),
         );
         exec_file_events.add_new_file_event(
             Pid::from_raw(0),
             SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
-            PathBuf::from("/home/kelly/research/IOTracker/foo.txt"),
+            PathBuf::from("foo.txt"),
         );
         exec_file_events.add_new_file_event(
             Pid::from_raw(0),
             SyscallEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
-            PathBuf::from("/home/kelly/research/IOTracker/bar.txt"),
+            PathBuf::from("bar.txt"),
         );
 
         let preconditions = generate_preconditions(exec_file_events.clone());
-        let preconditions_set_foo = preconditions
-            .get(&PathBuf::from("/home/kelly/research/IOTracker/foo.txt"))
-            .unwrap();
-        let preconditions_set_bar = preconditions
-            .get(&PathBuf::from("/home/kelly/research/IOTracker/bar.txt"))
-            .unwrap();
+        let preconditions_set_foo = preconditions.get(&PathBuf::from("foo.txt")).unwrap();
+        let preconditions_set_bar = preconditions.get(&PathBuf::from("bar.txt")).unwrap();
 
         let mut flags = AccessFlags::empty();
         flags.insert(AccessFlags::W_OK);

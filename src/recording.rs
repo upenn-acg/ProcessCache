@@ -148,7 +148,7 @@ impl Execution {
     // 3) no? add to the overall map
     // 4) is a child? add to parent
     fn update_curr_cache_map(&self, existing_cache_map: &mut ExecCacheMap) {
-        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache";
+        const CACHE_LOCATION: &str = "./cache";
         let cache_dir = PathBuf::from(CACHE_LOCATION);
         let curr_file_events = self.file_events.clone();
         let preconditions = generate_preconditions(curr_file_events.clone());
