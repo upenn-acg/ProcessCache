@@ -158,6 +158,9 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_rename)?;
+    loader.intercept(libc::SYS_renameat)?;
+    loader.intercept(libc::SYS_renameat2)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
     loader.intercept(libc::SYS_unlink)?;
@@ -202,7 +205,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_pselect6)?;
 
     // TODO: Probably should handle later...
-    loader.let_pass(libc::SYS_rename)?;
     loader.let_pass(libc::SYS_mkdir)?;
     loader.let_pass(libc::SYS_umask)?;
     loader.let_pass(libc::SYS_faccessat)?;

@@ -84,7 +84,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
             HashMap::new()
         };
         first_execution.update_curr_cache_map(&mut existing_cache);
-        serialize_execs_to_cache(existing_cache);
+        // serialize_execs_to_cache(existing_cache.clone());
     }
     Ok(())
 }
@@ -324,8 +324,12 @@ pub async fn trace_process(
                     "unlink" | "unlinkat" => {
                         use std::os::unix::fs::MetadataExt;
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
-                        let meta = full_path.as_path().metadata().unwrap();
-                        nlinks_before = meta.nlink();
+                        if full_path.exists() {
+                            let meta = full_path.as_path().metadata().unwrap();
+                            nlinks_before = meta.nlink();
+                        } else {
+                            nlinks_before = 0;
+                        }
                     }
                     _ => {
                         if !iostream_redirected {
@@ -359,9 +363,9 @@ pub async fn trace_process(
                             redirection::redirect_io_stream(&stdout_file, STDOUT_FD, &mut tracer)
                                 .await
                                 .with_context(|| context!("Unable to redirect stdout."))?;
-                            redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
-                                .await
-                                .with_context(|| context!("Unable to redirect stderr."))?;
+                            // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
+                            //     .await
+                            //     .with_context(|| context!("Unable to redirect stderr."))?;
                             // TODO: Add stderr redirection.
 
                             iostream_redirected = true;
@@ -391,7 +395,9 @@ pub async fn trace_process(
                     }
                     // TODO: newfstatat
                     "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
-                    "rename" | "renameat" => handle_rename(&curr_execution, name, &tracer)?,
+                    "rename" | "renameat" | "renameat2" => {
+                        handle_rename(&curr_execution, name, &tracer)?
+                    }
                     "unlink" | "unlinkat" => {
                         if nlinks_before == 1 {
                             // before facts? (success)
@@ -520,7 +526,7 @@ pub async fn trace_process(
                 let cache_dir = PathBuf::from(cache_dir);
                 if cache_dir.exists() {
                     let stdout_file = cache_dir.join(format!("stdout_{}", pid));
-                    let stderr_file = cache_dir.join(format!("stderr_{}", pid));
+                    // let stderr_file = cache_dir.join(format!("stderr_{}", pid));
                     if stdout_file.exists() {
                         let mut f = File::open(stdout_file).unwrap();
                         let mut buf = Vec::new();
@@ -529,14 +535,14 @@ pub async fn trace_process(
                             io::stdout().write_all(&buf).unwrap();
                         }
                     }
-                    if stderr_file.exists() {
-                        let mut f = File::open(stderr_file).unwrap();
-                        let mut buf = Vec::new();
-                        let bytes = f.read_to_end(&mut buf).unwrap();
-                        if bytes != 0 {
-                            io::stderr().write_all(&buf).unwrap();
-                        }
-                    }
+                    // if stderr_file.exists() {
+                    //     let mut f = File::open(stderr_file).unwrap();
+                    //     let mut buf = Vec::new();
+                    //     let bytes = f.read_to_end(&mut buf).unwrap();
+                    //     if bytes != 0 {
+                    //         io::stderr().write_all(&buf).unwrap();
+                    //     }
+                    // }
                 }
             }
         }
