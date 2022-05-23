@@ -72,7 +72,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
     if !full_tracking_on && !first_execution.is_empty_root_exec() {
         // let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
-        const CACHE_LOCATION: &str = "/home/kelly/research/IOTracker/cache/cache";
+        const CACHE_LOCATION: &str = "./cache/cache";
         let cache_path = PathBuf::from(CACHE_LOCATION);
         // Make the cache file if it doesn't exist.
         let mut existing_cache = if !cache_path.exists() {
@@ -199,13 +199,14 @@ pub async fn trace_process(
                         let starting_cwd = PathBuf::from(cwd);
 
                         let exec_path_buf = PathBuf::from(executable.clone());
-                        let full_exec_path = starting_cwd.join(exec_path_buf.file_name().unwrap());
-                        debug!("Execve event, executable: {:?}", full_exec_path.clone());
+                        debug!("Raw executable: {:?}", exec_path_buf);
+                        let exec_path_buf = fs::canonicalize(exec_path_buf).unwrap();
+                        debug!("Execve event, executable: {:?}", exec_path_buf);
 
                         // Check the cache for the thing
                         if let Some(cache) = retrieve_existing_cache() {
                             let command = Command(
-                                full_exec_path
+                                exec_path_buf
                                     .clone()
                                     .into_os_string()
                                     .into_string()
@@ -255,7 +256,7 @@ pub async fn trace_process(
                         new_exec_metadata.add_identifiers(
                             args,
                             envp,
-                            full_exec_path.clone(),
+                            exec_path_buf.clone(),
                             starting_cwd,
                         );
 
@@ -310,7 +311,7 @@ pub async fn trace_process(
                                 curr_execution.add_new_file_event(
                                     tracer.curr_proc,
                                     failed_exec,
-                                    full_exec_path,
+                                    exec_path_buf,
                                 );
                             }
                             e => panic!("Unexpected event after execve prehook: {:?}", e),
@@ -342,27 +343,27 @@ pub async fn trace_process(
                                 exec.into_os_string().into_string().unwrap(),
                                 args,
                             ));
-                            let cache_subdir =
-                                format!("/home/kelly/research/IOTracker/cache/{:?}", comm_hash);
-                            let cache_subdir = PathBuf::from(cache_subdir);
+                            let cache_subdir = fs::canonicalize("./cache").unwrap();
+                            let cache_subdir = cache_subdir.join(format!("{:?}", comm_hash));
                             if !cache_subdir.exists() {
                                 fs::create_dir(cache_subdir.clone()).unwrap();
                             }
-                            let stdout_file: String = format!(
-                                "/home/kelly/research/IOTracker/cache/{:?}/stdout_{:?}",
-                                comm_hash,
-                                tracer.curr_proc.as_raw()
-                            );
-                            let stderr_file: String = format!(
-                                "/home/kelly/research/IOTracker/cache/{:?}/stderr_{:?}",
-                                comm_hash,
-                                tracer.curr_proc.as_raw()
-                            );
+                            let stdout_file = cache_subdir
+                                .join(format!("stdout_{:?}", tracer.curr_proc.as_raw()));
+                            // let stderr_file: String = format!(
+                            //     "/IOTracker/cache/{:?}/stderr_{:?}",
+                            //     comm_hash,
+                            //     tracer.curr_proc.as_raw()
+                            // );
                             // This is the first real system call this program is doing after exec-ing.
                             // We will redirect their stdout and stderr output here by writing them to files.
-                            redirection::redirect_io_stream(&stdout_file, STDOUT_FD, &mut tracer)
-                                .await
-                                .with_context(|| context!("Unable to redirect stdout."))?;
+                            redirection::redirect_io_stream(
+                                stdout_file.to_str().unwrap(),
+                                STDOUT_FD,
+                                &mut tracer,
+                            )
+                            .await
+                            .with_context(|| context!("Unable to redirect stdout."))?;
                             // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
                             //     .await
                             //     .with_context(|| context!("Unable to redirect stderr."))?;
@@ -522,7 +523,7 @@ pub async fn trace_process(
                         .unwrap(),
                     curr_execution.args(),
                 ));
-                let cache_dir = format!("/home/kelly/research/IOTracker/cache/{:?}", comm_hash);
+                let cache_dir = format!("/IOTracker/cache/{:?}", comm_hash);
                 let cache_dir = PathBuf::from(cache_dir);
                 if cache_dir.exists() {
                     let stdout_file = cache_dir.join(format!("stdout_{}", pid));
