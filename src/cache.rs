@@ -20,11 +20,12 @@ pub type ExecCacheMap = HashMap<Command, Vec<RcCachedExec>>;
 // Having them be a part of this struct would
 // be redundant.
 // TODO: exit code
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
     command: Command,
     env_vars: Vec<String>,
+    index_in_exec_list: u32,
     preconditions: HashMap<PathBuf, HashSet<Fact>>,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
     starting_cwd: PathBuf,
@@ -35,6 +36,7 @@ impl CachedExecution {
         child_execs: Vec<RcCachedExec>,
         command: Command,
         env_vars: Vec<String>,
+        index_in_exec_list: u32,
         preconditions: HashMap<PathBuf, HashSet<Fact>>,
         postconditions: HashMap<PathBuf, HashSet<Fact>>,
         starting_cwd: PathBuf,
@@ -43,6 +45,7 @@ impl CachedExecution {
             child_execs,
             command,
             env_vars,
+            index_in_exec_list,
             preconditions,
             postconditions,
             starting_cwd,
@@ -55,10 +58,12 @@ impl CachedExecution {
 
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
-        let cache_dir = PathBuf::from("./IOTracker/cache/");
+        let cache_subdir = PathBuf::from("./cache/");
         let command = self.command();
-        let curr_command_subdir = hash_command(command);
-        let cache_subdir = cache_dir.join(curr_command_subdir.to_string());
+        let index = self.index_in_exec_list();
+        let comm_hash = hash_command(command);
+        let cache_subdir = cache_subdir.join(comm_hash.to_string());
+        let cache_subdir = cache_subdir.join(index.to_string());
 
         for (file, fact_set) in postconditions {
             apply_transition_function(cache_subdir.clone(), fact_set, file);
@@ -126,6 +131,10 @@ impl CachedExecution {
         self.command.clone()
     }
 
+    fn index_in_exec_list(&self) -> u32 {
+        self.index_in_exec_list
+    }
+
     fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
     }
@@ -137,9 +146,13 @@ impl CachedExecution {
             child.print_me()
         }
     }
+
+    fn update_index(&mut self, new_index: u32) {
+        self.index_in_exec_list = new_index;
+    }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RcCachedExec(Rc<CachedExecution>);
 
 impl RcCachedExec {
@@ -179,6 +192,8 @@ fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, fil
             Fact::FinalContents => {
                 let file_name = file.file_name().unwrap();
                 let cache_file_location = cache_subdir.join(file_name);
+                debug!("cache file location: {:?}", cache_file_location);
+                debug!("og file path: {:?}", file);
                 fs::copy(cache_file_location, file.clone()).unwrap();
             }
             _ => (),

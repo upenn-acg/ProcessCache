@@ -163,6 +163,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_renameat2)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
+    loader.intercept(libc::SYS_umask)?;
     loader.intercept(libc::SYS_unlink)?;
     loader.intercept(libc::SYS_unlinkat)?;
 
@@ -201,12 +202,10 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getxattr)?;
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_getrusage)?;
-    // loader.let_pass(libc::SYS_chmod)?;
     loader.let_pass(libc::SYS_pselect6)?;
 
     // TODO: Probably should handle later...
     loader.let_pass(libc::SYS_mkdir)?;
-    loader.let_pass(libc::SYS_umask)?;
     loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_pipe)?;

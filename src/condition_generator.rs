@@ -378,12 +378,26 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::Renamed(_, _), _) => {
+                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path), _) => {
                     // old path? didnt exist, created, renamed. now trying to delete. won't succeed it doesnt exist anymore.
-                    // newpath? didn't exist, rename made it exist, now it might get deleted. does this change its preconds? nope
-                    // they are still just "doesn't exist"
+                    // newpath? didn't exist, rename made it exist, now it might get deleted.
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            if full_path == new_path {
+                                has_been_deleted = true;
+                            }
+                        }
+                        f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
+                    }
                 }
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::None, false) => (),
+                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            has_been_deleted = true;
+                        }
+                        f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
+                    }
+                }
                 (SyscallEvent::Delete(_), State::Exists, Mod::Created, true) => (),
                 (SyscallEvent::Delete(_), State::Exists, Mod::Deleted, true) => (),
                 (SyscallEvent::Delete(_), State::Exists, Mod::Modified, true) => (),
@@ -430,8 +444,15 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 (SyscallEvent::Delete(_), State::None, Mod::Deleted, _) => {
                     panic!("First state was none but last mod was deleted??");
                 }
-                (SyscallEvent::Delete(_), State::None, Mod::Modified, _) => {
-                    panic!("First state was none but last mod was modified??");
+                // None state can be because TRUNC
+                (SyscallEvent::Delete(_), State::None, Mod::Modified, true) => (),
+                (SyscallEvent::Delete(outcome), State::None, Mod::Modified, false) => {
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            has_been_deleted = true;
+                        }
+                        f => panic!("Delete failed for unexpected reason, exists, last mod renamed, no delete yet: {:?}", f),
+                    }
                 }
                 (SyscallEvent::Delete(_), State::None, Mod::Renamed(_,_), _) => {
                     panic!("First state was none but last mod was renamed??");
@@ -681,7 +702,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         }
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_TRUNC,  _,outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(OFlag::O_TRUNC, _, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
@@ -1033,11 +1054,15 @@ pub fn generate_postconditions(
                 ) => {
                     if outcome == &SyscallOutcome::Success {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path)) => {
                     if outcome == &SyscallOutcome::Success && full_path == new_path {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
@@ -1045,22 +1070,30 @@ pub fn generate_postconditions(
                 (SyscallEvent::Delete(outcome), State::Exists, Mod::Created | Mod::Modified) => {
                     if outcome == &SyscallOutcome::Success {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _)) => {
                     if outcome == &SyscallOutcome::Success {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(_), State::Exists, Mod::Deleted) => (),
                 (SyscallEvent::Delete(outcome), State::Exists, Mod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(outcome), State::None, Mod::None) => {
                     if outcome == &SyscallOutcome::Success {
                         curr_file_postconditions.remove(full_path);
+                        let new_set = HashSet::from([Fact::DoesntExist]);
+                        curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
                 (SyscallEvent::FailedExec(_), _, _) => (),
@@ -1107,7 +1140,6 @@ pub fn generate_postconditions(
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                // TODO: this isn't right lol
                 (
                     SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, outcome),
                     State::None,
@@ -1126,12 +1158,16 @@ pub fn generate_postconditions(
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {
+                    panic!("FULL PATH: {:?}, OLD PATH: {:?}", full_path, old_path,);
                     if outcome == &SyscallOutcome::Success && full_path == old_path {
                         // all post conds of old path become the new path's
                         // delete old path's entry for postconds
+                        panic!("here WE ARE");
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(full_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (
@@ -1144,6 +1180,8 @@ pub fn generate_postconditions(
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
@@ -1160,6 +1198,8 @@ pub fn generate_postconditions(
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (
@@ -1174,13 +1214,10 @@ pub fn generate_postconditions(
                         // Look up new_path's postconds and set them to oldpath's
                         // set oldpaths postconds to doesnt exist.
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
-                        let new_path_post_set = curr_file_postconditions
-                            .entry(new_path.clone())
-                            .or_insert(HashSet::new());
-
-                        for post_cond in curr_set.iter() {
-                            new_path_post_set.insert(post_cond.clone());
-                        }
+                        let _ = curr_file_postconditions.remove(new_path);
+                        curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
@@ -1189,6 +1226,8 @@ pub fn generate_postconditions(
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
 
@@ -1198,6 +1237,8 @@ pub fn generate_postconditions(
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);
+                        curr_file_postconditions
+                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Stat(_, _), _, _) => (),

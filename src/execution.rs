@@ -200,7 +200,11 @@ pub async fn trace_process(
 
                         let exec_path_buf = PathBuf::from(executable.clone());
                         debug!("Raw executable: {:?}", exec_path_buf);
-                        let exec_path_buf = fs::canonicalize(exec_path_buf).unwrap();
+                        let exec_path_buf = if exec_path_buf.is_relative() {
+                            fs::canonicalize(exec_path_buf).unwrap()
+                        } else {
+                            exec_path_buf
+                        };
                         debug!("Execve event, executable: {:?}", exec_path_buf);
 
                         // Check the cache for the thing
@@ -217,6 +221,7 @@ pub async fn trace_process(
                                 debug!("Checking all preconditions: execution is: {:?}", command);
 
                                 let mut found_one = false;
+                                let mut index = 0;
                                 for entry in entry_list {
                                     if entry.check_all_preconditions() {
                                         // Check if we should skip this execution.
@@ -237,10 +242,13 @@ pub async fn trace_process(
                                         regs.write_rax(exit_syscall_num);
 
                                         tracer.set_regs(&mut regs)?;
+                                        let existing_cache = retrieve_existing_cache().unwrap();
+
                                         entry.apply_all_transitions();
                                         found_one = true;
                                         break;
                                     }
+                                    index += 1;
                                 }
                                 if found_one {
                                     continue;
@@ -322,6 +330,7 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
+                    "umask" => panic!("Program called umask!!"),
                     "unlink" | "unlinkat" => {
                         use std::os::unix::fs::MetadataExt;
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -745,25 +754,25 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     let rename_event = match ret_val {
         0 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path.clone(),
+            full_new_path,
             SyscallOutcome::Success,
         ),
         // Probably the old file doesn't exist. Empty new path is also possible.
         -2 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path.clone(),
+            full_new_path,
             SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
         ),
         -13 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path.clone(),
+            full_new_path,
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
         ),
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
 
-    execution.add_new_file_event(tracer.curr_proc, rename_event.clone(), full_old_path);
-    execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
+    execution.add_new_file_event(tracer.curr_proc, rename_event, full_old_path);
+    // execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
     Ok(())
 }
 

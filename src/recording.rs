@@ -158,10 +158,17 @@ impl Execution {
             self.executable().into_os_string().into_string().unwrap(),
             self.args(),
         );
+
+        let index = if let Some(exec_list) = existing_cache_map.get(&command_key) {
+            exec_list.len()
+        } else {
+            0
+        };
         let mut cached_exec = CachedExecution::new(
             Vec::new(),
             command_key.clone(),
             self.env_vars(),
+            index as u32,
             preconditions,
             postconditions.clone(),
             self.starting_cwd(),
@@ -176,10 +183,16 @@ impl Execution {
                 child.args(),
             );
 
+            let index = if let Some(exec_list) = existing_cache_map.get(&child_command) {
+                exec_list.len()
+            } else {
+                0
+            };
             let cached_child = CachedExecution::new(
                 Vec::new(),
                 child_command,
                 child.env_vars(),
+                index as u32,
                 preconditions,
                 postconditions.clone(),
                 child.starting_cwd(),
@@ -190,11 +203,12 @@ impl Execution {
         }
 
         let rc_cached_exec = RcCachedExec::new(cached_exec);
-        let exec_list = existing_cache_map
+        // let exec_list = existing_cache_map.get_mut(&command_key).unwrap();
+        existing_cache_map
             .entry(command_key.clone())
-            .or_insert(Vec::new());
-        exec_list.push(rc_cached_exec);
-        let index = exec_list.len() - 1;
+            .or_insert_with(|| vec![rc_cached_exec]);
+        // exec_list.push(rc_cached_exec);
+
         // Now copy the output files to the appropriate places.
         let hashed_command = hash_command(command_key);
         let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
@@ -215,7 +229,12 @@ impl Execution {
                 if fact == Fact::FinalContents {
                     let file_name = full_path.file_name().unwrap();
                     let cache_file_path = cache_subdir_hash_and_idx.join(file_name);
-                    fs::copy(full_path.clone(), cache_file_path).unwrap();
+                    // TODO: not a real solution to the mothur problem
+                    debug!("FULL PATH: {:?}", full_path);
+                    debug!("CACHE PATH: {:?}", cache_file_path);
+                    if full_path.extension().unwrap() != "temp" {
+                        fs::copy(full_path.clone(), cache_file_path).unwrap();
+                    }
                 }
             }
         }
