@@ -160,6 +160,10 @@ impl RcCachedExec {
         RcCachedExec(Rc::new(cached_exec))
     }
 
+    pub fn apply_all_transitions(&self) {
+        self.0.apply_all_transitions()
+    }
+
     pub fn check_all_preconditions(&self) -> bool {
         self.0.check_all_preconditions()
     }
@@ -168,8 +172,8 @@ impl RcCachedExec {
         self.0.check_all_preconditions_regardless()
     }
 
-    pub fn apply_all_transitions(&self) {
-        self.0.apply_all_transitions()
+    pub fn index_in_exec_list(&self) -> u32 {
+        self.0.index_in_exec_list()
     }
 
     pub fn print_me(&self) {

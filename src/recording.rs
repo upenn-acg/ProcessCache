@@ -6,7 +6,14 @@ use crate::{
     syscalls::SyscallEvent,
 };
 use nix::{unistd::Pid, NixPath};
-use std::{cell::RefCell, fs, hash::Hash, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    fs::{self, File},
+    hash::Hash,
+    io::{self, Read, Write},
+    path::PathBuf,
+    rc::Rc,
+};
 use tracing::debug;
 
 pub type ChildExecutions = Vec<RcExecution>;
@@ -219,11 +226,19 @@ impl Execution {
         if !cache_subdir_hash_and_idx.exists() {
             fs::create_dir(cache_subdir_hash_and_idx.clone()).unwrap();
         }
+
         let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
         debug!("NEW STD OUT FILE PATH: {:?}", new_stdout_file_path);
         debug!("OLD STD OUT FILE PATH: {:?}", curr_stdout_file_path);
         fs::copy(curr_stdout_file_path.clone(), new_stdout_file_path).unwrap();
+        let mut f = File::open(curr_stdout_file_path.clone()).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
         fs::remove_file(curr_stdout_file_path).unwrap();
+
         for (full_path, facts) in postconditions {
             for fact in facts {
                 if fact == Fact::FinalContents {

@@ -221,7 +221,6 @@ pub async fn trace_process(
                                 debug!("Checking all preconditions: execution is: {:?}", command);
 
                                 let mut found_one = false;
-                                let mut index = 0;
                                 for entry in entry_list {
                                     if entry.check_all_preconditions() {
                                         // Check if we should skip this execution.
@@ -242,13 +241,10 @@ pub async fn trace_process(
                                         regs.write_rax(exit_syscall_num);
 
                                         tracer.set_regs(&mut regs)?;
-                                        let existing_cache = retrieve_existing_cache().unwrap();
-
                                         entry.apply_all_transitions();
                                         found_one = true;
                                         break;
                                     }
-                                    index += 1;
                                 }
                                 if found_one {
                                     continue;
@@ -359,11 +355,11 @@ pub async fn trace_process(
                             }
                             let stdout_file = cache_subdir
                                 .join(format!("stdout_{:?}", tracer.curr_proc.as_raw()));
-                            // let stderr_file: String = format!(
-                            //     "/IOTracker/cache/{:?}/stderr_{:?}",
-                            //     comm_hash,
-                            //     tracer.curr_proc.as_raw()
-                            // );
+                            let stderr_file: String = format!(
+                                "/cache/{:?}/stderr_{:?}",
+                                comm_hash,
+                                tracer.curr_proc.as_raw()
+                            );
                             // This is the first real system call this program is doing after exec-ing.
                             // We will redirect their stdout and stderr output here by writing them to files.
                             redirection::redirect_io_stream(
@@ -517,44 +513,6 @@ pub async fn trace_process(
             // pid that exec'd the exec. execececececec.
             // TODO: don't add this here if skipping?
             curr_execution.add_exit_code(exit_code);
-
-            // If this is tracing round, and current exec
-            // has written to stdout/stderr, we must write that stuff
-            // to stdout/stderr at the end because we have it redirected
-            // to a file.
-            // TODO: check that it's not skipping?
-            if tracer.curr_proc == curr_execution.pid() {
-                let comm_hash = hash_command(Command(
-                    curr_execution
-                        .executable()
-                        .into_os_string()
-                        .into_string()
-                        .unwrap(),
-                    curr_execution.args(),
-                ));
-                let cache_dir = format!("/IOTracker/cache/{:?}", comm_hash);
-                let cache_dir = PathBuf::from(cache_dir);
-                if cache_dir.exists() {
-                    let stdout_file = cache_dir.join(format!("stdout_{}", pid));
-                    // let stderr_file = cache_dir.join(format!("stderr_{}", pid));
-                    if stdout_file.exists() {
-                        let mut f = File::open(stdout_file).unwrap();
-                        let mut buf = Vec::new();
-                        let bytes = f.read_to_end(&mut buf).unwrap();
-                        if bytes != 0 {
-                            io::stdout().write_all(&buf).unwrap();
-                        }
-                    }
-                    // if stderr_file.exists() {
-                    //     let mut f = File::open(stderr_file).unwrap();
-                    //     let mut buf = Vec::new();
-                    //     let bytes = f.read_to_end(&mut buf).unwrap();
-                    //     if bytes != 0 {
-                    //         io::stderr().write_all(&buf).unwrap();
-                    //     }
-                    // }
-                }
-            }
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
