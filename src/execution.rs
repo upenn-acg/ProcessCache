@@ -8,14 +8,10 @@ use nix::fcntl::{readlink, OFlag};
 use nix::sys::stat::FileStat;
 use nix::unistd::Pid;
 use std::collections::HashMap;
+use std::fs;
 use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::{
-    fs,
-    io::{self, Write},
-};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{retrieve_existing_cache, serialize_execs_to_cache};
@@ -222,7 +218,9 @@ pub async fn trace_process(
 
                                 let mut found_one = false;
                                 for entry in entry_list {
-                                    if entry.check_all_preconditions() {
+                                    if full_tracking_on {
+                                        entry.check_all_preconditions_regardless()
+                                    } else if entry.check_all_preconditions() {
                                         // Check if we should skip this execution.
                                         // If we are gonna skip, we have to change:
                                         // rax, orig_rax, arg1
@@ -250,7 +248,6 @@ pub async fn trace_process(
                                     continue;
                                 }
                             }
-                            // continue;
                         }
 
                         let next_event = tracer.get_next_syscall().await.with_context(|| {
@@ -355,11 +352,11 @@ pub async fn trace_process(
                             }
                             let stdout_file = cache_subdir
                                 .join(format!("stdout_{:?}", tracer.curr_proc.as_raw()));
-                            let stderr_file: String = format!(
-                                "/cache/{:?}/stderr_{:?}",
-                                comm_hash,
-                                tracer.curr_proc.as_raw()
-                            );
+                            // let stderr_file: String = format!(
+                            //     "/cache/{:?}/stderr_{:?}",
+                            //     comm_hash,
+                            //     tracer.curr_proc.as_raw()
+                            // );
                             // This is the first real system call this program is doing after exec-ing.
                             // We will redirect their stdout and stderr output here by writing them to files.
                             redirection::redirect_io_stream(

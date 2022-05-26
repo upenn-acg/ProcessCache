@@ -1158,11 +1158,11 @@ pub fn generate_postconditions(
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {
-                    panic!("FULL PATH: {:?}, OLD PATH: {:?}", full_path, old_path,);
+                    // panic!("FULL PATH: {:?}, OLD PATH: {:?}", full_path, old_path,);
                     if outcome == &SyscallOutcome::Success && full_path == old_path {
                         // all post conds of old path become the new path's
                         // delete old path's entry for postconds
-                        panic!("here WE ARE");
+                        // panic!("here WE ARE");
                         let curr_set = curr_file_postconditions.remove(full_path).unwrap();
                         let _ = curr_file_postconditions.remove(new_path);
                         curr_file_postconditions.insert(new_path.clone(), curr_set);

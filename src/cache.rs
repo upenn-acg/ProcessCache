@@ -105,12 +105,13 @@ impl CachedExecution {
     }
 
     fn check_all_preconditions_regardless(&self) {
+        debug!("CHECKING ALL PRECONDS REGARDLESS!!");
         let my_preconds = self.preconditions.clone();
-        // let vars = std::env::vars();
-        // let mut vec_vars = Vec::new();
-        // for (first, second) in vars {
-        //     vec_vars.push(format!("{}={}", first, second));
-        // }
+        let vars = std::env::vars();
+        let mut vec_vars = Vec::new();
+        for (first, second) in vars {
+            vec_vars.push(format!("{}={}", first, second));
+        }
 
         let curr_cwd = std::env::current_dir().unwrap();
         if self.starting_cwd != curr_cwd {
