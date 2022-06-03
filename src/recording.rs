@@ -8,6 +8,7 @@ use crate::{
 use nix::{unistd::Pid, NixPath};
 use std::{
     cell::RefCell,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     hash::Hash,
     io::{self, Read, Write},
@@ -104,7 +105,7 @@ impl Execution {
         Execution {
             child_execs: Vec::new(),
             exit_code: None,
-            file_events: ExecFileEvents::new(),
+            file_events: ExecFileEvents::new(HashMap::new()),
             successful_exec: ExecMetadata::new(calling_pid),
         }
     }
@@ -144,6 +145,74 @@ impl Execution {
         self.successful_exec.executable()
     }
 
+    fn print_appropriate_event_list(&self, path: PathBuf) {
+        if let Some(list) = self.file_events.events().get(&path) {
+            for event in list {
+                println!("Event: {:?}", event);
+            }
+        }
+
+        let children = self.child_execs.clone();
+        for child in children {
+            println!("Child going to print now");
+            child.print_appropriate_event_list(path.clone());
+        }
+    }
+
+    fn generate_event_list_and_cached_exec(
+        &self,
+        cache_map: &mut HashMap<Command, Vec<RcCachedExec>>,
+    ) -> (CachedExecution, ExecFileEvents) {
+        let command_key = Command(
+            self.executable().into_os_string().into_string().unwrap(),
+            self.args(),
+        );
+        let file_events = self.file_events.clone();
+
+        let preconditions = generate_preconditions(file_events.clone());
+        let index = if let Some(exec_list) = cache_map.get(&command_key) {
+            exec_list.len()
+        } else {
+            0
+        };
+
+        let mut new_cached_exec = CachedExecution::new(
+            Vec::new(),
+            command_key.clone(),
+            self.env_vars(),
+            index as u32,
+            preconditions,
+            HashMap::new(),
+            self.starting_cwd(),
+        );
+
+        let children = self.child_execs.clone();
+        let file_events = self.file_events.clone();
+        let mut new_events = HashMap::new();
+        for child in children {
+            // logic to append map
+            let (child_exec, child_events) = child.generate_event_list_and_cached_exec(cache_map);
+            new_events = append_file_events(file_events.clone(), child_events);
+            new_cached_exec.add_child(RcCachedExec::new(child_exec));
+        }
+
+        let exec_file_events = ExecFileEvents::new(new_events);
+        let postconditions = generate_postconditions(exec_file_events.clone());
+        new_cached_exec.add_postconditions(postconditions);
+        let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
+        let e = cache_map.entry(command_key).or_insert(Vec::new());
+        e.push(new_rc_cached_exec);
+        (new_cached_exec, exec_file_events)
+    }
+
+    pub fn populate_cache_map(&self, cache_map: &mut ExecCacheMap) {
+        let (cached_exec, _) = self.generate_event_list_and_cached_exec(cache_map);
+        let command_key = cached_exec.command();
+        let index = cached_exec.index_in_exec_list();
+        let posts = cached_exec.postconditions();
+        copy_output_files_to_cache(command_key, index, posts);
+    }
+
     // change from add_to_cachable_map(&mut execachemap)
     // to update_curr_cache_map(&mut existing_cache_map_)
     // recurse through the Execution and children and children of children...
@@ -181,6 +250,10 @@ impl Execution {
             self.starting_cwd(),
         );
 
+        debug!(
+            "number of children as we create cache map: {:?}",
+            self.child_execs.iter().len()
+        );
         for child in self.child_execs.iter() {
             let child_file_events = child.file_events();
             let preconditions = generate_preconditions(child_file_events.clone());
@@ -207,6 +280,7 @@ impl Execution {
             let child_rc = RcCachedExec::new(cached_child);
             cached_exec.add_child(child_rc.clone());
             child.update_curr_cache_map(existing_cache_map);
+            // TODO: am I adding the child of the child to the child's structure? I feel like no.
         }
 
         let rc_cached_exec = RcCachedExec::new(cached_exec);
@@ -241,13 +315,17 @@ impl Execution {
 
         for (full_path, facts) in postconditions {
             for fact in facts {
-                if fact == Fact::FinalContents {
+                if fact == Fact::FinalContents || fact == Fact::Exists {
                     let file_name = full_path.file_name().unwrap();
                     let cache_file_path = cache_subdir_hash_and_idx.join(file_name);
                     // TODO: not a real solution to the mothur problem
                     debug!("FULL PATH: {:?}", full_path);
                     debug!("CACHE PATH: {:?}", cache_file_path);
-                    if full_path.extension().unwrap() != "temp" {
+                    if let Some(ext) = full_path.extension() {
+                        if ext != "temp" {
+                            fs::copy(full_path.clone(), cache_file_path).unwrap();
+                        }
+                    } else {
                         fs::copy(full_path.clone(), cache_file_path).unwrap();
                     }
                 }
@@ -424,8 +502,18 @@ impl RcExecution {
     pub fn executable(&self) -> PathBuf {
         self.0.borrow().executable()
     }
+
     pub fn file_events(&self) -> ExecFileEvents {
         self.0.borrow().file_events()
+    }
+
+    pub fn generate_event_list_and_cached_exec(
+        &self,
+        cache_map: &mut HashMap<Command, Vec<RcCachedExec>>,
+    ) -> (CachedExecution, ExecFileEvents) {
+        self.0
+            .borrow()
+            .generate_event_list_and_cached_exec(cache_map)
     }
 
     pub fn is_empty_root_exec(&self) -> bool {
@@ -434,6 +522,14 @@ impl RcExecution {
 
     pub fn pid(&self) -> Pid {
         self.0.borrow().pid()
+    }
+
+    pub fn populate_cache_map(&self, cache_map: &mut HashMap<Command, Vec<RcCachedExec>>) {
+        self.0.borrow().populate_cache_map(cache_map)
+    }
+
+    pub fn print_appropriate_event_list(&self, path: PathBuf) {
+        self.0.borrow().print_appropriate_event_list(path)
     }
 
     pub fn print_basic_exec_info(&self) {
@@ -464,5 +560,75 @@ impl RcExecution {
         self.0
             .borrow_mut()
             .update_successful_exec(new_exec_metadata);
+    }
+}
+
+fn append_file_events(
+    parent_events: ExecFileEvents,
+    child_events: ExecFileEvents,
+) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+    let mut new_appended_events = parent_events.events();
+    let curr_child_map = child_events.events();
+
+    for (path_name, mut child_list) in curr_child_map {
+        if let Some(parent_list) = new_appended_events.get(&path_name) {
+            let mut parent_list_clone = parent_list.clone();
+            parent_list_clone.append(&mut child_list);
+            new_appended_events.insert(path_name, parent_list_clone);
+        } else {
+            new_appended_events.insert(path_name, child_list);
+        }
+    }
+
+    new_appended_events
+}
+
+fn copy_output_files_to_cache(
+    command_key: Command,
+    index: u32,
+    postconditions: HashMap<PathBuf, HashSet<Fact>>,
+) {
+    // Now copy the output files to the appropriate places.
+    const CACHE_LOCATION: &str = "./cache";
+    let cache_dir = PathBuf::from(CACHE_LOCATION);
+    let hashed_command = hash_command(command_key);
+    let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
+    let cache_subdir_hash_and_idx = cache_subdir_hashed_command.join(index.to_string());
+    if !cache_subdir_hash_and_idx.exists() {
+        fs::create_dir(cache_subdir_hash_and_idx.clone()).unwrap();
+    }
+
+    // let stdout_file_name = format!("stdout_{:?}", pid);
+    // let curr_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name.clone());
+
+    // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
+    // debug!("NEW STD OUT FILE PATH: {:?}", new_stdout_file_path);
+    // debug!("OLD STD OUT FILE PATH: {:?}", curr_stdout_file_path);
+    // fs::copy(curr_stdout_file_path.clone(), new_stdout_file_path).unwrap();
+    // let mut f = File::open(curr_stdout_file_path.clone()).unwrap();
+    // let mut buf = Vec::new();
+    // let bytes = f.read_to_end(&mut buf).unwrap();
+    // if bytes != 0 {
+    //     io::stdout().write_all(&buf).unwrap();
+    // }
+    // fs::remove_file(curr_stdout_file_path).unwrap();
+
+    for (full_path, facts) in postconditions {
+        for fact in facts {
+            if fact == Fact::FinalContents || fact == Fact::Exists {
+                let file_name = full_path.file_name().unwrap();
+                let cache_file_path = cache_subdir_hash_and_idx.join(file_name);
+                // TODO: not a real solution to the mothur problem
+                debug!("FULL PATH: {:?}", full_path);
+                debug!("CACHE PATH: {:?}", cache_file_path);
+                if let Some(ext) = full_path.extension() {
+                    if ext != "temp" {
+                        fs::copy(full_path.clone(), cache_file_path).unwrap();
+                    }
+                } else {
+                    fs::copy(full_path.clone(), cache_file_path).unwrap();
+                }
+            }
+        }
     }
 }

@@ -36,6 +36,10 @@ pub fn generate_open_syscall_file_event(
         return None;
     }
 
+    if full_path.starts_with("/tmp") {
+        return None;
+    }
+
     let starting_hash = if syscall_outcome.is_ok()
         && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
     {

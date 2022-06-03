@@ -79,7 +79,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         } else {
             HashMap::new()
         };
-        first_execution.update_curr_cache_map(&mut existing_cache);
+
+        // println!("contigs.report.temp");
+        // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report.temp"));
+        // println!("contigs.report");
+        // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report"));
+        first_execution.populate_cache_map(&mut existing_cache);
         serialize_execs_to_cache(existing_cache.clone());
     }
     Ok(())
@@ -168,8 +173,8 @@ pub async fn trace_process(
                 // TODO: Handle them properly...
 
                 match name {
-                    "chdir" => panic!("Program called chdir!!!"),
-                    "chmod" => panic!("Program called chmod!!!"),
+                    // "chdir" => panic!("Program called chdir!!!"),
+                    // "chmod" => panic!("Program called chmod!!!"),
                     "chown" => panic!("Program called chown!!!"),
                     "creat" | "open" | "openat" => {
                         // Get the full path and check if the file exists.
@@ -225,6 +230,7 @@ pub async fn trace_process(
                                         // If we are gonna skip, we have to change:
                                         // rax, orig_rax, arg1
                                         debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                        entry.apply_all_transitions();
                                         let regs = tracer.get_registers().with_context(|| {
                                             context!("Failed to get regs in skip exec event")
                                         })?;
@@ -239,7 +245,7 @@ pub async fn trace_process(
                                         regs.write_rax(exit_syscall_num);
 
                                         tracer.set_regs(&mut regs)?;
-                                        entry.apply_all_transitions();
+                                        // entry.apply_all_transitions();
                                         found_one = true;
                                         break;
                                     }
@@ -323,7 +329,7 @@ pub async fn trace_process(
                         debug!("Special event: {}. Do not go to posthook.", name);
                         continue;
                     }
-                    "umask" => panic!("Program called umask!!"),
+                    // "umask" => panic!("Program called umask!!"),
                     "unlink" | "unlinkat" => {
                         use std::os::unix::fs::MetadataExt;
                         let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -655,6 +661,7 @@ fn handle_open(
 }
 
 fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+    debug!("WE ARE IN HANDLE RENAME");
     let sys_span = span!(Level::INFO, "handle_rename", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
     let regs = tracer
@@ -676,32 +683,17 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
             (PathBuf::from(old_path_arg), PathBuf::from(new_path_arg))
         }
         "renameat" | "renameat2" => {
-            let old_dir_fd = regs.arg1::<i32>();
+            debug!("RENAMEAT2");
             let old_path_arg = regs.arg2::<*const c_char>();
             let old_file_name = tracer
                 .read_c_string(old_path_arg)
                 .with_context(|| context!("Cannot read `rename` path"))?;
-            let old_dir_path = if old_dir_fd == AT_FDCWD {
-                execution.starting_cwd()
-            } else {
-                path_from_fd(tracer.curr_proc, old_dir_fd)?
-            };
 
-            let new_dir_fd = regs.arg3::<i32>();
-            let new_path_arg = regs.arg2::<*const c_char>();
+            let new_path_arg = regs.arg4::<*const c_char>();
             let new_file_name = tracer
                 .read_c_string(new_path_arg)
                 .with_context(|| context!("Cannot read `rename` path"))?;
-            let new_dir_path = if new_dir_fd == AT_FDCWD {
-                execution.starting_cwd()
-            } else {
-                path_from_fd(tracer.curr_proc, new_dir_fd)?
-            };
-
-            (
-                old_dir_path.join(old_file_name),
-                new_dir_path.join(new_file_name),
-            )
+            (PathBuf::from(old_file_name), PathBuf::from(new_file_name))
         }
         _ => panic!("Calling unrecognized syscall in handle_rename()"),
     };
@@ -709,24 +701,24 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     let rename_event = match ret_val {
         0 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path,
+            full_new_path.clone(),
             SyscallOutcome::Success,
         ),
         // Probably the old file doesn't exist. Empty new path is also possible.
         -2 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path,
+            full_new_path.clone(),
             SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
         ),
         -13 => SyscallEvent::Rename(
             full_old_path.clone(),
-            full_new_path,
+            full_new_path.clone(),
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
         ),
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
 
-    execution.add_new_file_event(tracer.curr_proc, rename_event, full_old_path);
+    execution.add_new_file_event(tracer.curr_proc, rename_event.clone(), full_old_path);
     // execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
     Ok(())
 }

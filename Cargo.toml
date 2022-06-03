@@ -24,8 +24,16 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 
 [[bin]]
 name = "simplest_example"
-path = "/home/kelly/research/IOTracker/simplest_example.rs"
+path = "simplest_example.rs"
 
 [[bin]]
 name = "simplest_ex_child"
-path = "/home/kelly/research/IOTracker/simplest_ex_child.rs"
+path = "simplest_ex_child.rs"
+
+[[bin]]
+name = "gcc_empty_c"
+path = "/home/kelly/research/IOTracker/gcc_empty_c.rs"
+
+[[bin]]
+name = "silly_rename"
+path = "/home/kelly/research/IOTracker/silly_rename.rs"

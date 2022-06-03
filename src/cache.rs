@@ -56,20 +56,35 @@ impl CachedExecution {
         self.child_execs.push(child)
     }
 
+    pub fn add_postconditions(&mut self, posts: HashMap<PathBuf, HashSet<Fact>>) {
+        self.postconditions = posts;
+    }
+
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
+        let p = PathBuf::from("/home/kelly/research/IOTracker/empty_c");
+        if let Some(ps) = postconditions.get(&p) {
+            debug!(
+                "apply all transitions, conds for empty_c after getting existing cache: {:?}",
+                ps
+            );
+        } else {
+            debug!("apply all transitions, no conds for empty_c");
+        }
         let cache_subdir = PathBuf::from("./cache/");
         let command = self.command();
         let index = self.index_in_exec_list();
         let comm_hash = hash_command(command);
         let cache_subdir = cache_subdir.join(comm_hash.to_string());
         let cache_subdir = cache_subdir.join(index.to_string());
-
+        debug!("cache_subdir: {:?}", cache_subdir);
+        debug!("hello from apply all transitions");
         for (file, fact_set) in postconditions {
             apply_transition_function(cache_subdir.clone(), fact_set, file);
         }
 
         let children = self.child_execs.clone();
+        println!("curr num of children: {:?}", children.len());
         for child in children {
             child.apply_all_transitions()
         }
@@ -128,15 +143,15 @@ impl CachedExecution {
         }
     }
 
-    fn command(&self) -> Command {
+    pub fn command(&self) -> Command {
         self.command.clone()
     }
 
-    fn index_in_exec_list(&self) -> u32 {
+    pub fn index_in_exec_list(&self) -> u32 {
         self.index_in_exec_list
     }
 
-    fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
     }
 
@@ -188,13 +203,14 @@ impl RcCachedExec {
 
 fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, file: PathBuf) {
     for fact in fact_set {
+        debug!("Applying transition for fact");
         match fact {
             Fact::DoesntExist => {
                 if file.exists() {
                     fs::remove_file(file.clone()).unwrap();
                 }
             }
-            Fact::FinalContents => {
+            Fact::FinalContents | Fact::Exists => {
                 let file_name = file.file_name().unwrap();
                 let cache_file_location = cache_subdir.join(file_name);
                 debug!("cache file location: {:?}", cache_file_location);
