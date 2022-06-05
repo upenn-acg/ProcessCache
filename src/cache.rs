@@ -2,6 +2,7 @@ use crate::{
     cache_utils::{hash_command, Command},
     condition_generator::check_preconditions,
     condition_utils::Fact,
+    recording::RcExecution,
 };
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
@@ -24,6 +25,7 @@ pub type ExecCacheMap = HashMap<Command, Vec<RcCachedExec>>;
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
     command: Command,
+    cache_dir_command: Command,
     env_vars: Vec<String>,
     index_in_exec_list: u32,
     preconditions: HashMap<PathBuf, HashSet<Fact>>,
@@ -35,6 +37,7 @@ impl CachedExecution {
     pub fn new(
         child_execs: Vec<RcCachedExec>,
         command: Command,
+        cache_dir_command: Command,
         env_vars: Vec<String>,
         index_in_exec_list: u32,
         preconditions: HashMap<PathBuf, HashSet<Fact>>,
@@ -44,6 +47,7 @@ impl CachedExecution {
         CachedExecution {
             child_execs,
             command,
+            cache_dir_command,
             env_vars,
             index_in_exec_list,
             preconditions,
@@ -62,32 +66,22 @@ impl CachedExecution {
 
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
-        let p = PathBuf::from("/home/kelly/research/IOTracker/empty_c");
-        if let Some(ps) = postconditions.get(&p) {
-            debug!(
-                "apply all transitions, conds for empty_c after getting existing cache: {:?}",
-                ps
-            );
-        } else {
-            debug!("apply all transitions, no conds for empty_c");
-        }
+
         let cache_subdir = PathBuf::from("./cache/");
-        let command = self.command();
-        let index = self.index_in_exec_list();
+        let command = self.cache_dir_command();
+        // let index = self.index_in_exec_list();
         let comm_hash = hash_command(command);
         let cache_subdir = cache_subdir.join(comm_hash.to_string());
-        let cache_subdir = cache_subdir.join(index.to_string());
+        // let cache_subdir = cache_subdir.join(index.to_string());
         debug!("cache_subdir: {:?}", cache_subdir);
         debug!("hello from apply all transitions");
         for (file, fact_set) in postconditions {
             apply_transition_function(cache_subdir.clone(), fact_set, file);
         }
+    }
 
-        let children = self.child_execs.clone();
-        println!("curr num of children: {:?}", children.len());
-        for child in children {
-            child.apply_all_transitions()
-        }
+    fn cache_dir_command(&self) -> Command {
+        self.cache_dir_command.clone()
     }
 
     fn check_all_preconditions(&self) -> bool {
@@ -143,12 +137,20 @@ impl CachedExecution {
         }
     }
 
+    fn children(&self) -> Vec<RcCachedExec> {
+        self.child_execs.clone()
+    }
+
     pub fn command(&self) -> Command {
         self.command.clone()
     }
 
     pub fn index_in_exec_list(&self) -> u32 {
         self.index_in_exec_list
+    }
+
+    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.preconditions.clone()
     }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
@@ -188,12 +190,20 @@ impl RcCachedExec {
         self.0.check_all_preconditions_regardless()
     }
 
+    pub fn children(&self) -> Vec<RcCachedExec> {
+        self.0.children()
+    }
+
     pub fn index_in_exec_list(&self) -> u32 {
         self.0.index_in_exec_list()
     }
 
     pub fn print_me(&self) {
         self.0.print_me()
+    }
+
+    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.0.preconditions()
     }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {

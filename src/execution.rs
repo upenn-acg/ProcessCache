@@ -84,8 +84,59 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report.temp"));
         // println!("contigs.report");
         // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report"));
+        first_execution.print_file_events();
         first_execution.populate_cache_map(&mut existing_cache);
-        serialize_execs_to_cache(existing_cache.clone());
+        let parent_command = Command(
+            String::from("/home/kelly/research/IOTracker/newest_examples/parent_creates"),
+            vec![String::from("./newest_examples/parent_creates")],
+        );
+        println!("PARENT:");
+        if let Some(entry) = existing_cache.get(&parent_command) {
+            let first = entry.first().unwrap();
+            println!("preconditions:");
+            let preconditions = first.preconditions();
+            for (path, fact_set) in preconditions {
+                println!("Path: {:?}", path);
+
+                for fact in fact_set {
+                    println!("Fact: {:?}", fact);
+                }
+            }
+
+            println!("postconditions:");
+            let postconditions = first.postconditions();
+            for (path, fact_set) in postconditions {
+                println!("Path: {:?}", path);
+
+                for fact in fact_set {
+                    println!("Fact: {:?}", fact);
+                }
+            }
+
+            println!("Children");
+            for child in first.children() {
+                println!("preconditions:");
+                let preconditions = child.preconditions();
+                for (path, fact_set) in preconditions {
+                    println!("Path: {:?}", path);
+
+                    for fact in fact_set {
+                        println!("Fact: {:?}", fact);
+                    }
+                }
+
+                println!("postconditions:");
+                let postconditions = child.postconditions();
+                for (path, fact_set) in postconditions {
+                    println!("Path: {:?}", path);
+
+                    for fact in fact_set {
+                        println!("Fact: {:?}", fact);
+                    }
+                }
+            }
+        }
+        // serialize_execs_to_cache(existing_cache.clone());
     }
     Ok(())
 }
