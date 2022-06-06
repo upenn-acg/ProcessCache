@@ -57,14 +57,6 @@ impl ExecFileEvents {
         self.0.clone()
     }
 
-    pub fn print_file_events(&self) {
-        for (pathname, event_list) in self.0.iter() {
-            println!("Full path: {:?}", pathname);
-            for event in event_list {
-                println!("File event: {:?}", event);
-            }
-        }
-    }
 }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
@@ -1158,18 +1150,20 @@ pub fn generate_postconditions(
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {
-                    if curr_file_postconditions.contains_key(&old_path) {
-                        let old_set = curr_file_postconditions.remove(&old_path).unwrap();
-                        curr_file_postconditions.insert(new_path.clone(), old_set);
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                    } else {
-                        // We have never seen old path before.
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                        // new path is just "exists", that's all we know!
-                        curr_file_postconditions
-                            .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                    if outcome == SyscallOutcome::Success && old_path == full_path {
+                        if curr_file_postconditions.contains_key(&old_path) {
+                            let old_set = curr_file_postconditions.remove(&old_path).unwrap();
+                            curr_file_postconditions.insert(new_path.clone(), old_set);
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                        } else {
+                            // We have never seen old path before.
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                            // new path is just "exists", that's all we know!
+                            curr_file_postconditions
+                                .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                        }
                     }
                 }
                 (
@@ -1194,18 +1188,20 @@ pub fn generate_postconditions(
                     State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => {
-                    if curr_file_postconditions.contains_key(&old_path) {
-                        let old_set = curr_file_postconditions.remove(&old_path).unwrap();
-                        curr_file_postconditions.insert(new_path.clone(), old_set);
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                    } else {
-                        // We have never seen old path before.
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                        // new path is just "exists", that's all we know!
-                        curr_file_postconditions
-                            .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                    if outcome == SyscallOutcome::Success && old_path == full_path {
+                        if curr_file_postconditions.contains_key(&old_path) {
+                            let old_set = curr_file_postconditions.remove(&old_path).unwrap();
+                            curr_file_postconditions.insert(new_path.clone(), old_set);
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                        } else {
+                            // We have never seen old path before.
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                            // new path is just "exists", that's all we know!
+                            curr_file_postconditions
+                                .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                        }
                     }
                 }
                 (
@@ -1233,18 +1229,20 @@ pub fn generate_postconditions(
                 }
                 (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
                 (SyscallEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None) => {
-                    if curr_file_postconditions.contains_key(&old_path) {
-                        let old_set = curr_file_postconditions.remove(&old_path).unwrap();
-                        curr_file_postconditions.insert(new_path.clone(), old_set);
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                    } else {
-                        // We have never seen old path before.
-                        curr_file_postconditions
-                            .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
-                        // new path is just "exists", that's all we know!
-                        curr_file_postconditions
-                            .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                    if outcome == SyscallOutcome::Success && full_path == old_path {
+                        if curr_file_postconditions.contains_key(&old_path) {
+                            let old_set = curr_file_postconditions.remove(&old_path).unwrap();
+                            curr_file_postconditions.insert(new_path.clone(), old_set);
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                        } else {
+                            // We have never seen old path before.
+                            curr_file_postconditions
+                                .insert(old_path.clone(), HashSet::from([Fact::DoesntExist]));
+                            // new path is just "exists", that's all we know!
+                            curr_file_postconditions
+                                .insert(new_path.clone(), HashSet::from([Fact::Exists]));
+                        }
                     }
                 }
 

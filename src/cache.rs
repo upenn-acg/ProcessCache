@@ -2,7 +2,6 @@ use crate::{
     cache_utils::{hash_command, Command},
     condition_generator::check_preconditions,
     condition_utils::Fact,
-    recording::RcExecution,
 };
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
@@ -15,7 +14,10 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-pub type ExecCacheMap = HashMap<Command, Vec<RcCachedExec>>;
+// TODO:
+// pub type CacheMap = HashMap<Command, Vec<RcCachedExec>>;
+pub type CacheMap = HashMap<Command, RcCachedExec>;
+
 // The executable path and args
 // are the key to the map.
 // Having them be a part of this struct would
@@ -25,9 +27,7 @@ pub type ExecCacheMap = HashMap<Command, Vec<RcCachedExec>>;
 pub struct CachedExecution {
     child_execs: Vec<RcCachedExec>,
     command: Command,
-    cache_dir_command: Command,
     env_vars: Vec<String>,
-    index_in_exec_list: u32,
     preconditions: HashMap<PathBuf, HashSet<Fact>>,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
     starting_cwd: PathBuf,
@@ -37,9 +37,7 @@ impl CachedExecution {
     pub fn new(
         child_execs: Vec<RcCachedExec>,
         command: Command,
-        cache_dir_command: Command,
         env_vars: Vec<String>,
-        index_in_exec_list: u32,
         preconditions: HashMap<PathBuf, HashSet<Fact>>,
         postconditions: HashMap<PathBuf, HashSet<Fact>>,
         starting_cwd: PathBuf,
@@ -47,9 +45,7 @@ impl CachedExecution {
         CachedExecution {
             child_execs,
             command,
-            cache_dir_command,
             env_vars,
-            index_in_exec_list,
             preconditions,
             postconditions,
             starting_cwd,
@@ -64,13 +60,16 @@ impl CachedExecution {
         self.postconditions = posts;
     }
 
+    pub fn add_preconditions(&mut self, pres: HashMap<PathBuf, HashSet<Fact>>) {
+        self.preconditions = pres;
+    }
+
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
 
         let cache_subdir = PathBuf::from("./cache/");
-        let command = self.cache_dir_command();
         // let index = self.index_in_exec_list();
-        let comm_hash = hash_command(command);
+        let comm_hash = hash_command(self.command());
         let cache_subdir = cache_subdir.join(comm_hash.to_string());
         // let cache_subdir = cache_subdir.join(index.to_string());
         debug!("cache_subdir: {:?}", cache_subdir);
@@ -78,10 +77,6 @@ impl CachedExecution {
         for (file, fact_set) in postconditions {
             apply_transition_function(cache_subdir.clone(), fact_set, file);
         }
-    }
-
-    fn cache_dir_command(&self) -> Command {
-        self.cache_dir_command.clone()
     }
 
     fn check_all_preconditions(&self) -> bool {
@@ -145,28 +140,12 @@ impl CachedExecution {
         self.command.clone()
     }
 
-    pub fn index_in_exec_list(&self) -> u32 {
-        self.index_in_exec_list
-    }
-
     pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.preconditions.clone()
     }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
-    }
-
-    fn print_me(&self) {
-        println!("NEW CACHED EXEC:");
-        println!("Preconds: {:?}", self.preconditions);
-        for child in self.child_execs.clone() {
-            child.print_me()
-        }
-    }
-
-    fn update_index(&mut self, new_index: u32) {
-        self.index_in_exec_list = new_index;
     }
 }
 
@@ -192,14 +171,6 @@ impl RcCachedExec {
 
     pub fn children(&self) -> Vec<RcCachedExec> {
         self.0.children()
-    }
-
-    pub fn index_in_exec_list(&self) -> u32 {
-        self.0.index_in_exec_list()
-    }
-
-    pub fn print_me(&self) {
-        self.0.print_me()
     }
 
     pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
@@ -233,7 +204,7 @@ fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, fil
 }
 
 // TODO: insert into an EXISTING cache
-pub fn serialize_execs_to_cache(exec_map: ExecCacheMap) {
+pub fn serialize_execs_to_cache(exec_map: CacheMap) {
     let serialized_exec_map = rmp_serde::to_vec(&exec_map).unwrap();
     const CACHE_LOCATION: &str = "./cache/cache";
 
@@ -242,7 +213,7 @@ pub fn serialize_execs_to_cache(exec_map: ExecCacheMap) {
     // copy_output_files_to_cache(exec_map);
 }
 
-pub fn retrieve_existing_cache() -> Option<ExecCacheMap> {
+pub fn retrieve_existing_cache() -> Option<CacheMap> {
     const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);
     if cache_path.exists() {

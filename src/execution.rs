@@ -70,73 +70,73 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
         const CACHE_LOCATION: &str = "./cache/cache";
         let cache_path = PathBuf::from(CACHE_LOCATION);
-        // Make the cache file if it doesn't exist.
-        let mut existing_cache = if !cache_path.exists() {
-            File::create(cache_path).unwrap();
-            HashMap::new()
-        } else if let Some(existing_cache) = retrieve_existing_cache() {
-            existing_cache
-        } else {
-            HashMap::new()
-        };
 
-        // println!("contigs.report.temp");
-        // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report.temp"));
-        // println!("contigs.report");
-        // first_execution.print_appropriate_event_list(PathBuf::from("/home/kelly/research/bioinfo/mothur2/mothur/out/1/stability_1.contigs.report"));
-        first_execution.print_file_events();
-        first_execution.populate_cache_map(&mut existing_cache);
-        let parent_command = Command(
-            String::from("/home/kelly/research/IOTracker/newest_examples/parent_creates"),
-            vec![String::from("./newest_examples/parent_creates")],
+        // TODO: add to existing cache
+        // let mut existing_cache = if !cache_path.exists() {
+        //     File::create(cache_path).unwrap();
+        //     HashMap::new()
+        // } else if let Some(existing_cache) = retrieve_existing_cache() {
+        //     existing_cache
+        // } else {
+        //     HashMap::new()
+        // };
+
+        let mut new_cache = HashMap::new();
+        first_execution.populate_cache_map(&mut new_cache);
+        println!("EXECUTABLE: {:?}", first_execution.executable());
+        println!("ARGS: {:?}", first_execution.args());
+        println!("CACHE: {:?}", new_cache);
+        let first_command = Command(
+            String::from("/home/kelly/research/IOTracker/misc_c_examples/fork_child_and_child_forks_too"),
+            vec![String::from(
+                "./misc_c_examples/fork_child_and_child_forks_too",
+            )],
         );
-        println!("PARENT:");
-        if let Some(entry) = existing_cache.get(&parent_command) {
-            let first = entry.first().unwrap();
-            println!("preconditions:");
-            let preconditions = first.preconditions();
-            for (path, fact_set) in preconditions {
-                println!("Path: {:?}", path);
 
-                for fact in fact_set {
-                    println!("Fact: {:?}", fact);
-                }
-            }
+        if let Some(entry) = new_cache.get(&first_command) {
+            let children = entry.children();
+            let preconds = entry.preconditions();
+            let postconds = entry.postconditions();
+            println!("Preconds: {:?}", preconds);
+            println!("Postconds: {:?}", postconds);
 
-            println!("postconditions:");
-            let postconditions = first.postconditions();
-            for (path, fact_set) in postconditions {
-                println!("Path: {:?}", path);
-
-                for fact in fact_set {
-                    println!("Fact: {:?}", fact);
-                }
-            }
-
-            println!("Children");
-            for child in first.children() {
-                println!("preconditions:");
-                let preconditions = child.preconditions();
-                for (path, fact_set) in preconditions {
-                    println!("Path: {:?}", path);
-
-                    for fact in fact_set {
-                        println!("Fact: {:?}", fact);
-                    }
-                }
-
-                println!("postconditions:");
-                let postconditions = child.postconditions();
-                for (path, fact_set) in postconditions {
-                    println!("Path: {:?}", path);
-
-                    for fact in fact_set {
-                        println!("Fact: {:?}", fact);
-                    }
+            for child in children {
+                println!("Child");
+                let preconds = child.preconditions();
+                let posts = child.postconditions();
+                println!("Preconds: {:?}", preconds);
+                println!("Postconds: {:?}", posts);
+                
+                let childrenschildren = child.children();
+                for grandchild in childrenschildren {
+                    println!("Grandchild");
+                    let preconds = grandchild.preconditions();
+                    let posts = grandchild.postconditions();
+                    println!("Preconds: {:?}", preconds);
+                    println!("Postconds: {:?}", posts);
                 }
             }
         }
-        // serialize_execs_to_cache(existing_cache.clone());
+
+        let child_command = Command(
+            String::from("/home/kelly/research/IOTracker/misc_c_examples/fork_child_empty_c"),
+            vec![String::from(
+                "./misc_c_examples/fork_child_empty_c",
+            )],
+        );
+        let grandchild_command = Command(
+            String::from("/home/kelly/research/IOTracker/misc_c_examples/empty_c"),
+            vec![String::from(
+                "./misc_c_examples/empty_c",
+            )],
+        );
+
+        if let Some(_) = new_cache.get(&child_command) {
+            println!("child has its own entry in map");
+        }
+        if let Some(_) = new_cache.get(&grandchild_command) {
+            println!("grandchild has its own entry in map");
+        }
     }
     Ok(())
 }
@@ -269,41 +269,41 @@ pub async fn trace_process(
                                     .unwrap(),
                                 args.clone(),
                             );
-                            if let Some(entry_list) = cache.get(&command) {
+                            if let Some(entry) = cache.get(&command) {
                                 debug!("Checking all preconditions: execution is: {:?}", command);
 
-                                let mut found_one = false;
-                                for entry in entry_list {
-                                    if full_tracking_on {
-                                        entry.check_all_preconditions_regardless()
-                                    } else if entry.check_all_preconditions() {
-                                        // Check if we should skip this execution.
-                                        // If we are gonna skip, we have to change:
-                                        // rax, orig_rax, arg1
-                                        debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                                        entry.apply_all_transitions();
-                                        let regs = tracer.get_registers().with_context(|| {
-                                            context!("Failed to get regs in skip exec event")
-                                        })?;
-                                        let mut regs = regs.make_modified();
-                                        let exit_syscall_num = libc::SYS_exit as u64;
+                                // let mut found_one = false;
+                                // for entry in entry_list {
+                                if full_tracking_on {
+                                    entry.check_all_preconditions_regardless()
+                                } else if entry.check_all_preconditions() {
+                                    // Check if we should skip this execution.
+                                    // If we are gonna skip, we have to change:
+                                    // rax, orig_rax, arg1
+                                    debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                    entry.apply_all_transitions();
+                                    let regs = tracer.get_registers().with_context(|| {
+                                        context!("Failed to get regs in skip exec event")
+                                    })?;
+                                    let mut regs = regs.make_modified();
+                                    let exit_syscall_num = libc::SYS_exit as u64;
 
-                                        // Change the arg1 to correct exit code?
-                                        regs.write_arg1(0);
-                                        // Change the orig rax val don't ask me why
-                                        regs.write_syscall_number(exit_syscall_num);
-                                        // Change the rax val
-                                        regs.write_rax(exit_syscall_num);
+                                    // Change the arg1 to correct exit code?
+                                    regs.write_arg1(0);
+                                    // Change the orig rax val don't ask me why
+                                    regs.write_syscall_number(exit_syscall_num);
+                                    // Change the rax val
+                                    regs.write_rax(exit_syscall_num);
 
-                                        tracer.set_regs(&mut regs)?;
-                                        // entry.apply_all_transitions();
-                                        found_one = true;
-                                        break;
-                                    }
+                                    tracer.set_regs(&mut regs)?;
+                                    // entry.apply_all_transitions();
+                                    // found_one = true;
+                                    // break;
                                 }
-                                if found_one {
-                                    continue;
-                                }
+                                // }
+                                // if found_one {
+                                //     continue;
+                                // }
                             }
                         }
 
