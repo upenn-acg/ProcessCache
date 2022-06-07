@@ -1,3 +1,5 @@
+use nix::pty::SessionId;
+
 use std::{
     collections::hash_map::DefaultHasher,
     fs::File,
@@ -8,6 +10,45 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CachedExecMetadata {
+    caller_pid: SessionId,
+    command: Command,
+    env_vars: Vec<String>,
+    // Currently this is just the first argument to execve
+    // so I am not making sure it's the abosolute path.
+    // May want to do that in the future?
+    starting_cwd: PathBuf,
+}
+
+impl CachedExecMetadata {
+    pub fn new(
+        caller_pid: SessionId,
+        command: Command,
+        env_vars: Vec<String>,
+        starting_cwd: PathBuf,
+    ) -> CachedExecMetadata {
+        CachedExecMetadata {
+            caller_pid,
+            command,
+            env_vars,
+            starting_cwd,
+        }
+    }
+
+    pub fn caller_pid(&self) -> SessionId {
+        self.caller_pid
+    }
+
+    pub fn command(&self) -> Command {
+        self.command.clone()
+    }
+
+    pub fn starting_cwd(&self) -> PathBuf {
+        self.starting_cwd.clone()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Command(pub String, pub Vec<String>);

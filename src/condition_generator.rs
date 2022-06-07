@@ -56,7 +56,6 @@ impl ExecFileEvents {
     pub fn events(&self) -> HashMap<PathBuf, Vec<SyscallEvent>> {
         self.0.clone()
     }
-
 }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {

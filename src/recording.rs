@@ -1,16 +1,17 @@
 use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
-    cache_utils::{hash_command, Command},
+    cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{generate_postconditions, generate_preconditions, ExecFileEvents},
     condition_utils::Fact,
     syscalls::SyscallEvent,
 };
-use nix::{unistd::Pid, NixPath};
+use nix::unistd::Pid;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    fs,
+    fs::{self, File},
     hash::Hash,
+    io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
 };
@@ -24,23 +25,21 @@ pub type ChildExecutions = Vec<RcExecution>;
 // we expect it to fail and it succeeds).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecMetadata {
-    args: Vec<String>,
     caller_pid: Proc,
+    command: Command,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
-    executable: PathBuf,
     starting_cwd: PathBuf,
 }
 
 impl ExecMetadata {
     pub fn new(caller_pid: Proc) -> ExecMetadata {
         ExecMetadata {
-            args: Vec::new(),
             caller_pid,
+            command: Command(String::new(), Vec::new()),
             env_vars: Vec::new(),
-            executable: PathBuf::new(),
             starting_cwd: PathBuf::new(),
         }
     }
@@ -49,17 +48,17 @@ impl ExecMetadata {
         &mut self,
         args: Vec<String>,
         env_vars: Vec<String>,
-        executable: PathBuf,
+        executable: String,
         starting_cwd: PathBuf,
     ) {
-        self.args = args;
+        self.command.1 = args;
         self.env_vars = env_vars;
-        self.executable = executable;
+        self.command.0 = executable;
         self.starting_cwd = starting_cwd;
     }
 
     fn args(&self) -> Vec<String> {
-        self.args.clone()
+        self.command.1.clone()
     }
 
     fn caller_pid(&self) -> Pid {
@@ -67,8 +66,12 @@ impl ExecMetadata {
         pid
     }
 
-    fn executable(&self) -> PathBuf {
-        self.executable.clone()
+    fn command(&self) -> Command {
+        self.command.clone()
+    }
+
+    fn executable(&self) -> String {
+        self.command.0.clone()
     }
 
     fn env_vars(&self) -> Vec<String> {
@@ -76,9 +79,8 @@ impl ExecMetadata {
     }
 
     fn is_empty_root_exec(&self) -> bool {
-        self.executable.is_empty()
+        self.command.0.is_empty()
     }
-
 
     fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
@@ -134,33 +136,28 @@ impl Execution {
         self.successful_exec.env_vars()
     }
 
-    fn executable(&self) -> PathBuf {
+    fn executable(&self) -> String {
         self.successful_exec.executable()
     }
 
     fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
-        let command_key = Command(
-            self.executable().into_os_string().into_string().unwrap(),
-            self.args(),
-        );
+        let command_key = Command(self.executable(), self.args());
         let file_events = self.file_events.clone();
         let children = self.child_execs.clone();
 
-        let mut new_cached_exec = CachedExecution::new(
-            Vec::new(),
-            command_key.clone(),
+        let cached_meta = CachedExecMetadata::new(
+            self.successful_exec.caller_pid().as_raw(),
+            self.successful_exec.command(),
             self.env_vars(),
-            HashMap::new(),
-            HashMap::new(),
             self.starting_cwd(),
         );
 
+        let mut new_cached_exec =
+            CachedExecution::new(cached_meta, Vec::new(), HashMap::new(), HashMap::new());
+
         for child in children.clone() {
             let child_cached_exec = child.generate_cached_exec(cache_map);
-            let child_command = Command(
-                child.executable().into_os_string().into_string().unwrap(),
-                child.args(),
-            );
+            let child_command = Command(child.executable(), child.args());
             // TODO
             if let Some(entry) = cache_map.get(&child_command) {
                 new_cached_exec.add_child(entry.clone());
@@ -172,7 +169,8 @@ impl Execution {
         if children.is_empty() {
             let preconds = generate_preconditions(file_events.clone());
             let postconds = generate_postconditions(file_events);
-
+            // We can copy the output files over now.
+            copy_output_files_to_cache(command_key.clone(), postconds.clone());
             new_cached_exec.add_preconditions(preconds);
             new_cached_exec.add_postconditions(postconds);
         }
@@ -487,7 +485,7 @@ impl RcExecution {
         self.0.borrow().env_vars()
     }
 
-    pub fn executable(&self) -> PathBuf {
+    pub fn executable(&self) -> String {
         self.0.borrow().executable()
     }
 
@@ -556,33 +554,25 @@ fn append_file_events(
     new_appended_events
 }
 
-fn copy_output_files_to_cache(
-    cache_map: CacheMap
-) {
+fn copy_output_files_to_cache(command: Command, postconditions: HashMap<PathBuf, HashSet<Fact>>) {
     // Now copy the output files to the appropriate places.
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
 
-    for (command, cached_exec) in cache_map {
-        let hashed_command = hash_command(command);
-        let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
-        if !cache_subdir_hashed_command.exists() {
-            fs::create_dir(cache_subdir_hashed_command.clone()).unwrap();
-        }
+    let hashed_command = hash_command(command);
+    let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
+    if !cache_subdir_hashed_command.exists() {
+        fs::create_dir(cache_subdir_hashed_command.clone()).unwrap();
+    }
 
-        let postconditions = cached_exec.postconditions();
-
-        for (path, fact_set) in postconditions {
-            for fact in fact_set {
-                if fact == Fact::Exists ||
-                    fact == Fact::FinalContents {
-                    let cache_path = cache_subdir_hashed_command.join(path);
-                    fs::copy(path, cache_path);
-                }
+    for (path, fact_set) in postconditions {
+        for fact in fact_set {
+            if fact == Fact::Exists || fact == Fact::FinalContents {
+                let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
+                fs::copy(path.clone(), cache_path).unwrap();
             }
         }
     }
-
 
     // let stdout_file_name = format!("stdout_{:?}", pid);
     // let curr_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name.clone());
@@ -598,6 +588,4 @@ fn copy_output_files_to_cache(
     //     io::stdout().write_all(&buf).unwrap();
     // }
     // fs::remove_file(curr_stdout_file_path).unwrap();
-
-
 }

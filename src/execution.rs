@@ -9,7 +9,6 @@ use nix::sys::stat::FileStat;
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::fs;
-use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -67,9 +66,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // because of potential collisions on the hash.
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
     if !full_tracking_on && !first_execution.is_empty_root_exec() {
-        // let mut cache_map: HashMap<Command, RcCachedExec> = HashMap::new();
-        const CACHE_LOCATION: &str = "./cache/cache";
-        let cache_path = PathBuf::from(CACHE_LOCATION);
+        // const CACHE_LOCATION: &str = "./cache/cache";
+        // let cache_path = PathBuf::from(CACHE_LOCATION);
 
         // TODO: add to existing cache
         // let mut existing_cache = if !cache_path.exists() {
@@ -83,60 +81,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 
         let mut new_cache = HashMap::new();
         first_execution.populate_cache_map(&mut new_cache);
-        println!("EXECUTABLE: {:?}", first_execution.executable());
-        println!("ARGS: {:?}", first_execution.args());
-        println!("CACHE: {:?}", new_cache);
-        let first_command = Command(
-            String::from("/home/kelly/research/IOTracker/misc_c_examples/fork_child_and_child_forks_too"),
-            vec![String::from(
-                "./misc_c_examples/fork_child_and_child_forks_too",
-            )],
-        );
-
-        if let Some(entry) = new_cache.get(&first_command) {
-            let children = entry.children();
-            let preconds = entry.preconditions();
-            let postconds = entry.postconditions();
-            println!("Preconds: {:?}", preconds);
-            println!("Postconds: {:?}", postconds);
-
-            for child in children {
-                println!("Child");
-                let preconds = child.preconditions();
-                let posts = child.postconditions();
-                println!("Preconds: {:?}", preconds);
-                println!("Postconds: {:?}", posts);
-                
-                let childrenschildren = child.children();
-                for grandchild in childrenschildren {
-                    println!("Grandchild");
-                    let preconds = grandchild.preconditions();
-                    let posts = grandchild.postconditions();
-                    println!("Preconds: {:?}", preconds);
-                    println!("Postconds: {:?}", posts);
-                }
-            }
-        }
-
-        let child_command = Command(
-            String::from("/home/kelly/research/IOTracker/misc_c_examples/fork_child_empty_c"),
-            vec![String::from(
-                "./misc_c_examples/fork_child_empty_c",
-            )],
-        );
-        let grandchild_command = Command(
-            String::from("/home/kelly/research/IOTracker/misc_c_examples/empty_c"),
-            vec![String::from(
-                "./misc_c_examples/empty_c",
-            )],
-        );
-
-        if let Some(_) = new_cache.get(&child_command) {
-            println!("child has its own entry in map");
-        }
-        if let Some(_) = new_cache.get(&grandchild_command) {
-            println!("grandchild has its own entry in map");
-        }
+        serialize_execs_to_cache(new_cache);
     }
     Ok(())
 }
@@ -314,7 +259,11 @@ pub async fn trace_process(
                         new_exec_metadata.add_identifiers(
                             args,
                             envp,
-                            exec_path_buf.clone(),
+                            exec_path_buf
+                                .clone()
+                                .into_os_string()
+                                .into_string()
+                                .unwrap(),
                             starting_cwd,
                         );
 
@@ -398,10 +347,7 @@ pub async fn trace_process(
                             // TODO: Deal with PID recycling?
                             let exec = curr_execution.executable();
                             let args = curr_execution.args();
-                            let comm_hash = hash_command(Command(
-                                exec.into_os_string().into_string().unwrap(),
-                                args,
-                            ));
+                            let comm_hash = hash_command(Command(exec, args));
                             let cache_subdir = fs::canonicalize("./cache").unwrap();
                             let cache_subdir = cache_subdir.join(format!("{:?}", comm_hash));
                             if !cache_subdir.exists() {
@@ -769,7 +715,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
 
-    execution.add_new_file_event(tracer.curr_proc, rename_event.clone(), full_old_path);
+    execution.add_new_file_event(tracer.curr_proc, rename_event, full_old_path);
     // execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
     Ok(())
 }

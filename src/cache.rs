@@ -1,8 +1,9 @@
 use crate::{
-    cache_utils::{hash_command, Command},
+    cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::check_preconditions,
     condition_utils::Fact,
 };
+use nix::pty::SessionId;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
@@ -25,30 +26,24 @@ pub type CacheMap = HashMap<Command, RcCachedExec>;
 // TODO: exit code
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecution {
+    cached_metadata: CachedExecMetadata,
     child_execs: Vec<RcCachedExec>,
-    command: Command,
-    env_vars: Vec<String>,
     preconditions: HashMap<PathBuf, HashSet<Fact>>,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
-    starting_cwd: PathBuf,
 }
 
 impl CachedExecution {
     pub fn new(
+        cached_metadata: CachedExecMetadata,
         child_execs: Vec<RcCachedExec>,
-        command: Command,
-        env_vars: Vec<String>,
         preconditions: HashMap<PathBuf, HashSet<Fact>>,
         postconditions: HashMap<PathBuf, HashSet<Fact>>,
-        starting_cwd: PathBuf,
     ) -> CachedExecution {
         CachedExecution {
+            cached_metadata,
             child_execs,
-            command,
-            env_vars,
             preconditions,
             postconditions,
-            starting_cwd,
         }
     }
 
@@ -79,6 +74,10 @@ impl CachedExecution {
         }
     }
 
+    pub fn caller_pid(&self) -> SessionId {
+        self.cached_metadata.caller_pid()
+    }
+
     fn check_all_preconditions(&self) -> bool {
         let my_preconds = self.preconditions.clone();
         let vars = std::env::vars();
@@ -88,9 +87,9 @@ impl CachedExecution {
         }
 
         let curr_cwd = std::env::current_dir().unwrap();
-        if self.starting_cwd != curr_cwd {
+        if self.cached_metadata.starting_cwd() != curr_cwd {
             debug!("starting cwd doesn't match");
-            debug!("old cwd: {:?}", self.starting_cwd);
+            debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
             debug!("new cwd: {:?}", curr_cwd);
             // panic!("cwd");
             return false;
@@ -118,9 +117,9 @@ impl CachedExecution {
         }
 
         let curr_cwd = std::env::current_dir().unwrap();
-        if self.starting_cwd != curr_cwd {
+        if self.cached_metadata.starting_cwd() != curr_cwd {
             debug!("starting cwd doesn't match");
-            debug!("old cwd: {:?}", self.starting_cwd);
+            debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
             debug!("new cwd: {:?}", curr_cwd);
         }
 
@@ -137,7 +136,7 @@ impl CachedExecution {
     }
 
     pub fn command(&self) -> Command {
-        self.command.clone()
+        self.cached_metadata.command()
     }
 
     pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
@@ -159,6 +158,10 @@ impl RcCachedExec {
 
     pub fn apply_all_transitions(&self) {
         self.0.apply_all_transitions()
+    }
+
+    pub fn caller_pid(&self) -> SessionId {
+        self.0.caller_pid()
     }
 
     pub fn check_all_preconditions(&self) -> bool {
