@@ -15,7 +15,6 @@ use std::{
     path::PathBuf,
     rc::Rc,
 };
-use tracing::debug;
 
 pub type ChildExecutions = Vec<RcExecution>;
 
@@ -184,6 +183,24 @@ impl Execution {
 
     fn populate_cache_map(&self, cache_map: &mut CacheMap) {
         let _ = self.generate_cached_exec(cache_map);
+    }
+
+    fn print_stdout(&self) {
+        let command_hashed = hash_command(self.successful_exec.command());
+        let stdout_filename = format!("stdout_{:?}", self.successful_exec.caller_pid().as_raw());
+        let cache_dir = PathBuf::from("./cache").join(format!("{:?}", command_hashed));
+        let stdout_file_path = cache_dir.join(stdout_filename);
+
+        let mut f = File::open(stdout_file_path).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
+
+        for child in self.child_execs.iter() {
+            child.print_stdout();
+        }
     }
 
     // fn generate_event_list_and_cached_exec(
@@ -413,9 +430,9 @@ impl Execution {
     //     exec_cache_map.insert(command_key, rc_cached_exec);
     // }
 
-    fn file_events(&self) -> ExecFileEvents {
-        self.file_events.clone()
-    }
+    // fn file_events(&self) -> ExecFileEvents {
+    //     self.file_events.clone()
+    // }
 
     fn is_empty_root_exec(&self) -> bool {
         self.successful_exec.is_empty_root_exec()
@@ -481,17 +498,17 @@ impl RcExecution {
         self.0.borrow().args()
     }
 
-    pub fn env_vars(&self) -> Vec<String> {
-        self.0.borrow().env_vars()
-    }
+    // pub fn env_vars(&self) -> Vec<String> {
+    //     self.0.borrow().env_vars()
+    // }
 
     pub fn executable(&self) -> String {
         self.0.borrow().executable()
     }
 
-    pub fn file_events(&self) -> ExecFileEvents {
-        self.0.borrow().file_events()
-    }
+    // pub fn file_events(&self) -> ExecFileEvents {
+    //     self.0.borrow().file_events()
+    // }
 
     pub fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
         self.0.borrow().generate_cached_exec(cache_map)
@@ -519,6 +536,10 @@ impl RcExecution {
         self.0.borrow().populate_cache_map(cache_map)
     }
 
+    pub fn print_stdout(&self) {
+        self.0.borrow().print_stdout()
+    }
+
     // pub fn exit_code(&self) -> Option<i32> {
     //     self.execution.borrow().exit_code()
     // }
@@ -534,25 +555,25 @@ impl RcExecution {
     }
 }
 
-fn append_file_events(
-    parent_events: ExecFileEvents,
-    child_events: ExecFileEvents,
-) -> HashMap<PathBuf, Vec<SyscallEvent>> {
-    let mut new_appended_events = parent_events.events();
-    let curr_child_map = child_events.events();
+// fn append_file_events(
+//     parent_events: ExecFileEvents,
+//     child_events: ExecFileEvents,
+// ) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+//     let mut new_appended_events = parent_events.events();
+//     let curr_child_map = child_events.events();
 
-    for (path_name, mut child_list) in curr_child_map {
-        if let Some(parent_list) = new_appended_events.get(&path_name) {
-            let mut parent_list_clone = parent_list.clone();
-            parent_list_clone.append(&mut child_list);
-            new_appended_events.insert(path_name, parent_list_clone);
-        } else {
-            new_appended_events.insert(path_name, child_list);
-        }
-    }
+//     for (path_name, mut child_list) in curr_child_map {
+//         if let Some(parent_list) = new_appended_events.get(&path_name) {
+//             let mut parent_list_clone = parent_list.clone();
+//             parent_list_clone.append(&mut child_list);
+//             new_appended_events.insert(path_name, parent_list_clone);
+//         } else {
+//             new_appended_events.insert(path_name, child_list);
+//         }
+//     }
 
-    new_appended_events
-}
+//     new_appended_events
+// }
 
 fn copy_output_files_to_cache(command: Command, postconditions: HashMap<PathBuf, HashSet<Fact>>) {
     // Now copy the output files to the appropriate places.

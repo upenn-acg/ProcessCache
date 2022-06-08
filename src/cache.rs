@@ -3,12 +3,12 @@ use crate::{
     condition_generator::check_preconditions,
     condition_utils::Fact,
 };
-use nix::pty::SessionId;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    fs::{self, File},
+    io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
 };
@@ -68,15 +68,25 @@ impl CachedExecution {
         let cache_subdir = cache_subdir.join(comm_hash.to_string());
         // let cache_subdir = cache_subdir.join(index.to_string());
         debug!("cache_subdir: {:?}", cache_subdir);
+
+        let stdout_filename = format!("stdout_{:?}", self.cached_metadata.caller_pid());
+        let cache_stdout_file_path = cache_subdir.join(stdout_filename);
+        let mut f = File::open(cache_stdout_file_path).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
+
         debug!("hello from apply all transitions");
         for (file, fact_set) in postconditions {
             apply_transition_function(cache_subdir.clone(), fact_set, file);
         }
     }
 
-    pub fn caller_pid(&self) -> SessionId {
-        self.cached_metadata.caller_pid()
-    }
+    // pub fn caller_pid(&self) -> SessionId {
+    //     self.cached_metadata.caller_pid()
+    // }
 
     fn check_all_preconditions(&self) -> bool {
         let my_preconds = self.preconditions.clone();
@@ -139,12 +149,26 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.preconditions.clone()
-    }
+    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    //     self.preconditions.clone()
+    // }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
+    }
+
+    fn print_my_stdout(&self) {
+        let command_hashed = hash_command(self.cached_metadata.command());
+        let stdout_filename = format!("stdout_{:?}", self.cached_metadata.caller_pid());
+        let cache_dir = PathBuf::from("./cache").join(format!("{:?}", command_hashed));
+        let stdout_file_path = cache_dir.join(stdout_filename);
+
+        let mut f = File::open(stdout_file_path).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
     }
 }
 
@@ -160,9 +184,9 @@ impl RcCachedExec {
         self.0.apply_all_transitions()
     }
 
-    pub fn caller_pid(&self) -> SessionId {
-        self.0.caller_pid()
-    }
+    // pub fn caller_pid(&self) -> SessionId {
+    //     self.0.caller_pid()
+    // }
 
     pub fn check_all_preconditions(&self) -> bool {
         self.0.check_all_preconditions()
@@ -176,13 +200,17 @@ impl RcCachedExec {
         self.0.children()
     }
 
-    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.0.preconditions()
+    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    //     self.0.preconditions()
+    // }
+
+    pub fn print_my_stdout(&self) {
+        self.0.print_my_stdout()
     }
 
-    pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.0.postconditions()
-    }
+    // pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    //     self.0.postconditions()
+    // }
 }
 
 fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, file: PathBuf) {
