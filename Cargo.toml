@@ -1,5 +1,5 @@
 [package]
-name = "io_tracker"
+name = "process_cache"
 version = "0.1.0"
 authors = ["gatowololo <gatowololo@gmail.com>"]
 edition = "2018"
@@ -37,3 +37,7 @@ path = "/home/kelly/research/IOTracker/gcc_empty_c.rs"
 [[bin]]
 name = "silly_rename"
 path = "/home/kelly/research/IOTracker/silly_rename.rs"
+
+[[bin]]
+name = "get_all_syscalls_called_by_gcc"
+path = "/home/kelly/research/IOTracker/src/get_all_syscalls_called_by_gcc.rs"

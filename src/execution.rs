@@ -31,7 +31,7 @@ use crate::Ptracer;
 use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
-
+// TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     info!("Running whole program");
 
@@ -457,9 +457,9 @@ pub async fn trace_process(
 
                 // flags are the 3rd arg to clone.
                 let flags = regs.arg3::<i32>();
-                if (flags & CLONE_THREAD) != 0 {
-                    panic!("THREADSSSSSSSSSS!");
-                }
+                // if (flags & CLONE_THREAD) != 0 {
+                //     panic!("THREADSSSSSSSSSS!");
+                // }
 
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {

@@ -137,14 +137,11 @@ pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
 
 fn our_seccomp_rules() -> anyhow::Result<()> {
     let mut loader = seccomp::RuleLoader::new()?;
-
+    // TODO: Alphabatize
     loader.intercept(libc::SYS_access)?;
     loader.intercept(libc::SYS_creat)?;
-    // TODO: panic! (at least for now)
     loader.intercept(libc::SYS_chdir)?;
-    // TODO: panic!
     loader.intercept(libc::SYS_chmod)?;
-    // TODO: panic!
     loader.intercept(libc::SYS_chown)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
@@ -167,31 +164,33 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_unlink)?;
     loader.intercept(libc::SYS_unlinkat)?;
 
-    loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_arch_prctl)?;
+    loader.let_pass(libc::SYS_brk)?;
+    loader.let_pass(libc::SYS_ioctl)?;
     loader.let_pass(libc::SYS_mmap)?;
     loader.let_pass(libc::SYS_mprotect)?;
     loader.let_pass(libc::SYS_munmap)?;
-    loader.let_pass(libc::SYS_set_tid_address)?;
-    loader.let_pass(libc::SYS_set_robust_list)?;
+    loader.let_pass(libc::SYS_prlimit64)?;
     loader.let_pass(libc::SYS_rt_sigaction)?;
     loader.let_pass(libc::SYS_rt_sigprocmask)?;
-    loader.let_pass(libc::SYS_prlimit64)?;
+    loader.let_pass(libc::SYS_set_tid_address)?;
+    loader.let_pass(libc::SYS_set_robust_list)?;
     loader.let_pass(libc::SYS_statfs)?;
-    loader.let_pass(libc::SYS_ioctl)?;
+
+    loader.let_pass(libc::SYS_fadvise64)?;
+    loader.let_pass(libc::SYS_fsync)?;
     loader.let_pass(libc::SYS_futex)?;
-    loader.let_pass(libc::SYS_lseek)?;
-    loader.let_pass(libc::SYS_sched_getaffinity)?;
-    loader.let_pass(libc::SYS_sigaltstack)?;
     loader.let_pass(libc::SYS_getgid)?;
     loader.let_pass(libc::SYS_getuid)?;
     loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getppid)?;
     loader.let_pass(libc::SYS_getegid)?;
-    loader.let_pass(libc::SYS_fadvise64)?;
+    loader.let_pass(libc::SYS_lseek)?;
     loader.let_pass(libc::SYS_mremap)?;
     loader.let_pass(libc::SYS_rt_sigreturn)?;
+    loader.let_pass(libc::SYS_sched_getaffinity)?;
+    loader.let_pass(libc::SYS_sigaltstack)?;
 
     // TODO Less clear whether it should be handled.
     loader.let_pass(libc::SYS_sysinfo)?;

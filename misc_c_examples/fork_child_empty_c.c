@@ -7,16 +7,10 @@
 int main() {
     if (fork() == 0) {
         // Child
-        char* args[] = {"./buttz", NULL};
-        // char* args2[] = {"./empty_c", NULL};
-        // execvp("./empty_c", args);
-        execvp("./buttz", args);
-        char* args2[] = {"./empty_c", NULL};
-        execvp("./empty_c", args2);
-        // execvp("./empty_c", args);
+        char* args[] = {"./misc_c_examples/empty_c", NULL};
+        execvp("./misc_c_examples/empty_c", args);
         exit(EXIT_SUCCESS);
     } else {
-        printf("Hello from child parent\n");
         int status;
         wait(&status);
     }
