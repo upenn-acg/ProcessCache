@@ -156,20 +156,6 @@ impl CachedExecution {
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
     }
-
-    fn print_my_stdout(&self) {
-        let command_hashed = hash_command(self.cached_metadata.command());
-        let stdout_filename = format!("stdout_{:?}", self.cached_metadata.caller_pid());
-        let cache_dir = PathBuf::from("./cache").join(format!("{:?}", command_hashed));
-        let stdout_file_path = cache_dir.join(stdout_filename);
-
-        let mut f = File::open(stdout_file_path).unwrap();
-        let mut buf = Vec::new();
-        let bytes = f.read_to_end(&mut buf).unwrap();
-        if bytes != 0 {
-            io::stdout().write_all(&buf).unwrap();
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -203,10 +189,6 @@ impl RcCachedExec {
     // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
     //     self.0.preconditions()
     // }
-
-    pub fn print_my_stdout(&self) {
-        self.0.print_my_stdout()
-    }
 
     // pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
     //     self.0.postconditions()

@@ -1,16 +1,6 @@
-#[allow(unused_imports)]
-use libc::{
-    c_char, c_int, syscall, AT_FDCWD, AT_SYMLINK_NOFOLLOW, CLONE_THREAD, O_ACCMODE, O_APPEND,
-    O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, R_OK, W_OK, X_OK,
-};
-#[allow(unused_imports)]
-use nix::fcntl::{readlink, OFlag};
-use nix::sys::stat::FileStat;
-use nix::unistd::Pid;
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
-use std::rc::Rc;
+use libc::{c_char, c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK,  O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
+use nix::{dir, fcntl::{readlink, OFlag}, sys::stat::FileStat, unistd::Pid};
+use std::{collections::HashMap, ffi::{CStr, CString}, fs, path::PathBuf, rc::Rc};
 
 use crate::async_runtime::AsyncRuntime;
 use crate::cache::{retrieve_existing_cache, serialize_execs_to_cache};
@@ -20,8 +10,7 @@ use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
 use crate::recording::{ExecMetadata, Execution, Proc, RcExecution};
 use crate::redirection;
-use crate::regs::Regs;
-use crate::regs::Unmodified;
+use crate::regs::{Regs, Unmodified};
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
@@ -81,7 +70,6 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 
         let mut new_cache = HashMap::new();
         first_execution.populate_cache_map(&mut new_cache);
-        first_execution.print_stdout();
         serialize_execs_to_cache(new_cache);
     }
     Ok(())
@@ -107,6 +95,8 @@ pub async fn trace_process(
     let mut signal = None;
     let mut iostream_redirected = false;
     let mut caching_off = false;
+    // TODO: Deal with PID recycling?
+    let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
 
     loop {
         let event = tracer
@@ -371,17 +361,11 @@ pub async fn trace_process(
                                 if !cache_subdir.exists() {
                                     fs::create_dir(cache_subdir.clone()).unwrap();
                                 }
-                                let stdout_file = cache_subdir
-                                    .join(format!("stdout_{:?}", tracer.curr_proc.as_raw()));
-                                // let stderr_file: String = format!(
-                                //     "/cache/{:?}/stderr_{:?}",
-                                //     comm_hash,
-                                //     tracer.curr_proc.as_raw()
-                                // );
+
                                 // This is the first real system call this program is doing after exec-ing.
                                 // We will redirect their stdout and stderr output here by writing them to files.
                                 redirection::redirect_io_stream(
-                                    stdout_file.to_str().unwrap(),
+                                    &stdout_file,
                                     STDOUT_FD,
                                     &mut tracer,
                                 )
@@ -422,6 +406,11 @@ pub async fn trace_process(
                     }
                     // TODO: newfstatat
                     "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
+                    "getdents64" => {
+                        // TODO: Kelly, you can use this variable to know what directories were read.
+                        let _read_directories: Vec<(CString, dir::Type)> =
+                            handle_get_dents64(&regs, &tracer)?;
+                    }
                     "rename" | "renameat" | "renameat2" => {
                         handle_rename(&curr_execution, name, &tracer)?
                     }
@@ -445,10 +434,6 @@ pub async fn trace_process(
                 // CLONE_THREAD flag. Well it's not dangerous, but we don't handle threads
                 // so we want to panic if we detect a program trying to clone one.
 
-                let regs = tracer
-                    .get_registers()
-                    .with_context(|| context!("Failed to get regs in exec event"))?;
-
                 // From dettrace:
                 // kinda unsure why this is unsigned
                 // msg = "clone";
@@ -456,7 +441,6 @@ pub async fn trace_process(
                 // isThread = (flags & CLONE_THREAD) != 0;
 
                 // flags are the 3rd arg to clone.
-                let flags = regs.arg3::<i32>();
                 // if (flags & CLONE_THREAD) != 0 {
                 //     panic!("THREADSSSSSSSSSS!");
                 // }
@@ -540,6 +524,10 @@ pub async fn trace_process(
             other
         ),
     }
+    // Write stdout_file to stdout.
+    let contents = std::fs::read_to_string(stdout_file)
+        .with_context(|| context!("Unable to read stdout_file"))?;
+    print!("{}", contents);
 
     Ok(())
 }
@@ -579,6 +567,66 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
 
     execution.add_new_file_event(tracer.curr_proc, event, full_path);
     Ok(())
+}
+
+/// Read directories returned by an intercepted system call to get_dents64. Return the d_name and
+/// d_type fields from the get_dents64 struct.
+fn handle_get_dents64(
+    regs: &Regs<Unmodified>,
+    tracer: &Ptracer,
+) -> Result<Vec<(CString, dir::Type)>> {
+    // We only care about successful get_dents or when bytes were actually written.
+    if regs.retval::<i32>() <= 0 {
+        return Ok(Vec::new());
+    }
+
+    // Pointer to linux_dirent passed to get_dents64 system call.
+    let mut dirp: *const u8 = regs.arg2::<*const u8>();
+    // Number of bytes written by OS to dirp.
+    let bytes_read = regs.retval::<i32>() as usize;
+    let max_size = unsafe { dirp.add(bytes_read) };
+    let mut entries: Vec<(CString, dir::Type)> = Vec::new();
+
+    // Continue looping until out pointer jumps past dirp + bytes read.
+    while dirp < max_size {
+        let directory_entry = tracer
+            .read_value::<libc::dirent64>(dirp as *const _)
+            .with_context(|| context!("Cannot read first entry in dirp."))?;
+
+        let cstr = unsafe { CStr::from_ptr(directory_entry.d_name.as_ptr()) };
+        let file_name = cstr.to_owned();
+        let file_type = directory_entry.d_type;
+        let record_length = directory_entry.d_reclen;
+
+        // Set dirp pointer to next entry.
+        dirp = unsafe { dirp.add(record_length as usize) };
+
+        entries.push((file_name, getdents_file_type(file_type)));
+    }
+
+    Ok(entries)
+}
+
+fn getdents_file_type(file_type: c_uchar) -> dir::Type {
+    use nix::dir::Type;
+
+    if file_type == DT_BLK {
+        Type::BlockDevice
+    } else if file_type == DT_CHR {
+        Type::CharacterDevice
+    } else if file_type == DT_DIR {
+        Type::Directory
+    } else if file_type == DT_FIFO {
+        Type::Fifo
+    } else if file_type == DT_LNK {
+        Type::Symlink
+    } else if file_type == DT_REG {
+        Type::File
+    } else if file_type == DT_SOCK {
+        Type::Socket
+    } else {
+        panic!("Unknown file type: {}", file_type);
+    }
 }
 
 fn handle_open(

@@ -1,6 +1,5 @@
 use libc::user_regs_struct;
 use std::marker::PhantomData;
-use std::os::raw::c_char;
 
 /// Represents a register which has never been written to.
 #[derive(Clone)]
@@ -63,10 +62,13 @@ macro_rules! implement_register_cast {
 implement_register_cast!(u64);
 implement_register_cast!(usize);
 implement_register_cast!(i32);
-implement_register_cast!(*const c_char);
-implement_register_cast!(*const char);
-implement_register_cast!(*const *const c_char);
-implement_register_cast!(*const libc::stat);
+
+/// Allow a register to be cast to an arbitrary pointer type. Traits + generics are so cool!
+impl<T> RegisterCast for *const T {
+    fn cast(r: u64) -> Self {
+        r as Self
+    }
+}
 
 impl Regs<Unmodified> {
     read_regs_function!(arg1, rdi);

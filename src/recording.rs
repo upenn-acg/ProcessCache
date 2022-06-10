@@ -9,9 +9,8 @@ use nix::unistd::Pid;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    fs::{self, File},
+    fs,
     hash::Hash,
-    io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
 };
@@ -183,24 +182,6 @@ impl Execution {
 
     fn populate_cache_map(&self, cache_map: &mut CacheMap) {
         let _ = self.generate_cached_exec(cache_map);
-    }
-
-    fn print_stdout(&self) {
-        let command_hashed = hash_command(self.successful_exec.command());
-        let stdout_filename = format!("stdout_{:?}", self.successful_exec.caller_pid().as_raw());
-        let cache_dir = PathBuf::from("./cache").join(format!("{:?}", command_hashed));
-        let stdout_file_path = cache_dir.join(stdout_filename);
-
-        let mut f = File::open(stdout_file_path).unwrap();
-        let mut buf = Vec::new();
-        let bytes = f.read_to_end(&mut buf).unwrap();
-        if bytes != 0 {
-            io::stdout().write_all(&buf).unwrap();
-        }
-
-        for child in self.child_execs.iter() {
-            child.print_stdout();
-        }
     }
 
     // fn generate_event_list_and_cached_exec(
@@ -534,10 +515,6 @@ impl RcExecution {
 
     pub fn populate_cache_map(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
         self.0.borrow().populate_cache_map(cache_map)
-    }
-
-    pub fn print_stdout(&self) {
-        self.0.borrow().print_stdout()
     }
 
     // pub fn exit_code(&self) -> Option<i32> {
