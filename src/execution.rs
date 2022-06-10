@@ -408,8 +408,7 @@ pub async fn trace_process(
                     "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
                     "getdents64" => {
                         // TODO: Kelly, you can use this variable to know what directories were read.
-                        let _read_directories: Vec<(CString, dir::Type)> =
-                            handle_get_dents64(&regs, &tracer)?;
+                        handle_get_dents64(&curr_execution, &regs, &tracer)?
                     }
                     "rename" | "renameat" | "renameat2" => {
                         handle_rename(&curr_execution, name, &tracer)?
@@ -572,13 +571,17 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
 /// Read directories returned by an intercepted system call to get_dents64. Return the d_name and
 /// d_type fields from the get_dents64 struct.
 fn handle_get_dents64(
+    execution: &RcExecution,
     regs: &Regs<Unmodified>,
     tracer: &Ptracer,
-) -> Result<Vec<(CString, dir::Type)>> {
+) -> Result<()> {
     // We only care about successful get_dents or when bytes were actually written.
     if regs.retval::<i32>() <= 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
+
+    let fd = regs.arg1::<i32>();
+    let full_path = path_from_fd(tracer.curr_proc, fd)?;
 
     // Pointer to linux_dirent passed to get_dents64 system call.
     let mut dirp: *const u8 = regs.arg2::<*const u8>();
@@ -604,7 +607,9 @@ fn handle_get_dents64(
         entries.push((file_name, getdents_file_type(file_type)));
     }
 
-    Ok(entries)
+    let getdents_event = SyscallEvent::DirectoryRead(full_path.clone(), entries);
+    execution.add_new_file_event(tracer.curr_proc, getdents_event, full_path);
+    Ok(())
 }
 
 fn getdents_file_type(file_type: c_uchar) -> dir::Type {
