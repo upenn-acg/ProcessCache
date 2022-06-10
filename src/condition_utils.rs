@@ -1,10 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    vec::Vec,
+};
 
 use libc::c_int;
 use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum FileType {
+    Dir,
+    File,
+    Symlink,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Mod {
@@ -46,6 +56,7 @@ impl LastMod {
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
+    DirEntriesMatch(Vec<(String, FileType)>),
     DoesntExist,
     Exists,
     FinalContents,
@@ -126,6 +137,17 @@ impl FirstState {
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => (),
                 SyscallEvent::Create(f, _) => panic!("Unexpected create flag: {:?}", f),
+                SyscallEvent::DirectoryRead(
+                    _,
+                    _,
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+                ) => {
+                    self.0 = State::DoesntExist;
+                }
+                SyscallEvent::DirectoryRead(_, _, SyscallOutcome::Success) => {
+                    self.0 = State::Exists;
+                }
+                SyscallEvent::DirectoryRead(_, _, _) => (),
                 SyscallEvent::Delete(SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }

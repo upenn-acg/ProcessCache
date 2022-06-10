@@ -1,18 +1,21 @@
-use nix::fcntl::OFlag;
-use nix::unistd::{access, AccessFlags, Pid};
+use nix::{
+    fcntl::OFlag,
+    unistd::{access, AccessFlags, Pid},
+};
 
-use std::fs;
 use std::{
     collections::{HashMap, HashSet},
-    os::unix::fs::MetadataExt,
+    fs::{self, read_dir},
+    iter::FromIterator,
+    os::unix::prelude::MetadataExt,
     path::PathBuf,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::cache_utils::generate_hash;
 use crate::condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State};
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
+use crate::{cache_utils::generate_hash, condition_utils::FileType};
 
 // Actual accesses to the file system performed by
 // a successful execution.
@@ -58,12 +61,48 @@ impl ExecFileEvents {
     }
 }
 
-fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
+fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
     debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
     if path_name.starts_with("/proc") {
         true
     } else {
         match fact {
+            Fact::DirEntriesMatch(entries) => {
+                let mut curr_dir_entries = HashSet::new();
+
+                let curr_entries = read_dir(path_name).unwrap();
+                for entry in curr_entries {
+                    let entry = entry.unwrap();
+                    let file_name = entry.file_name();
+                    let file_type = entry.file_type().unwrap();
+
+                    let file_type = if file_type.is_dir() {
+                        FileType::Dir
+                    } else if file_type.is_file() {
+                        FileType::File
+                    } else if file_type.is_symlink() {
+                        FileType::Symlink
+                    } else {
+                        panic!("What kind of file is this??");
+                    };
+
+                    curr_dir_entries.insert((file_name.into_string().unwrap(), file_type));
+                }
+
+                let mut old_set = HashSet::from_iter(entries);
+                let up_one = String::from("..");
+                let curr = String::from(".");
+                let stdout_file = format!("stdout_{:?}", pid.as_raw());
+                old_set.remove(&(up_one, FileType::Dir));
+                old_set.remove(&(curr, FileType::Dir));
+                old_set.remove(&(stdout_file, FileType::File));
+                // let diff = old_set.difference(&curr_dir_entries);
+                // let other_diff = curr_dir_entries.difference(&old_set);
+                // println!("Diff: {:?}", diff);
+                // println!("Other diff: {:?}", other_diff);
+
+                old_set == curr_dir_entries
+            }
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
@@ -99,23 +138,29 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
                     Fact::HasDirPermission(_)
                     | Fact::HasPermission(_)
                     | Fact::NoDirPermission(_)
-                    | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone()),
+                    | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone(), pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
                 let second_perms_hold = match *second {
                     Fact::HasDirPermission(_)
                     | Fact::HasPermission(_)
                     | Fact::NoDirPermission(_)
-                    | Fact::NoPermission(_) => check_fact_holds(*second, path_name),
+                    | Fact::NoPermission(_) => check_fact_holds(*second, path_name, pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
 
                 first_perms_hold || second_perms_hold
             }
             Fact::StartingContents(old_hash) => {
-                let new_hash = generate_hash(path_name);
-                // debug!("New hash: {:?}", new_hash);
-                old_hash == new_hash
+                // Getdents: First the process will open the dir for reading,
+                // but we don't handle checking this stuff here, we handle it
+                // when they call getdents.
+                if !old_hash.is_empty() {
+                    let new_hash = generate_hash(path_name);
+                    old_hash == new_hash
+                } else {
+                    true
+                }
             }
             Fact::StatStructMatches(old_stat) => {
                 // let metadata = fs::metadata(&path_name).unwrap();
@@ -144,10 +189,10 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf) -> bool {
 }
 
 // TODO: check env vars and starting cwd
-pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>) -> bool {
+pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>, pid: Pid) -> bool {
     for (path_name, fact_set) in conditions {
         for fact in fact_set {
-            if !check_fact_holds(fact.clone(), path_name.clone()) {
+            if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
                 debug!("Fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
                 return false;
             }
@@ -347,6 +392,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 }
 
                 (SyscallEvent::Create(f, _), _, _, _) => panic!("Unexpected create flag: {:?}", f),
+                (SyscallEvent::DirectoryRead(full_path, entries, outcome), _, _, _) => {
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    match outcome {
+                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                            curr_set.insert(Fact::DoesntExist);
+                        }
+                        SyscallOutcome::Success => {
+                            curr_set.insert(Fact::DirEntriesMatch(entries));
+                        }
+                        _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
+                    }
+                }
                 (SyscallEvent::Delete(_), State::DoesntExist, Mod::Created, true) => (),
                 (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
                     match outcome {
@@ -1087,6 +1144,7 @@ pub fn generate_postconditions(
                         curr_file_postconditions.insert(full_path.clone(), new_set);
                     }
                 }
+                (SyscallEvent::DirectoryRead(_, _, _), _, _) => (),
                 (SyscallEvent::FailedExec(_), _, _) => (),
                 (SyscallEvent::Open(OFlag::O_RDONLY, _, _), _, _) => (),
                 (

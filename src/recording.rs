@@ -140,6 +140,7 @@ impl Execution {
 
     fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
         let command_key = Command(self.executable(), self.args());
+        let pid = self.successful_exec.caller_pid();
         let file_events = self.file_events.clone();
         let children = self.child_execs.clone();
 
@@ -167,8 +168,9 @@ impl Execution {
         if children.is_empty() {
             let preconds = generate_preconditions(file_events.clone());
             let postconds = generate_postconditions(file_events);
+            let starting_cwd = self.starting_cwd();
             // We can copy the output files over now.
-            copy_output_files_to_cache(command_key.clone(), postconds.clone());
+            copy_output_files_to_cache(command_key.clone(), pid, postconds.clone(), starting_cwd);
             new_cached_exec.add_preconditions(preconds);
             new_cached_exec.add_postconditions(postconds);
         }
@@ -552,7 +554,12 @@ impl RcExecution {
 //     new_appended_events
 // }
 
-fn copy_output_files_to_cache(command: Command, postconditions: HashMap<PathBuf, HashSet<Fact>>) {
+fn copy_output_files_to_cache(
+    command: Command,
+    pid: Pid,
+    postconditions: HashMap<PathBuf, HashSet<Fact>>,
+    starting_cwd: PathBuf,
+) {
     // Now copy the output files to the appropriate places.
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
@@ -572,18 +579,21 @@ fn copy_output_files_to_cache(command: Command, postconditions: HashMap<PathBuf,
         }
     }
 
-    // let stdout_file_name = format!("stdout_{:?}", pid);
-    // let curr_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name.clone());
+    let stdout_file_name = format!("stdout_{:?}", pid.as_raw());
+    let stdout_file_path = starting_cwd.join(stdout_file_name.clone());
+    println!("CURR STD OUT FILE PATH: {:?}", stdout_file_path);
+    let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
+    println!("CACHE FILE PATH: {:?}", cache_stdout_file_path);
 
     // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
     // debug!("NEW STD OUT FILE PATH: {:?}", new_stdout_file_path);
     // debug!("OLD STD OUT FILE PATH: {:?}", curr_stdout_file_path);
-    // fs::copy(curr_stdout_file_path.clone(), new_stdout_file_path).unwrap();
+    fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
     // let mut f = File::open(curr_stdout_file_path.clone()).unwrap();
     // let mut buf = Vec::new();
     // let bytes = f.read_to_end(&mut buf).unwrap();
     // if bytes != 0 {
     //     io::stdout().write_all(&buf).unwrap();
     // }
-    // fs::remove_file(curr_stdout_file_path).unwrap();
+    fs::remove_file(stdout_file_path).unwrap();
 }

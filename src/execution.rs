@@ -1,10 +1,18 @@
-use libc::{c_char, c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK,  O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
-use nix::{dir, fcntl::{readlink, OFlag}, sys::stat::FileStat, unistd::Pid};
-use std::{collections::HashMap, ffi::{CStr, CString}, fs, path::PathBuf, rc::Rc};
+use libc::{
+    c_char, c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE, O_RDONLY,
+    O_RDWR, O_WRONLY,
+};
+use nix::{
+    dir,
+    fcntl::{readlink, OFlag},
+    sys::stat::FileStat,
+    unistd::Pid,
+};
+use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc};
 
-use crate::async_runtime::AsyncRuntime;
 use crate::cache::{retrieve_existing_cache, serialize_execs_to_cache};
 use crate::cache_utils::{hash_command, Command};
+use crate::{async_runtime::AsyncRuntime, condition_utils::FileType};
 
 use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
@@ -69,7 +77,18 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // };
 
         let mut new_cache = HashMap::new();
+        // println!("Execution: {:?}", first_execution.executable());
+        // println!("Args: {:?}", first_execution.args());
         first_execution.populate_cache_map(&mut new_cache);
+        // let command = Command(first_execution.executable(), first_execution.args());
+        // if let Some(entry) = new_cache.get(&command) {
+        //     println!("Preconditions:");
+        //     let preconditions = entry.preconditions();
+        //     for (path, facts) in preconditions {
+        //         println!("Path: {:?}", path);
+        //         println!("Facts: {:?}", facts);
+        //     }
+        // }
         serialize_execs_to_cache(new_cache);
     }
     Ok(())
@@ -95,6 +114,7 @@ pub async fn trace_process(
     let mut signal = None;
     let mut iostream_redirected = false;
     let mut caching_off = false;
+    let mut skip_execution = false;
     // TODO: Deal with PID recycling?
     let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
 
@@ -225,6 +245,7 @@ pub async fn trace_process(
                                             // Check if we should skip this execution.
                                             // If we are gonna skip, we have to change:
                                             // rax, orig_rax, arg1
+                                            skip_execution = true;
                                             debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
                                             entry.apply_all_transitions();
                                             let regs =
@@ -523,10 +544,12 @@ pub async fn trace_process(
             other
         ),
     }
-    // Write stdout_file to stdout.
-    let contents = std::fs::read_to_string(stdout_file)
-        .with_context(|| context!("Unable to read stdout_file"))?;
-    print!("{}", contents);
+    if !skip_execution {
+        // Write stdout_file to stdout.
+        let contents = std::fs::read_to_string(stdout_file)
+            .with_context(|| context!("Unable to read stdout_file"))?;
+        print!("{}", contents);
+    }
 
     Ok(())
 }
@@ -576,9 +599,9 @@ fn handle_get_dents64(
     tracer: &Ptracer,
 ) -> Result<()> {
     // We only care about successful get_dents or when bytes were actually written.
-    if regs.retval::<i32>() <= 0 {
-        return Ok(());
-    }
+    // if regs.retval::<i32>() <= 0 {
+    //     return Ok(());
+    // }
 
     let fd = regs.arg1::<i32>();
     let full_path = path_from_fd(tracer.curr_proc, fd)?;
@@ -587,8 +610,9 @@ fn handle_get_dents64(
     let mut dirp: *const u8 = regs.arg2::<*const u8>();
     // Number of bytes written by OS to dirp.
     let bytes_read = regs.retval::<i32>() as usize;
+    let ret_val = regs.retval::<i32>();
     let max_size = unsafe { dirp.add(bytes_read) };
-    let mut entries: Vec<(CString, dir::Type)> = Vec::new();
+    let mut entries: Vec<(String, FileType)> = Vec::new();
 
     // Continue looping until out pointer jumps past dirp + bytes read.
     while dirp < max_size {
@@ -604,11 +628,30 @@ fn handle_get_dents64(
         // Set dirp pointer to next entry.
         dirp = unsafe { dirp.add(record_length as usize) };
 
-        entries.push((file_name, getdents_file_type(file_type)));
+        let file_type = getdents_file_type(file_type);
+        let file_type = match file_type {
+            dir::Type::Directory => FileType::Dir,
+            dir::Type::File => FileType::File,
+            dir::Type::Symlink => FileType::Symlink,
+            _ => panic!("what kind of file is this??"),
+        };
+        entries.push((file_name.into_string().unwrap(), file_type));
     }
 
-    let getdents_event = SyscallEvent::DirectoryRead(full_path.clone(), entries);
-    execution.add_new_file_event(tracer.curr_proc, getdents_event, full_path);
+    let outcome = if ret_val >= 0 {
+        SyscallOutcome::Success
+    } else if ret_val == -2 {
+        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)
+    } else {
+        panic!("Unexpected return value from getdents! {:?}", ret_val)
+    };
+
+    let getdents_event = SyscallEvent::DirectoryRead(full_path.clone(), entries, outcome);
+    // We only cared if you actually read values.
+    if ret_val > 0 {
+        execution.add_new_file_event(tracer.curr_proc, getdents_event, full_path);
+    }
+
     Ok(())
 }
 

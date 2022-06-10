@@ -1,8 +1,10 @@
-use std::{path::PathBuf, ffi::CString};
+use std::path::PathBuf;
 
 use libc::c_int;
-use nix::{fcntl::OFlag, dir};
+use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
+
+use crate::condition_utils::FileType;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStat {
@@ -26,7 +28,7 @@ pub enum SyscallEvent {
     Access(c_int, SyscallOutcome),
     Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
-    DirectoryRead(PathBuf, Vec<(CString, dir::Type)>),
+    DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome),
     FailedExec(SyscallFailure),
     Open(OFlag, Option<Vec<u8>>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),     // Old, new, outcome

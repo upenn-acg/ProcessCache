@@ -3,6 +3,7 @@ use crate::{
     condition_generator::check_preconditions,
     condition_utils::Fact,
 };
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
@@ -104,7 +105,10 @@ impl CachedExecution {
             // panic!("cwd");
             return false;
         }
-        if !check_preconditions(my_preconds) {
+        if !check_preconditions(
+            my_preconds,
+            Pid::from_raw(self.cached_metadata.caller_pid()),
+        ) {
             return false;
         }
 
@@ -133,7 +137,10 @@ impl CachedExecution {
             debug!("new cwd: {:?}", curr_cwd);
         }
 
-        check_preconditions(my_preconds);
+        check_preconditions(
+            my_preconds,
+            Pid::from_raw(self.cached_metadata.caller_pid()),
+        );
 
         let children = self.child_execs.clone();
         for child in children {
@@ -149,9 +156,9 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-    //     self.preconditions.clone()
-    // }
+    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.preconditions.clone()
+    }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
@@ -186,9 +193,9 @@ impl RcCachedExec {
         self.0.children()
     }
 
-    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-    //     self.0.preconditions()
-    // }
+    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.0.preconditions()
+    }
 
     // pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
     //     self.0.postconditions()
