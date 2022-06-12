@@ -14,6 +14,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
 };
+use tracing::debug;
 
 pub type ChildExecutions = Vec<RcExecution>;
 
@@ -230,6 +231,12 @@ impl Execution {
         };
 
         let postconditions = generate_postconditions(new_events.clone());
+        copy_output_files_to_cache(
+            command_key.clone(),
+            self.pid(),
+            postconditions.clone(),
+            self.starting_cwd(),
+        );
         new_cached_exec.add_postconditions(postconditions);
         let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
         // let e = cache_map.entry(command_key).or_insert(Vec::new());
@@ -243,14 +250,14 @@ impl Execution {
         //     self.executable(),
         //     self.args(),
         // );
-        let (_, _) = self.generate_event_list_and_cached_exec(cache_map);
-        // let command_key = cached_exec.command();
+        let (cached_exec, _) = self.generate_event_list_and_cached_exec(cache_map);
+        let command_key = cached_exec.command();
         // TODO: INDEX
         // let index = cached_exec.index_in_exec_list();
-        // let posts = cached_exec.postconditions();
+        let posts = cached_exec.postconditions();
 
         // TODO:
-        // copy_output_files_to_cache(command_key, index, posts);
+        // copy_output_files_to_cache(command_key,self.pid(), posts, self.starting_cwd());
     }
 
     fn file_events(&self) -> ExecFileEvents {
@@ -444,6 +451,8 @@ fn copy_output_files_to_cache(
         for fact in fact_set {
             if fact == Fact::Exists || fact == Fact::FinalContents {
                 let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
+                debug!("Current file path: {:?}", path.clone());
+                debug!("Cache file path: {:?}", cache_path);
                 fs::copy(path.clone(), cache_path).unwrap();
             }
         }
@@ -456,8 +465,8 @@ fn copy_output_files_to_cache(
     println!("CACHE FILE PATH: {:?}", cache_stdout_file_path);
 
     // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
-    // debug!("NEW STD OUT FILE PATH: {:?}", new_stdout_file_path);
-    // debug!("OLD STD OUT FILE PATH: {:?}", curr_stdout_file_path);
+    debug!("NEW STD OUT FILE PATH: {:?}", cache_stdout_file_path);
+    debug!("OLD STD OUT FILE PATH: {:?}", stdout_file_path);
     fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
     // let mut f = File::open(curr_stdout_file_path.clone()).unwrap();
     // let mut buf = Vec::new();
