@@ -79,6 +79,14 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         let mut new_cache = HashMap::new();
         // println!("Execution: {:?}", first_execution.executable());
         // println!("Args: {:?}", first_execution.args());
+
+        let file_events = first_execution.file_events();
+        println!("Parent's file events: {:?}", file_events);
+        for child in first_execution.children() {
+            let childs_file_events = child.file_events();
+            println!("Child's file events: {:?}", childs_file_events);
+        }
+
         first_execution.populate_cache_map(&mut new_cache);
         // let command = Command(first_execution.executable(), first_execution.args());
         // if let Some(entry) = new_cache.get(&command) {

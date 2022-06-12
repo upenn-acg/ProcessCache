@@ -105,7 +105,7 @@ impl FirstState {
                         "updating first state struct, access failed because file already exists??"
                     );
                 }
-
+                SyscallEvent::ChildExec(_) => (),
                 SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success) => {
                     self.0 = State::DoesntExist;
                 }

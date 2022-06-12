@@ -56,6 +56,12 @@ impl ExecFileEvents {
         }
     }
 
+    pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
+        for (_, list) in self.0.iter_mut() {
+            list.push(SyscallEvent::ChildExec(child_pid));
+        }
+    }
+
     pub fn events(&self) -> HashMap<PathBuf, Vec<SyscallEvent>> {
         self.0.clone()
     }
@@ -299,7 +305,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         o => panic!("Unexpected access syscall failure: {:?}", o),
                     }
                 }
-
+                (SyscallEvent::ChildExec(_), _, _, _) => (),
                 (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Created, _) => (),
                 (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Deleted, true) => (),
 
@@ -1048,6 +1054,7 @@ pub fn generate_postconditions(
                     panic!("First state is none but last mod is rename!!");
                 }
                 (SyscallEvent::Access(_, _), _, _) => (),
+                (SyscallEvent::ChildExec(_), _, _) => (),
                 (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Created) => (),
                 (SyscallEvent::Create(_, outcome), State::DoesntExist, Mod::Deleted) => {
                     if outcome == SyscallOutcome::Success {

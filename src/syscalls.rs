@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use libc::c_int;
-use nix::fcntl::OFlag;
+use nix::{fcntl::OFlag, unistd::Pid};
 use serde::{Deserialize, Serialize};
 
 use crate::condition_utils::FileType;
@@ -30,6 +30,7 @@ pub enum SyscallEvent {
     Delete(SyscallOutcome),
     DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome),
     FailedExec(SyscallFailure),
+    ChildExec(Pid), // We want to know when our child processes have successfully called execve.
     Open(OFlag, Option<Vec<u8>>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),     // Old, new, outcome
     // TODO: Handle stat struct too

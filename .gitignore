@@ -7,3 +7,4 @@
 gcc_empty_c.rs
 src/get_all_syscalls_called_by_gcc.rs
 Makefile
+/subtree_examples
