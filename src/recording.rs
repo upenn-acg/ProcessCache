@@ -195,6 +195,7 @@ impl Execution {
     fn generate_event_list_and_cached_exec(
         &self,
         cache_map: &mut HashMap<Command, RcCachedExec>,
+        root_command_key: Command,
     ) -> (CachedExecution, ExecFileEvents) {
         let command_key = Command(self.executable(), self.args());
         let file_events = self.file_events.clone();
@@ -220,23 +221,27 @@ impl Execution {
             for child in children {
                 // logic to append map
                 let (child_exec, child_events) =
-                    child.generate_event_list_and_cached_exec(cache_map);
+                    child.generate_event_list_and_cached_exec(cache_map, root_command_key.clone());
                 // TODO: Here I need to go through the parent's file events, find the child's ForkExec(childpid) event,
                 // and replace it with the child's file events.
                 new_events = append_file_events(file_events.clone(), child_events, child.pid());
+
                 println!("New events: {:?}", new_events);
                 new_cached_exec.add_child(RcCachedExec::new(child_exec));
             }
             ExecFileEvents::new(new_events)
         };
 
+        let stdout_file = format!("stdout_{:?}", self.pid().as_raw());
+        let starting_cwd = self.starting_cwd();
+        let curr_stdout_file_path = starting_cwd.join(stdout_file.clone());
+        let command_hash = hash_command(root_command_key);
+        let cache_dir = PathBuf::from("./cache");
+        let cache_dir = cache_dir.join(format!("{}", command_hash));
+        let cache_stdout_file_path = cache_dir.join(stdout_file);
+        fs::copy(curr_stdout_file_path, cache_stdout_file_path).unwrap();
+
         let postconditions = generate_postconditions(new_events.clone());
-        copy_output_files_to_cache(
-            command_key.clone(),
-            self.pid(),
-            postconditions.clone(),
-            self.starting_cwd(),
-        );
         new_cached_exec.add_postconditions(postconditions);
         let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
         // let e = cache_map.entry(command_key).or_insert(Vec::new());
@@ -246,18 +251,15 @@ impl Execution {
     }
 
     pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-        // let root_command = Command(
-        //     self.executable(),
-        //     self.args(),
-        // );
-        let (cached_exec, _) = self.generate_event_list_and_cached_exec(cache_map);
+        let root_command = Command(self.executable(), self.args());
+        let (cached_exec, _) = self.generate_event_list_and_cached_exec(cache_map, root_command);
         let command_key = cached_exec.command();
         // TODO: INDEX
         // let index = cached_exec.index_in_exec_list();
         let posts = cached_exec.postconditions();
 
         // TODO:
-        // copy_output_files_to_cache(command_key,self.pid(), posts, self.starting_cwd());
+        copy_output_files_to_cache(command_key, self.pid(), posts, self.starting_cwd());
     }
 
     fn file_events(&self) -> ExecFileEvents {
@@ -351,10 +353,11 @@ impl RcExecution {
     pub fn generate_event_list_and_cached_exec(
         &self,
         cache_map: &mut HashMap<Command, RcCachedExec>,
+        root_command_key: Command,
     ) -> (CachedExecution, ExecFileEvents) {
         self.0
             .borrow()
-            .generate_event_list_and_cached_exec(cache_map)
+            .generate_event_list_and_cached_exec(cache_map, root_command_key)
     }
 
     pub fn is_empty_root_exec(&self) -> bool {
@@ -388,7 +391,7 @@ fn append_file_events(
     parent_events: ExecFileEvents,
     child_events: ExecFileEvents,
     child_pid: Pid,
-) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+) -> (HashMap<PathBuf, Vec<SyscallEvent>>) {
     // let mut new_appended_events = parent_events.events();
     // let curr_child_map = child_events.events();
     // let mut child_event_map = child_events.events();
@@ -402,6 +405,7 @@ fn append_file_events(
     //     }
     // }
 
+    // let mut is_true_leaf = true;
     let child_event_map = child_events.events();
     let curr_parent_events = parent_events.events();
     let mut new_parent_events = curr_parent_events.clone();
@@ -420,6 +424,10 @@ fn append_file_events(
             new_events.append(&mut childs_events);
             new_events.append(&mut after_events.to_vec());
             new_parent_events.insert(path_name, new_events);
+
+            // if child_exec_index != (file_event_list.len() - 1) {
+            //     is_true_leaf = false;
+            // }
         } else {
             // If the child has not touched this file, just remove the ChildExec event.
             let mut file_events = file_event_list.clone();
