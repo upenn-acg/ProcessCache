@@ -80,12 +80,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // println!("Execution: {:?}", first_execution.executable());
         // println!("Args: {:?}", first_execution.args());
 
-        let file_events = first_execution.file_events();
-        println!("Parent's file events: {:?}", file_events);
-        for child in first_execution.children() {
-            let childs_file_events = child.file_events();
-            println!("Child's file events: {:?}", childs_file_events);
-        }
+        // let file_events = first_execution.file_events();
+        // println!("Parent's file events: {:?}", file_events);
+        // for child in first_execution.children() {
+        //     let childs_file_events = child.file_events();
+        //     println!("Child's file events: {:?}", childs_file_events);
+        // }
 
         first_execution.populate_cache_map(&mut new_cache);
         // let command = Command(first_execution.executable(), first_execution.args());
@@ -439,6 +439,10 @@ pub async fn trace_process(
                         // TODO: Kelly, you can use this variable to know what directories were read.
                         handle_get_dents64(&curr_execution, &regs, &tracer)?
                     }
+                    "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
+                    "pipe2" => {
+                        handle_pipe2(&regs)?
+                    }
                     "rename" | "renameat" | "renameat2" => {
                         handle_rename(&curr_execution, name, &tracer)?
                     }
@@ -778,6 +782,19 @@ fn handle_open(
 
     if let Some(event) = open_syscall_event {
         execution.add_new_file_event(tracer.curr_proc, event, full_path);
+    }
+    Ok(())
+}
+
+fn handle_pipe2(regs: &Regs<Unmodified>) -> Result<()> {
+    let flags = regs.arg2::<i32>();
+    let option_flags = OFlag::from_bits(flags);
+    if let Some(flags) = option_flags {
+        if !flags.contains(OFlag::O_CLOEXEC) {
+            panic!("Creating a pipe without the O_CLOEXEC flag!");
+        } else {
+            debug!("Happy lil O_CLOEXEC pipe :)");
+        }
     }
     Ok(())
 }

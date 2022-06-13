@@ -214,7 +214,6 @@ impl Execution {
         let children = self.child_execs.clone();
         let file_events = self.file_events.clone();
         let new_events = if children.is_empty() {
-            println!("No new events: {:?}", file_events);
             file_events
         } else {
             let mut new_events = HashMap::new();
@@ -226,7 +225,6 @@ impl Execution {
                 // and replace it with the child's file events.
                 new_events = append_file_events(file_events.clone(), child_events, child.pid());
 
-                println!("New events: {:?}", new_events);
                 new_cached_exec.add_child(RcCachedExec::new(child_exec));
             }
             ExecFileEvents::new(new_events)
@@ -410,29 +408,31 @@ fn append_file_events(
     let curr_parent_events = parent_events.events();
     let mut new_parent_events = curr_parent_events.clone();
     for (path_name, file_event_list) in curr_parent_events {
-        let child_exec_index = file_event_list
+        // The child may not have actually called execve.
+        if let Some(child_exec_index) = file_event_list
             .iter()
             .position(|x| x == &SyscallEvent::ChildExec(child_pid))
-            .unwrap();
-        if let Some(childs_file_event_list) = child_event_map.get(&path_name) {
-            // [e1, e2, CHILD_EXEC, e3, e4]
-            // child_list = [c1, c2, c3]
-            let mut childs_events = childs_file_event_list.clone();
-            let before_events = &file_event_list[..child_exec_index];
-            let after_events = &file_event_list[(child_exec_index + 1)..];
-            let mut new_events = before_events.to_vec();
-            new_events.append(&mut childs_events);
-            new_events.append(&mut after_events.to_vec());
-            new_parent_events.insert(path_name, new_events);
+        {
+            if let Some(childs_file_event_list) = child_event_map.get(&path_name) {
+                // [e1, e2, CHILD_EXEC, e3, e4]
+                // child_list = [c1, c2, c3]
+                let mut childs_events = childs_file_event_list.clone();
+                let before_events = &file_event_list[..child_exec_index];
+                let after_events = &file_event_list[(child_exec_index + 1)..];
+                let mut new_events = before_events.to_vec();
+                new_events.append(&mut childs_events);
+                new_events.append(&mut after_events.to_vec());
+                new_parent_events.insert(path_name, new_events);
 
-            // if child_exec_index != (file_event_list.len() - 1) {
-            //     is_true_leaf = false;
-            // }
-        } else {
-            // If the child has not touched this file, just remove the ChildExec event.
-            let mut file_events = file_event_list.clone();
-            let _ = file_events.remove(child_exec_index);
-            new_parent_events.insert(path_name, file_events);
+                // if child_exec_index != (file_event_list.len() - 1) {
+                //     is_true_leaf = false;
+                // }
+            } else {
+                // If the child has not touched this file, just remove the ChildExec event.
+                let mut file_events = file_event_list.clone();
+                let _ = file_events.remove(child_exec_index);
+                new_parent_events.insert(path_name, file_events);
+            }
         }
     }
 

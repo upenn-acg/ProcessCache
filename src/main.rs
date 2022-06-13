@@ -154,6 +154,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
+    loader.intercept(libc::SYS_pipe)?;
+    loader.intercept(libc::SYS_pipe2)?;
     loader.intercept(libc::SYS_rename)?;
     loader.intercept(libc::SYS_renameat)?;
     loader.intercept(libc::SYS_renameat2)?;
@@ -193,35 +195,33 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_sigaltstack)?;
     loader.let_pass(libc::SYS_statfs)?;
 
-    // TODO Less clear whether it should be handled.
-    loader.let_pass(libc::SYS_sysinfo)?;
-    loader.let_pass(libc::SYS_socket)?;
+    // TODO: Either unsure if/how to handle or
+    // might need to be handled later.
+    loader.let_pass(libc::SYS_clock_gettime)?;
+    loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_connect)?;
-    loader.let_pass(libc::SYS_getrandom)?;
-    loader.let_pass(libc::SYS_lgetxattr)?;
-    loader.let_pass(libc::SYS_getxattr)?;
-    loader.let_pass(libc::SYS_statx)?;
-    loader.let_pass(libc::SYS_getrusage)?;
-    loader.let_pass(libc::SYS_pselect6)?;
-    loader.let_pass(libc::SYS_getrlimit)?;
-    // TODO: Probably should handle later...
-    loader.let_pass(libc::SYS_mkdir)?;
-    loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_dup2)?;
-    loader.let_pass(libc::SYS_pipe)?;
-    loader.let_pass(libc::SYS_pipe2)?;
-    loader.let_pass(libc::SYS_readlink)?;
+    loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_fcntl)?;
     loader.let_pass(libc::SYS_getcwd)?;
-    loader.let_pass(libc::SYS_close)?;
+    loader.let_pass(libc::SYS_getrandom)?;
+    loader.let_pass(libc::SYS_getrlimit)?;
+    loader.let_pass(libc::SYS_getrusage)?;
+    loader.let_pass(libc::SYS_getxattr)?;
+    loader.let_pass(libc::SYS_lgetxattr)?;
+    loader.let_pass(libc::SYS_madvise)?;
+    loader.let_pass(libc::SYS_mkdir)?;
+    loader.let_pass(libc::SYS_poll)?;
     loader.let_pass(libc::SYS_pread64)?;
+    loader.let_pass(libc::SYS_pselect6)?;
     loader.let_pass(libc::SYS_read)?;
+    loader.let_pass(libc::SYS_readlink)?;
+    loader.let_pass(libc::SYS_socket)?;
+    loader.let_pass(libc::SYS_sysinfo)?;
+    loader.let_pass(libc::SYS_statx)?;
+    loader.let_pass(libc::SYS_times)?;
+    loader.let_pass(libc::SYS_wait4)?;
     loader.let_pass(libc::SYS_write)?;
     loader.let_pass(libc::SYS_writev)?;
-    loader.let_pass(libc::SYS_wait4)?;
-    loader.let_pass(libc::SYS_poll)?;
-    loader.let_pass(libc::SYS_clock_gettime)?;
-    loader.let_pass(libc::SYS_times)?;
-    loader.let_pass(libc::SYS_madvise)?;
     loader.load_to_kernel()
 }
