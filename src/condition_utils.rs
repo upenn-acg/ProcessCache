@@ -7,7 +7,7 @@ use libc::c_int;
 use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 
-use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
+use crate::syscalls::{Stat, SyscallEvent, SyscallFailure, SyscallOutcome};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum FileType {
@@ -68,7 +68,7 @@ pub enum Fact {
     NoPermission(c_int),
     Or(Box<Fact>, Box<Fact>),
     StartingContents(Vec<u8>),
-    StatStructMatches(MyStat),
+    StatStructMatches(Stat),
 }
 
 #[derive(Clone, Eq, PartialEq)]

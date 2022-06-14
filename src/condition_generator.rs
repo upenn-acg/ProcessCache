@@ -13,9 +13,12 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State};
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 use crate::{cache_utils::generate_hash, condition_utils::FileType};
+use crate::{
+    condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State},
+    syscalls::Stat,
+};
 
 // Actual accesses to the file system performed by
 // a successful execution.
@@ -170,25 +173,31 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
             }
             Fact::StatStructMatches(old_stat) => {
                 // let metadata = fs::metadata(&path_name).unwrap();
-                let metadata_result = fs::metadata(&path_name);
-                match metadata_result {
-                    Ok(metadata) => {
-                        let new_stat = MyStat {
-                            st_dev: metadata.dev(),
-                            st_ino: metadata.ino(),
-                            st_nlink: metadata.nlink(),
-                            st_mode: metadata.mode(),
-                            st_uid: metadata.uid(),
-                            st_gid: metadata.gid(),
-                            st_rdev: metadata.rdev(),
-                            st_size: metadata.size() as i64,
-                            st_blksize: metadata.blksize() as i64,
-                            st_blocks: metadata.blocks() as i64,
-                        };
-                        old_stat == new_stat
+                // let metadata_result = fs::metadata(&path_name);
+                let (old_stat, new_metadata) = match old_stat {
+                    Stat::Stat(stat) => {
+                        let metadata = fs::metadata(&path_name).unwrap();
+                        (stat, metadata)
                     }
-                    Err(_) => panic!("No file: {:?}", path_name),
-                }
+                    Stat::Lstat(stat) => {
+                        let symlink_metadata = fs::symlink_metadata(&path_name).unwrap();
+                        (stat, symlink_metadata)
+                    }
+                };
+
+                let new_stat = MyStat {
+                    st_dev: new_metadata.dev(),
+                    st_ino: new_metadata.ino(),
+                    st_nlink: new_metadata.nlink(),
+                    st_mode: new_metadata.mode(),
+                    st_uid: new_metadata.uid(),
+                    st_gid: new_metadata.gid(),
+                    st_rdev: new_metadata.rdev(),
+                    st_size: new_metadata.size() as i64,
+                    st_blksize: new_metadata.blksize() as i64,
+                    st_blocks: new_metadata.blocks() as i64,
+                };
+                old_stat == new_stat
             }
         }
     }

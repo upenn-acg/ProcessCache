@@ -389,7 +389,7 @@ fn append_file_events(
     parent_events: ExecFileEvents,
     child_events: ExecFileEvents,
     child_pid: Pid,
-) -> (HashMap<PathBuf, Vec<SyscallEvent>>) {
+) -> HashMap<PathBuf, Vec<SyscallEvent>> {
     // let mut new_appended_events = parent_events.events();
     // let curr_child_map = child_events.events();
     // let mut child_event_map = child_events.events();

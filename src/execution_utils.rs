@@ -184,7 +184,7 @@ pub fn get_full_path(
         .with_context(|| context!("Failed to get regs in exec event"))?;
 
     let path_arg_bytes = match syscall_name {
-        "access" | "creat" | "open" | "stat" | "unlink" => regs.arg1::<*const c_char>(),
+        "access" | "creat" | "lstat" | "open" | "stat" | "unlink" => regs.arg1::<*const c_char>(),
         "openat" | "unlinkat" => regs.arg2::<*const c_char>(),
         _ => panic!("Not handling an appropriate system call in get_full_path!"),
     };
@@ -198,7 +198,7 @@ pub fn get_full_path(
         file_name_arg
     } else {
         match syscall_name {
-            "access" | "creat" | "open" | "stat" | "unlink" => {
+            "access" | "creat" | "open" | "stat" | "lstat" | "unlink" => {
                 let cwd = curr_execution.starting_cwd();
                 cwd.join(file_name_arg)
             }

@@ -56,9 +56,9 @@ impl CachedExecution {
         self.postconditions = posts;
     }
 
-    pub fn add_preconditions(&mut self, pres: HashMap<PathBuf, HashSet<Fact>>) {
-        self.preconditions = pres;
-    }
+    // pub fn add_preconditions(&mut self, pres: HashMap<PathBuf, HashSet<Fact>>) {
+    //     self.preconditions = pres;
+    // }
 
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
@@ -156,9 +156,9 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.preconditions.clone()
-    }
+    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    //     self.preconditions.clone()
+    // }
 
     pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
         self.postconditions.clone()
@@ -193,9 +193,9 @@ impl RcCachedExec {
         self.0.children()
     }
 
-    pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.0.preconditions()
-    }
+    // pub fn preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+    //     self.0.preconditions()
+    // }
 
     // pub fn postconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
     //     self.0.postconditions()

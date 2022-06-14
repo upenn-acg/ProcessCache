@@ -10,9 +10,12 @@ use nix::{
 };
 use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc};
 
-use crate::cache::{retrieve_existing_cache, serialize_execs_to_cache};
 use crate::cache_utils::{hash_command, Command};
 use crate::{async_runtime::AsyncRuntime, condition_utils::FileType};
+use crate::{
+    cache::{retrieve_existing_cache, serialize_execs_to_cache},
+    syscalls::Stat,
+};
 
 use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
@@ -434,7 +437,7 @@ pub async fn trace_process(
                         handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                     }
                     // TODO: newfstatat
-                    "fstat" | "stat" => handle_stat(&curr_execution, name, &tracer)?,
+                    "fstat" | "lstat" | "stat" => handle_stat_family(&curr_execution, name, &tracer)?,
                     "getdents64" => {
                         // TODO: Kelly, you can use this variable to know what directories were read.
                         handle_get_dents64(&curr_execution, &regs, &tracer)?
@@ -863,7 +866,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 }
 
 // Handling the stat system call.
-fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -881,7 +884,7 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
                 None
             }
         }
-        "stat" => Some(get_full_path(execution, syscall_name, tracer)?),
+        "lstat" | "stat" => Some(get_full_path(execution, syscall_name, tracer)?),
         _ => panic!("Calling unrecognized syscall in handle_stat()"),
     };
 
@@ -904,7 +907,11 @@ fn handle_stat(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) ->
                 };
                 // TODO: actually do something with this fucking struct.
                 // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
-                SyscallEvent::Stat(Some(my_stat), SyscallOutcome::Success)
+                if syscall_name == "lstat" {
+                    SyscallEvent::Stat(Some(Stat::Lstat(my_stat)), SyscallOutcome::Success)
+                } else {
+                    SyscallEvent::Stat(Some(Stat::Stat(my_stat)), SyscallOutcome::Success)
+                }
             }
             -2 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
             -13 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
