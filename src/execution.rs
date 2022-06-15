@@ -10,11 +10,15 @@ use nix::{
 };
 use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc};
 
-use crate::cache_utils::{hash_command, Command};
 use crate::{async_runtime::AsyncRuntime, condition_utils::FileType};
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
     syscalls::Stat,
+};
+use crate::{
+    cache_utils::{hash_command, Command},
+    condition_generator::{generate_postconditions, ExecFileEvents},
+    recording::{append_file_events, copy_output_files_to_cache},
 };
 
 use crate::context;
@@ -78,29 +82,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // } else {
         //     HashMap::new()
         // };
-
-        let mut new_cache = HashMap::new();
-        // println!("Execution: {:?}", first_execution.executable());
-        // println!("Args: {:?}", first_execution.args());
-
-        // let file_events = first_execution.file_events();
-        // println!("Parent's file events: {:?}", file_events);
-        // for child in first_execution.children() {
-        //     let childs_file_events = child.file_events();
-        //     println!("Child's file events: {:?}", childs_file_events);
-        // }
-
-        first_execution.populate_cache_map(&mut new_cache);
-        // let command = Command(first_execution.executable(), first_execution.args());
-        // if let Some(entry) = new_cache.get(&command) {
-        //     println!("Preconditions:");
-        //     let preconditions = entry.preconditions();
-        //     for (path, facts) in preconditions {
-        //         println!("Path: {:?}", path);
-        //         println!("Facts: {:?}", facts);
-        //     }
-        // }
-        serialize_execs_to_cache(new_cache);
+        // serialize_execs_to_cache(new_cache);
     }
     Ok(())
 }
@@ -553,18 +535,60 @@ pub async fn trace_process(
             // pid that exec'd the exec. execececececec.
             // TODO: don't add this here if skipping?
             curr_execution.add_exit_code(exit_code);
+
+            // TODO:
+            // append file event lists
+            // update the event lists of this execution struct
+            // generate postconditions
+            // copy output files to /cache/hash_of_my_command_key/output_file_x
+            // TODO maybe:
+            // record postconditions in the execution struct?
+            // if the parent has no files in common with its child, then the parent
+            // can just copy over the child's computed postconditions to its own
+            // instead of recomputing the child's along with its own
+            // TODO: if NOT skip_execution...
+            let children = curr_execution.children();
+            let new_events = if children.is_empty() {
+                curr_execution.file_events()
+            } else {
+                let mut new_events = HashMap::new();
+                for child in children {
+                    new_events = append_file_events(
+                        curr_execution.file_events(),
+                        child.file_events(),
+                        child.pid(),
+                    );
+                }
+                ExecFileEvents::new(new_events)
+            };
+            curr_execution.update_file_events(new_events.clone());
+            println!("My pid: {:?}", pid);
+            let ExecFileEvents(event_map) = new_events.clone();
+            for (path_name, events) in event_map {
+                println!("Path: {:?}", path_name);
+                println!("Events: {:?}", events);
+            }
+
+            let command = Command(curr_execution.executable(), curr_execution.args());
+            let postconditions = generate_postconditions(new_events);
+            copy_output_files_to_cache(
+                command,
+                curr_execution.pid(),
+                postconditions,
+                curr_execution.starting_cwd(),
+            );
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
             other
         ),
     }
-    if !skip_execution {
-        // Write stdout_file to stdout.
-        let contents = std::fs::read_to_string(stdout_file)
-            .with_context(|| context!("Unable to read stdout_file"))?;
-        print!("{}", contents);
-    }
+    // if !skip_execution {
+    //     // Write stdout_file to stdout.
+    //     let contents = std::fs::read_to_string(stdout_file)
+    //         .with_context(|| context!("Unable to read stdout_file"))?;
+    //     print!("{}", contents);
+    // }
 
     Ok(())
 }

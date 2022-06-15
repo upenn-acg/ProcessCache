@@ -9,8 +9,9 @@ use nix::unistd::Pid;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    fs,
+    fs::{self, File},
     hash::Hash,
+    io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
 };
@@ -200,7 +201,7 @@ impl Execution {
         let command_key = Command(self.executable(), self.args());
         let file_events = self.file_events.clone();
 
-        let preconditions = generate_preconditions(file_events);
+        // let preconditions = generate_preconditions(file_events);
         let command = Command(self.executable(), self.args());
         let cached_metadata = CachedExecMetadata::new(
             self.pid().as_raw(),
@@ -209,7 +210,7 @@ impl Execution {
             self.starting_cwd(),
         );
         let mut new_cached_exec =
-            CachedExecution::new(cached_metadata, Vec::new(), preconditions, HashMap::new());
+            CachedExecution::new(cached_metadata, Vec::new(), HashMap::new(), HashMap::new());
 
         let children = self.child_execs.clone();
         let file_events = self.file_events.clone();
@@ -224,7 +225,6 @@ impl Execution {
                 // TODO: Here I need to go through the parent's file events, find the child's ForkExec(childpid) event,
                 // and replace it with the child's file events.
                 new_events = append_file_events(file_events.clone(), child_events, child.pid());
-
                 new_cached_exec.add_child(RcCachedExec::new(child_exec));
             }
             ExecFileEvents::new(new_events)
@@ -240,7 +240,12 @@ impl Execution {
         fs::copy(curr_stdout_file_path, cache_stdout_file_path).unwrap();
 
         let postconditions = generate_postconditions(new_events.clone());
+        println!("My pid: {:?}", self.successful_exec.caller_pid().as_raw());
+        println!("Postconditions: {:?}", postconditions);
+        let preconditions = generate_preconditions(new_events.clone());
+        println!("Preconditions: {:?}", preconditions);
         new_cached_exec.add_postconditions(postconditions);
+        new_cached_exec.add_preconditions(preconditions);
         let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
         // let e = cache_map.entry(command_key).or_insert(Vec::new());
         // e.push(new_rc_cached_exec);
@@ -274,6 +279,10 @@ impl Execution {
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.successful_exec.starting_cwd()
+    }
+
+    fn update_file_events(&mut self, file_events: ExecFileEvents) {
+        self.file_events = file_events;
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
@@ -378,6 +387,10 @@ impl RcExecution {
         self.0.borrow().starting_cwd()
     }
 
+    pub fn update_file_events(&mut self, file_events: ExecFileEvents) {
+        self.0.borrow_mut().update_file_events(file_events)
+    }
+
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
         self.0
             .borrow_mut()
@@ -385,61 +398,75 @@ impl RcExecution {
     }
 }
 
-fn append_file_events(
+pub fn append_file_events(
     parent_events: ExecFileEvents,
     child_events: ExecFileEvents,
     child_pid: Pid,
 ) -> HashMap<PathBuf, Vec<SyscallEvent>> {
-    // let mut new_appended_events = parent_events.events();
-    // let curr_child_map = child_events.events();
-    // let mut child_event_map = child_events.events();
-    // for (path_name, mut child_list) in curr_child_map {
-    //     if let Some(parent_list) = new_appended_events.get(&path_name) {
-    //         let mut parent_list_clone = parent_list.clone();
-    //         parent_list_clone.append(&mut child_list);
-    //         new_appended_events.insert(path_name, parent_list_clone);
-    //     } else {
-    //         new_appended_events.insert(path_name, child_list);
-    //     }
-    // }
-
-    // let mut is_true_leaf = true;
-    let child_event_map = child_events.events();
+    let child_events = child_events.events();
     let curr_parent_events = parent_events.events();
     let mut new_parent_events = curr_parent_events.clone();
-    for (path_name, file_event_list) in curr_parent_events {
-        // The child may not have actually called execve.
-        if let Some(child_exec_index) = file_event_list
-            .iter()
-            .position(|x| x == &SyscallEvent::ChildExec(child_pid))
-        {
-            if let Some(childs_file_event_list) = child_event_map.get(&path_name) {
-                // [e1, e2, CHILD_EXEC, e3, e4]
-                // child_list = [c1, c2, c3]
-                let mut childs_events = childs_file_event_list.clone();
-                let before_events = &file_event_list[..child_exec_index];
-                let after_events = &file_event_list[(child_exec_index + 1)..];
+    // TODO: we should be going through the child because we need everything from the child,
+    // whether we have personally seen the file or not.
+
+    for (path_name, child_file_event_list) in child_events {
+        if let Some(parents_event_list) = curr_parent_events.get(&path_name) {
+            // If the parent HAS touched this resource, we need to
+            // - get the parent's event list
+            // - remove the ChildExec event from the parent's list
+            // - replace it with the child's list of events
+            if let Some(child_exec_index) = parents_event_list
+                .iter()
+                .position(|x| x == &SyscallEvent::ChildExec(child_pid))
+            {
+                let mut childs_events = child_file_event_list.clone();
+                let before_events = &parents_event_list[..child_exec_index];
+                let after_events = &parents_event_list[(child_exec_index + 1)..];
                 let mut new_events = before_events.to_vec();
                 new_events.append(&mut childs_events);
                 new_events.append(&mut after_events.to_vec());
                 new_parent_events.insert(path_name, new_events);
-
-                // if child_exec_index != (file_event_list.len() - 1) {
-                //     is_true_leaf = false;
-                // }
-            } else {
-                // If the child has not touched this file, just remove the ChildExec event.
-                let mut file_events = file_event_list.clone();
-                let _ = file_events.remove(child_exec_index);
-                new_parent_events.insert(path_name, file_events);
             }
+        } else {
+            // If the parent has never touched this file we must copy the child's
+            // events to the parent's map.
+            new_parent_events.insert(path_name, child_file_event_list);
         }
     }
+
+    // for (path_name, file_event_list) in curr_parent_events {
+    //     // The child may not have actually called execve.
+    //     if let Some(child_exec_index) = file_event_list
+    //         .iter()
+    //         .position(|x| x == &SyscallEvent::ChildExec(child_pid))
+    //     {
+    //         if let Some(childs_file_event_list) = child_event_map.get(&path_name) {
+    //             // [e1, e2, CHILD_EXEC, e3, e4]
+    //             // child_list = [c1, c2, c3]
+    //             let mut childs_events = childs_file_event_list.clone();
+    //             let before_events = &file_event_list[..child_exec_index];
+    //             let after_events = &file_event_list[(child_exec_index + 1)..];
+    //             let mut new_events = before_events.to_vec();
+    //             new_events.append(&mut childs_events);
+    //             new_events.append(&mut after_events.to_vec());
+    //             new_parent_events.insert(path_name, new_events);
+
+    //             // if child_exec_index != (file_event_list.len() - 1) {
+    //             //     is_true_leaf = false;
+    //             // }
+    //         } else {
+    //             // If the child has not touched this file, just remove the ChildExec event.
+    //             let mut file_events = file_event_list.clone();
+    //             let _ = file_events.remove(child_exec_index);
+    //             new_parent_events.insert(path_name, file_events);
+    //         }
+    //     }
+    // }
 
     new_parent_events
 }
 
-fn copy_output_files_to_cache(
+pub fn copy_output_files_to_cache(
     command: Command,
     pid: Pid,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
@@ -476,11 +503,11 @@ fn copy_output_files_to_cache(
     debug!("NEW STD OUT FILE PATH: {:?}", cache_stdout_file_path);
     debug!("OLD STD OUT FILE PATH: {:?}", stdout_file_path);
     fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
-    // let mut f = File::open(curr_stdout_file_path.clone()).unwrap();
-    // let mut buf = Vec::new();
-    // let bytes = f.read_to_end(&mut buf).unwrap();
-    // if bytes != 0 {
-    //     io::stdout().write_all(&buf).unwrap();
-    // }
+    let mut f = File::open(stdout_file_path.clone()).unwrap();
+    let mut buf = Vec::new();
+    let bytes = f.read_to_end(&mut buf).unwrap();
+    if bytes != 0 {
+        io::stdout().write_all(&buf).unwrap();
+    }
     fs::remove_file(stdout_file_path).unwrap();
 }

@@ -25,7 +25,7 @@ use crate::{
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecFileEvents(HashMap<PathBuf, Vec<SyscallEvent>>);
+pub struct ExecFileEvents(pub HashMap<PathBuf, Vec<SyscallEvent>>);
 
 impl ExecFileEvents {
     pub fn new(map: HashMap<PathBuf, Vec<SyscallEvent>>) -> ExecFileEvents {

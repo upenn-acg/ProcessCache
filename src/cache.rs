@@ -56,9 +56,9 @@ impl CachedExecution {
         self.postconditions = posts;
     }
 
-    // pub fn add_preconditions(&mut self, pres: HashMap<PathBuf, HashSet<Fact>>) {
-    //     self.preconditions = pres;
-    // }
+    pub fn add_preconditions(&mut self, pres: HashMap<PathBuf, HashSet<Fact>>) {
+        self.preconditions = pres;
+    }
 
     fn apply_all_transitions(&self) {
         let postconditions = self.postconditions();
@@ -105,20 +105,28 @@ impl CachedExecution {
             // panic!("cwd");
             return false;
         }
-        if !check_preconditions(
+
+        // Preconditions are recursively created now
+        // so we only have to check the root.
+        // if !check_preconditions(
+        //     my_preconds,
+        //     Pid::from_raw(self.cached_metadata.caller_pid()),
+        // ) {
+        //     return false;
+        // }
+
+        // let children = self.child_execs.clone();
+        // for child in children {
+        //     if !child.check_all_preconditions() {
+        //         return false;
+        //     }
+        // }
+        // true
+
+        check_preconditions(
             my_preconds,
             Pid::from_raw(self.cached_metadata.caller_pid()),
-        ) {
-            return false;
-        }
-
-        let children = self.child_execs.clone();
-        for child in children {
-            if !child.check_all_preconditions() {
-                return false;
-            }
-        }
-        true
+        )
     }
 
     fn check_all_preconditions_regardless(&self) {
