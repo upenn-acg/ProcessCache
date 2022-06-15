@@ -562,21 +562,8 @@ pub async fn trace_process(
                 ExecFileEvents::new(new_events)
             };
             curr_execution.update_file_events(new_events.clone());
-            println!("My pid: {:?}", pid);
-            let ExecFileEvents(event_map) = new_events.clone();
-            for (path_name, events) in event_map {
-                println!("Path: {:?}", path_name);
-                println!("Events: {:?}", events);
-            }
-
-            let command = Command(curr_execution.executable(), curr_execution.args());
             let postconditions = generate_postconditions(new_events);
-            copy_output_files_to_cache(
-                command,
-                curr_execution.pid(),
-                postconditions,
-                curr_execution.starting_cwd(),
-            );
+            copy_output_files_to_cache(&curr_execution, postconditions);
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",

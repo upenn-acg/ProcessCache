@@ -262,7 +262,7 @@ impl Execution {
         let posts = cached_exec.postconditions();
 
         // TODO:
-        copy_output_files_to_cache(command_key, self.pid(), posts, self.starting_cwd());
+        // copy_output_files_to_cache(&curr_execution, posts);
     }
 
     fn file_events(&self) -> ExecFileEvents {
@@ -467,15 +467,17 @@ pub fn append_file_events(
 }
 
 pub fn copy_output_files_to_cache(
-    command: Command,
-    pid: Pid,
+    curr_execution: &RcExecution,
+    // command: Command,
+    // pid: Pid,
     postconditions: HashMap<PathBuf, HashSet<Fact>>,
-    starting_cwd: PathBuf,
+    // starting_cwd: PathBuf,
 ) {
     // Now copy the output files to the appropriate places.
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
 
+    let command = Command(curr_execution.executable(), curr_execution.args());
     let hashed_command = hash_command(command);
     let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
     if !cache_subdir_hashed_command.exists() {
@@ -493,8 +495,8 @@ pub fn copy_output_files_to_cache(
         }
     }
 
-    let stdout_file_name = format!("stdout_{:?}", pid.as_raw());
-    let stdout_file_path = starting_cwd.join(stdout_file_name.clone());
+    let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
+    let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
     println!("CURR STD OUT FILE PATH: {:?}", stdout_file_path);
     let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
     println!("CACHE FILE PATH: {:?}", cache_stdout_file_path);
@@ -510,4 +512,27 @@ pub fn copy_output_files_to_cache(
         io::stdout().write_all(&buf).unwrap();
     }
     fs::remove_file(stdout_file_path).unwrap();
+
+    let children = curr_execution.children();
+    for child in children {
+        let child_command = Command(child.executable(), child.args());
+        let hashed_command = hash_command(child_command);
+        let child_subdir = cache_dir.join(hashed_command.to_string());
+        if !child_subdir.exists() {
+            fs::create_dir(child_subdir.clone()).unwrap();
+        }
+        let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
+        let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
+        println!(
+            "Child's cached stdout path: {:?}",
+            childs_cached_stdout_path
+        );
+        let parents_spot_for_childs_stdout =
+            cache_subdir_hashed_command.join(childs_cached_stdout_file);
+        println!(
+            "Parent's cached stdout path for child: {:?}",
+            parents_spot_for_childs_stdout
+        );
+        fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+    }
 }
