@@ -145,54 +145,6 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    // fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
-    //     let command_key = Command(self.executable(), self.args());
-    //     let pid = self.successful_exec.caller_pid();
-    //     let file_events = self.file_events.clone();
-    //     let children = self.child_execs.clone();
-
-    //     let cached_meta = CachedExecMetadata::new(
-    //         self.successful_exec.caller_pid().as_raw(),
-    //         self.successful_exec.command(),
-    //         self.env_vars(),
-    //         self.starting_cwd(),
-    //     );
-
-    //     let mut new_cached_exec =
-    //         CachedExecution::new(cached_meta, Vec::new(), HashMap::new(), HashMap::new());
-
-    //     for child in children.clone() {
-    //         let child_cached_exec = child.generate_cached_exec(cache_map);
-    //         let child_command = Command(child.executable(), child.args());
-    //         // TODO
-    //         if let Some(entry) = cache_map.get(&child_command) {
-    //             new_cached_exec.add_child(entry.clone());
-    //         } else {
-    //             new_cached_exec.add_child(RcCachedExec::new(child_cached_exec));
-    //         }
-    //     }
-
-    //     if children.is_empty() {
-    //         let preconds = generate_preconditions(file_events.clone());
-    //         let postconds = generate_postconditions(file_events);
-    //         let starting_cwd = self.starting_cwd();
-    //         // We can copy the output files over now.
-    //         copy_output_files_to_cache(command_key.clone(), pid, postconds.clone(), starting_cwd);
-    //         new_cached_exec.add_preconditions(preconds);
-    //         new_cached_exec.add_postconditions(postconds);
-    //     }
-
-    //     let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
-    //     cache_map.insert(command_key, new_rc_cached_exec);
-    //     // let e = cache_map.entry(command_key).or_insert(Vec::new());
-    //     // e.push(new_rc_cached_exec);
-    //     new_cached_exec
-    // }
-
-    // fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-    //     let _ = self.generate_cached_exec(cache_map);
-    // }
-
     fn generate_event_list_and_cached_exec(
         &self,
         cache_map: &mut HashMap<Command, RcCachedExec>,
@@ -433,36 +385,6 @@ pub fn append_file_events(
             new_parent_events.insert(path_name, child_file_event_list);
         }
     }
-
-    // for (path_name, file_event_list) in curr_parent_events {
-    //     // The child may not have actually called execve.
-    //     if let Some(child_exec_index) = file_event_list
-    //         .iter()
-    //         .position(|x| x == &SyscallEvent::ChildExec(child_pid))
-    //     {
-    //         if let Some(childs_file_event_list) = child_event_map.get(&path_name) {
-    //             // [e1, e2, CHILD_EXEC, e3, e4]
-    //             // child_list = [c1, c2, c3]
-    //             let mut childs_events = childs_file_event_list.clone();
-    //             let before_events = &file_event_list[..child_exec_index];
-    //             let after_events = &file_event_list[(child_exec_index + 1)..];
-    //             let mut new_events = before_events.to_vec();
-    //             new_events.append(&mut childs_events);
-    //             new_events.append(&mut after_events.to_vec());
-    //             new_parent_events.insert(path_name, new_events);
-
-    //             // if child_exec_index != (file_event_list.len() - 1) {
-    //             //     is_true_leaf = false;
-    //             // }
-    //         } else {
-    //             // If the child has not touched this file, just remove the ChildExec event.
-    //             let mut file_events = file_event_list.clone();
-    //             let _ = file_events.remove(child_exec_index);
-    //             new_parent_events.insert(path_name, file_events);
-    //         }
-    //     }
-    // }
-
     new_parent_events
 }
 
