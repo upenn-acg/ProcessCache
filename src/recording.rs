@@ -339,18 +339,19 @@ impl RcExecution {
 }
 
 pub fn append_file_events(
-    parent_events: ExecFileEvents,
+    parent_events: &mut HashMap<PathBuf, Vec<SyscallEvent>>,
     child_events: ExecFileEvents,
     child_pid: Pid,
-) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+) {
     let child_events = child_events.events();
-    let curr_parent_events = parent_events.events();
-    let mut new_parent_events = curr_parent_events.clone();
+    // let curr_parent_events = parent_events.events();
+    // let mut new_parent_events = HashMap::new();
+    // let mut new_parent_events = curr_parent_events.clone();
     // TODO: we should be going through the child because we need everything from the child,
     // whether we have personally seen the file or not.
 
     for (path_name, child_file_event_list) in child_events {
-        if let Some(parents_event_list) = curr_parent_events.get(&path_name) {
+        if let Some(parents_event_list) = parent_events.get(&path_name) {
             // If the parent HAS touched this resource, we need to
             // - get the parent's event list
             // - remove the ChildExec event from the parent's list
@@ -365,15 +366,14 @@ pub fn append_file_events(
                 let mut new_events = before_events.to_vec();
                 new_events.append(&mut childs_events);
                 new_events.append(&mut after_events.to_vec());
-                new_parent_events.insert(path_name, new_events);
+                parent_events.insert(path_name, new_events);
             }
         } else {
             // If the parent has never touched this file we must copy the child's
             // events to the parent's map.
-            new_parent_events.insert(path_name, child_file_event_list);
+            parent_events.insert(path_name, child_file_event_list);
         }
     }
-    new_parent_events
 }
 
 pub fn copy_output_files_to_cache(

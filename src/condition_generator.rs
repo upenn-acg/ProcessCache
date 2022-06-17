@@ -68,6 +68,10 @@ impl ExecFileEvents {
     pub fn events(&self) -> HashMap<PathBuf, Vec<SyscallEvent>> {
         self.0.clone()
     }
+
+    pub fn update_events(&mut self, new_events: HashMap<PathBuf, Vec<SyscallEvent>>) {
+        self.0 = new_events;
+    }
 }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {

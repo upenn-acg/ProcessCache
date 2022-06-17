@@ -564,18 +564,23 @@ pub async fn trace_process(
                 let new_events = if children.is_empty() {
                     curr_execution.file_events()
                 } else {
-                    let mut new_events = HashMap::new();
+                    let new_events = curr_execution.file_events();
+                    let ExecFileEvents(new_map) = new_events;
+                    let mut new_map = new_map;
+
                     println!("NUMBER OF CHILDREN: {:?}", children.len());
                     for child in children {
-                        new_events = append_file_events(
-                            curr_execution.file_events(),
-                            child.file_events(),
-                            child.pid(),
-                        );
+                        append_file_events(&mut new_map, child.file_events(), child.pid());
+                        // println!("Map");
+                        // for (path, events) in new_map.clone() {
+                        //     println!("Path: {:?}", path);
+                        //     println!("Events: {:?}", events);
+                        // }
+                        // println!();
                     }
-                    ExecFileEvents::new(new_events)
+                    ExecFileEvents(new_map)
                 };
-                println!("New events: {:?}", new_events);
+                // println!("New events: {:?}", new_events);
                 curr_execution.update_file_events(new_events.clone());
                 let postconditions = generate_postconditions(new_events);
                 // println!("MY PID: {:?}", pid);
