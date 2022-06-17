@@ -565,6 +565,7 @@ pub async fn trace_process(
                     curr_execution.file_events()
                 } else {
                     let mut new_events = HashMap::new();
+                    println!("NUMBER OF CHILDREN: {:?}", children.len());
                     for child in children {
                         new_events = append_file_events(
                             curr_execution.file_events(),
@@ -574,8 +575,15 @@ pub async fn trace_process(
                     }
                     ExecFileEvents::new(new_events)
                 };
+                println!("New events: {:?}", new_events);
                 curr_execution.update_file_events(new_events.clone());
                 let postconditions = generate_postconditions(new_events);
+                // println!("MY PID: {:?}", pid);
+                // println!("Postconditions:");
+                // for (path, facts) in postconditions.clone() {
+                //     println!("Path: {:?}", path);
+                //     println!("Facts: {:?}", facts);
+                // }
                 curr_execution.update_postconditions(postconditions.clone());
                 copy_output_files_to_cache(&curr_execution, postconditions);
             }

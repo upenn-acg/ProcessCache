@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fs::canonicalize, path::PathBuf};
 
 use anyhow::Context;
 use libc::{c_char, AT_FDCWD};
@@ -197,21 +197,34 @@ pub fn get_full_path(
     let full_path = if file_name_arg.starts_with("/") {
         file_name_arg
     } else {
+        let cwd = curr_execution.starting_cwd();
         match syscall_name {
-            "access" | "creat" | "open" | "stat" | "lstat" | "unlink" => {
-                let cwd = curr_execution.starting_cwd();
-                cwd.join(file_name_arg)
-            }
+            "access" | "creat" | "open" | "stat" | "lstat" | "unlink" => cwd.join(file_name_arg),
             "openat" | "unlinkat" => {
-                let dir_fd = regs.arg1::<i32>();
-                let dir_path = if dir_fd == AT_FDCWD {
-                    curr_execution.starting_cwd()
-                } else {
-                    path_from_fd(tracer.curr_proc, dir_fd)?
-                };
+                let file_name_arg_string = file_name_arg
+                    .clone()
+                    .into_os_string()
+                    .into_string()
+                    .unwrap();
+                if file_name_arg_string.starts_with('.') {
+                    let idx = file_name_arg_string.chars().position(|c| c == '.').unwrap();
+                    let file_name_without_dot = &file_name_arg_string[idx + 1..];
+                    let path_buf = String::from(file_name_without_dot);
+                    let mut str_cwd = cwd.into_os_string().into_string().unwrap();
 
-                debug!("in get_full_path(), dir fd is: {}", dir_fd);
-                dir_path.join(file_name_arg)
+                    str_cwd.push_str(&path_buf);
+                    PathBuf::from(str_cwd)
+                } else {
+                    let dir_fd = regs.arg1::<i32>();
+                    let dir_path = if dir_fd == AT_FDCWD {
+                        curr_execution.starting_cwd()
+                    } else {
+                        path_from_fd(tracer.curr_proc, dir_fd)?
+                    };
+
+                    debug!("in get_full_path(), dir fd is: {}", dir_fd);
+                    dir_path.join(file_name_arg)
+                }
             }
             s => panic!("Unhandled syscall in get_full_path(): {}!", s),
         }
