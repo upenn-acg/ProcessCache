@@ -2,7 +2,7 @@ use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{generate_postconditions, generate_preconditions, ExecFileEvents},
-    condition_utils::Fact,
+    condition_utils::{Conditions, Fact},
     syscalls::SyscallEvent,
 };
 use nix::unistd::Pid;
@@ -92,6 +92,7 @@ pub struct Execution {
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
     file_events: ExecFileEvents,
+    postconditions: Conditions,
     successful_exec: ExecMetadata,
 }
 
@@ -101,6 +102,7 @@ impl Execution {
             child_execs: Vec::new(),
             exit_code: None,
             file_events: ExecFileEvents::new(HashMap::new()),
+            postconditions: HashMap::new(),
             successful_exec: ExecMetadata::new(calling_pid),
         }
     }
@@ -145,76 +147,57 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    fn generate_event_list_and_cached_exec(
+    fn generate_cached_exec(
         &self,
         cache_map: &mut HashMap<Command, RcCachedExec>,
-        root_command_key: Command,
-    ) -> (CachedExecution, ExecFileEvents) {
+    ) -> CachedExecution {
         let command_key = Command(self.executable(), self.args());
-        let file_events = self.file_events.clone();
 
         // let preconditions = generate_preconditions(file_events);
-        let command = Command(self.executable(), self.args());
         let cached_metadata = CachedExecMetadata::new(
             self.pid().as_raw(),
-            command,
+            command_key.clone(),
             self.env_vars(),
             self.starting_cwd(),
         );
-        let mut new_cached_exec =
-            CachedExecution::new(cached_metadata, Vec::new(), HashMap::new(), HashMap::new());
+        let mut new_cached_exec = CachedExecution::new(
+            cached_metadata,
+            Vec::new(),
+            HashMap::new(),
+            self.postconditions(),
+        );
 
         let children = self.child_execs.clone();
         let file_events = self.file_events.clone();
-        let new_events = if children.is_empty() {
-            file_events
-        } else {
-            let mut new_events = HashMap::new();
-            for child in children {
-                // logic to append map
-                let (child_exec, child_events) =
-                    child.generate_event_list_and_cached_exec(cache_map, root_command_key.clone());
-                // TODO: Here I need to go through the parent's file events, find the child's ForkExec(childpid) event,
-                // and replace it with the child's file events.
-                new_events = append_file_events(file_events.clone(), child_events, child.pid());
-                new_cached_exec.add_child(RcCachedExec::new(child_exec));
-            }
-            ExecFileEvents::new(new_events)
-        };
 
-        let stdout_file = format!("stdout_{:?}", self.pid().as_raw());
-        let starting_cwd = self.starting_cwd();
-        let curr_stdout_file_path = starting_cwd.join(stdout_file.clone());
-        let command_hash = hash_command(root_command_key);
-        let cache_dir = PathBuf::from("./cache");
-        let cache_dir = cache_dir.join(format!("{}", command_hash));
-        let cache_stdout_file_path = cache_dir.join(stdout_file);
-        fs::copy(curr_stdout_file_path, cache_stdout_file_path).unwrap();
+        for child in children {
+            let child_exec = child.generate_cached_exec(cache_map);
+            new_cached_exec.add_child(RcCachedExec::new(child_exec));
+        }
 
-        let postconditions = generate_postconditions(new_events.clone());
-        println!("My pid: {:?}", self.successful_exec.caller_pid().as_raw());
-        println!("Postconditions: {:?}", postconditions);
-        let preconditions = generate_preconditions(new_events.clone());
-        println!("Preconditions: {:?}", preconditions);
-        new_cached_exec.add_postconditions(postconditions);
+        // let stdout_file = format!("stdout_{:?}", self.pid().as_raw());
+        // let starting_cwd = self.starting_cwd();
+        // let curr_stdout_file_path = starting_cwd.join(stdout_file.clone());
+        // let cache_dir = PathBuf::from("./cache");
+        // let cache_dir = cache_dir.join(format!("{}", command_hash));
+        // let cache_stdout_file_path = cache_dir.join(stdout_file);
+        // fs::copy(curr_stdout_file_path, cache_stdout_file_path).unwrap();
+
+        let preconditions = generate_preconditions(file_events);
         new_cached_exec.add_preconditions(preconditions);
         let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
         // let e = cache_map.entry(command_key).or_insert(Vec::new());
         // e.push(new_rc_cached_exec);
         cache_map.insert(command_key, new_rc_cached_exec);
-        (new_cached_exec, new_events)
+        new_cached_exec
     }
 
     pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-        let root_command = Command(self.executable(), self.args());
-        let (cached_exec, _) = self.generate_event_list_and_cached_exec(cache_map, root_command);
-        let command_key = cached_exec.command();
-        // TODO: INDEX
-        // let index = cached_exec.index_in_exec_list();
-        let posts = cached_exec.postconditions();
+        let _ = self.generate_cached_exec(cache_map);
+    }
 
-        // TODO:
-        // copy_output_files_to_cache(&curr_execution, posts);
+    fn postconditions(&self) -> Conditions {
+        self.postconditions.clone()
     }
 
     fn file_events(&self) -> ExecFileEvents {
@@ -235,6 +218,10 @@ impl Execution {
 
     fn update_file_events(&mut self, file_events: ExecFileEvents) {
         self.file_events = file_events;
+    }
+
+    fn update_postconditions(&mut self, postconditions: Conditions) {
+        self.postconditions = postconditions;
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
@@ -309,14 +296,11 @@ impl RcExecution {
     //     self.0.borrow().generate_cached_exec(cache_map)
     // }
 
-    pub fn generate_event_list_and_cached_exec(
+    pub fn generate_cached_exec(
         &self,
         cache_map: &mut HashMap<Command, RcCachedExec>,
-        root_command_key: Command,
-    ) -> (CachedExecution, ExecFileEvents) {
-        self.0
-            .borrow()
-            .generate_event_list_and_cached_exec(cache_map, root_command_key)
+    ) -> CachedExecution {
+        self.0.borrow().generate_cached_exec(cache_map)
     }
 
     pub fn is_empty_root_exec(&self) -> bool {
@@ -341,6 +325,10 @@ impl RcExecution {
 
     pub fn update_file_events(&mut self, file_events: ExecFileEvents) {
         self.0.borrow_mut().update_file_events(file_events)
+    }
+
+    pub fn update_postconditions(&self, postconditions: Conditions) {
+        self.0.borrow_mut().update_postconditions(postconditions)
     }
 
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
@@ -410,8 +398,6 @@ pub fn copy_output_files_to_cache(
         for fact in fact_set {
             if fact == Fact::Exists || fact == Fact::FinalContents {
                 let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
-                debug!("Current file path: {:?}", path.clone());
-                debug!("Cache file path: {:?}", cache_path);
                 fs::copy(path.clone(), cache_path).unwrap();
             }
         }
@@ -419,13 +405,9 @@ pub fn copy_output_files_to_cache(
 
     let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
     let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
-    println!("CURR STD OUT FILE PATH: {:?}", stdout_file_path);
     let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
-    println!("CACHE FILE PATH: {:?}", cache_stdout_file_path);
 
     // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
-    debug!("NEW STD OUT FILE PATH: {:?}", cache_stdout_file_path);
-    debug!("OLD STD OUT FILE PATH: {:?}", stdout_file_path);
     fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
     let mut f = File::open(stdout_file_path.clone()).unwrap();
     let mut buf = Vec::new();
@@ -445,16 +427,16 @@ pub fn copy_output_files_to_cache(
         }
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
-        println!(
-            "Child's cached stdout path: {:?}",
-            childs_cached_stdout_path
-        );
+        // println!(
+        //     "Child's cached stdout path: {:?}",
+        //     childs_cached_stdout_path
+        // );
         let parents_spot_for_childs_stdout =
             cache_subdir_hashed_command.join(childs_cached_stdout_file);
-        println!(
-            "Parent's cached stdout path for child: {:?}",
-            parents_spot_for_childs_stdout
-        );
+        // println!(
+        //     "Parent's cached stdout path for child: {:?}",
+        //     parents_spot_for_childs_stdout
+        // );
         fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
     }
 }

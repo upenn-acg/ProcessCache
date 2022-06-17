@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     vec::Vec,
 };
@@ -8,6 +9,8 @@ use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 
 use crate::syscalls::{Stat, SyscallEvent, SyscallFailure, SyscallOutcome};
+
+pub type Conditions = HashMap<PathBuf, HashSet<Fact>>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum FileType {

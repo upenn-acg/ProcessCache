@@ -82,6 +82,36 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // } else {
         //     HashMap::new()
         // };
+
+        let mut cache_map = HashMap::new();
+        first_execution.populate_cache_map(&mut cache_map);
+        serialize_execs_to_cache(cache_map.clone());
+
+        // for (command, cached_exec) in cache_map {
+        //     println!("Command: {:?}", command);
+
+        //     let preconditions = cached_exec.preconditions();
+        //     let postconditions = cached_exec.postconditions();
+
+        //     println!();
+        //     println!("Preconditions:");
+        //     for (path, set) in preconditions {
+        //         if !set.is_empty() {
+        //             println!("Path: {:?}", path);
+        //             println!("Facts: {:?}", set);
+        //         }
+        //     }
+
+        //     println!();
+        //     println!("Postconditions:");
+        //     for (path, set) in postconditions {
+        //         if !set.is_empty() {
+        //             println!("Path: {:?}", path);
+        //             println!("Facts: {:?}", set);
+        //         }
+        //     }
+        //     println!();
+        // }
         // serialize_execs_to_cache(new_cache);
     }
     Ok(())
@@ -221,51 +251,34 @@ pub async fn trace_process(
                                     args.clone(),
                                 );
                                 if let Some(entry) = cache.get(&command) {
-                                    if !entry.children().is_empty() {
-                                        debug!("Children is not empty!!!");
-                                        caching_off = true;
+                                    debug!(
+                                        "Checking all preconditions: execution is: {:?}",
+                                        command
+                                    );
+                                    if full_tracking_on {
+                                        entry.check_all_preconditions_regardless()
+                                    } else if entry.check_all_preconditions() {
+                                        // Check if we should skip this execution.
+                                        // If we are gonna skip, we have to change:
+                                        // rax, orig_rax, arg1
+                                        skip_execution = true;
+                                        debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                        entry.apply_all_transitions();
+                                        let regs = tracer.get_registers().with_context(|| {
+                                            context!("Failed to get regs in skip exec event")
+                                        })?;
+                                        let mut regs = regs.make_modified();
+                                        let exit_syscall_num = libc::SYS_exit as u64;
+
+                                        // Change the arg1 to correct exit code?
+                                        regs.write_arg1(0);
+                                        // Change the orig rax val don't ask me why
+                                        regs.write_syscall_number(exit_syscall_num);
+                                        // Change the rax val
+                                        regs.write_rax(exit_syscall_num);
+
+                                        tracer.set_regs(&mut regs)?;
                                         continue;
-                                    } else {
-                                        debug!(
-                                            "Checking all preconditions: execution is: {:?}",
-                                            command
-                                        );
-                                        // let mut found_one = false;
-                                        // for entry in entry_list {
-                                        if full_tracking_on {
-                                            entry.check_all_preconditions_regardless()
-                                        } else if entry.check_all_preconditions() {
-                                            // Check if we should skip this execution.
-                                            // If we are gonna skip, we have to change:
-                                            // rax, orig_rax, arg1
-                                            skip_execution = true;
-                                            debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                                            entry.apply_all_transitions();
-                                            let regs =
-                                                tracer.get_registers().with_context(|| {
-                                                    context!(
-                                                        "Failed to get regs in skip exec event"
-                                                    )
-                                                })?;
-                                            let mut regs = regs.make_modified();
-                                            let exit_syscall_num = libc::SYS_exit as u64;
-
-                                            // Change the arg1 to correct exit code?
-                                            regs.write_arg1(0);
-                                            // Change the orig rax val don't ask me why
-                                            regs.write_syscall_number(exit_syscall_num);
-                                            // Change the rax val
-                                            regs.write_rax(exit_syscall_num);
-
-                                            tracer.set_regs(&mut regs)?;
-                                            // found_one = true;
-                                            // break;
-                                            continue;
-                                        }
-                                        // }
-                                        // if found_one {
-                                        //     continue;
-                                        // }
                                     }
                                 }
                             }
@@ -546,24 +559,26 @@ pub async fn trace_process(
             // if the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
             // instead of recomputing the child's along with its own
-            // TODO: if NOT skip_execution...
-            let children = curr_execution.children();
-            let new_events = if children.is_empty() {
-                curr_execution.file_events()
-            } else {
-                let mut new_events = HashMap::new();
-                for child in children {
-                    new_events = append_file_events(
-                        curr_execution.file_events(),
-                        child.file_events(),
-                        child.pid(),
-                    );
-                }
-                ExecFileEvents::new(new_events)
-            };
-            curr_execution.update_file_events(new_events.clone());
-            let postconditions = generate_postconditions(new_events);
-            copy_output_files_to_cache(&curr_execution, postconditions);
+            if !skip_execution {
+                let children = curr_execution.children();
+                let new_events = if children.is_empty() {
+                    curr_execution.file_events()
+                } else {
+                    let mut new_events = HashMap::new();
+                    for child in children {
+                        new_events = append_file_events(
+                            curr_execution.file_events(),
+                            child.file_events(),
+                            child.pid(),
+                        );
+                    }
+                    ExecFileEvents::new(new_events)
+                };
+                curr_execution.update_file_events(new_events.clone());
+                let postconditions = generate_postconditions(new_events);
+                curr_execution.update_postconditions(postconditions.clone());
+                copy_output_files_to_cache(&curr_execution, postconditions);
+            }
         }
         other => bail!(
             "Saw other event when expecting ProcessExited event: {:?}",
