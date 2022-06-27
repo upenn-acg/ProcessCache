@@ -47,6 +47,7 @@ pub enum SyscallEvent {
 pub enum SyscallFailure {
     AlreadyExists,
     FileDoesntExist,
+    InvalArg,
     PermissionDenied,
 }
 

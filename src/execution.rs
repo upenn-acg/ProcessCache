@@ -879,6 +879,8 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
         _ => panic!("Calling unrecognized syscall in handle_rename()"),
     };
 
+    debug!("full old path: {:?}", full_old_path);
+    debug!("full new path: {:?}", full_new_path);
     let rename_event = match ret_val {
         0 => SyscallEvent::Rename(
             full_old_path.clone(),
@@ -895,6 +897,11 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
             full_old_path.clone(),
             full_new_path,
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+        ),
+        -22 => SyscallEvent::Rename(
+            full_old_path.clone(),
+            full_new_path,
+            SyscallOutcome::Fail(SyscallFailure::InvalArg),
         ),
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
