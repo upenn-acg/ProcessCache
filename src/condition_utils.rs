@@ -108,6 +108,7 @@ impl FirstState {
                         "updating first state struct, access failed because file already exists??"
                     );
                 }
+                SyscallEvent::Access(_, _) => (),
                 SyscallEvent::ChildExec(_) => (),
                 SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success) => {
                     self.0 = State::DoesntExist;
@@ -116,6 +117,14 @@ impl FirstState {
                 SyscallEvent::Create(
                     OFlag::O_CREAT,
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+                ) => (),
+                // This probably means some path component doesn't exist.
+                // But we don't know and the user doesn't know which one.
+                // And linux won't tell us.
+                // So it gives us zero info about the first state of this resource.
+                SyscallEvent::Create(
+                    OFlag::O_CREAT,
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => (),
                 SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(failure)) => {
                     panic!("Failed to create for strange reason: {:?}", failure);
@@ -140,6 +149,16 @@ impl FirstState {
                     SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                 ) => (),
                 SyscallEvent::Create(f, _) => panic!("Unexpected create flag: {:?}", f),
+                SyscallEvent::Delete(SyscallOutcome::Success) => {
+                    self.0 = State::Exists;
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
+                    panic!("Failed to delete a file because it already exists??");
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
+                    self.0 = State::Exists;
+                }
+                SyscallEvent::Delete(SyscallOutcome::Fail(_)) => (),
                 SyscallEvent::DirectoryRead(
                     _,
                     _,
@@ -151,16 +170,6 @@ impl FirstState {
                     self.0 = State::Exists;
                 }
                 SyscallEvent::DirectoryRead(_, _, _) => (),
-                SyscallEvent::Delete(SyscallOutcome::Success) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
-                    panic!("Failed to delete a file because it already exists??");
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => (),
                 SyscallEvent::Open(
                     OFlag::O_APPEND | OFlag::O_RDONLY,
                     _,
@@ -210,7 +219,7 @@ impl FirstState {
                 SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
                     self.0 = State::DoesntExist;
                 }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => (),
+                SyscallEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
                 SyscallEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;

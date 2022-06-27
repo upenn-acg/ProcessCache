@@ -384,6 +384,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::NoDirPermission((flags).bits()));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
                 }
@@ -741,6 +742,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                                 Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits())),
                             ));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
                 (SyscallEvent::Open(OFlag::O_RDONLY,  hash_option, outcome), State::None, Mod::None, false) => {
@@ -765,6 +767,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                                 Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits())),
                             ));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
                 (SyscallEvent::Open(OFlag::O_TRUNC, _, outcome), State::None, Mod::None, false) => {
@@ -791,6 +794,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::NoDirPermission((flags).bits()));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
                 (SyscallEvent::Open(f,  _,_), _, _, _) => panic!("Unexpected open flag: {:?}", f),
@@ -918,6 +922,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::NoDirPermission(flags.bits()));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                         o => panic!("Unexpected error for rename: {:?}", o),
                     }
                 }
@@ -1019,6 +1024,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits()));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
             }
