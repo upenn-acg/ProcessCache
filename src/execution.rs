@@ -432,15 +432,15 @@ pub async fn trace_process(
                         handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                     }
                     // TODO: newfstatat
-                    "fstat" | "lstat" | "stat" => handle_stat_family(&curr_execution, name, &tracer)?,
+                    "fstat" | "lstat" | "stat" => {
+                        handle_stat_family(&curr_execution, name, &tracer)?
+                    }
                     "getdents64" => {
                         // TODO: Kelly, you can use this variable to know what directories were read.
                         handle_get_dents64(&curr_execution, &regs, &tracer)?
                     }
-                    "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
-                    "pipe2" => {
-                        handle_pipe2(&regs)?
-                    }
+                    // "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
+                    "pipe2" => handle_pipe2(&regs)?,
                     "rename" | "renameat" | "renameat2" => {
                         handle_rename(&curr_execution, name, &tracer)?
                     }

@@ -409,14 +409,18 @@ pub fn copy_output_files_to_cache(
     let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
 
     // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
-    fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
-    let mut f = File::open(stdout_file_path.clone()).unwrap();
-    let mut buf = Vec::new();
-    let bytes = f.read_to_end(&mut buf).unwrap();
-    if bytes != 0 {
-        io::stdout().write_all(&buf).unwrap();
+    // println!("Copy from: {:?}", stdout_file_path.clone());
+    // println!("Copy to: {:?}", cache_stdout_file_path.clone());
+    if stdout_file_path.exists() {
+        fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
+        let mut f = File::open(stdout_file_path.clone()).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
+        fs::remove_file(stdout_file_path).unwrap();
     }
-    fs::remove_file(stdout_file_path).unwrap();
 
     let children = curr_execution.children();
     for child in children {
@@ -438,6 +442,8 @@ pub fn copy_output_files_to_cache(
         //     "Parent's cached stdout path for child: {:?}",
         //     parents_spot_for_childs_stdout
         // );
-        fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+        if childs_cached_stdout_path.exists() {
+            fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+        }
     }
 }
