@@ -136,7 +136,7 @@ pub async fn trace_process(
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
     let mut iostream_redirected = false;
-    let mut caching_off = false;
+    let caching_off = false;
     let mut skip_execution = false;
     // TODO: Deal with PID recycling?
     let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
@@ -568,7 +568,6 @@ pub async fn trace_process(
                     let ExecFileEvents(new_map) = new_events;
                     let mut new_map = new_map;
 
-                    println!("NUMBER OF CHILDREN: {:?}", children.len());
                     for child in children {
                         append_file_events(&mut new_map, child.file_events(), child.pid());
                         // println!("Map");
@@ -947,7 +946,7 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
                     st_uid: stat_struct.st_uid,
                     st_gid: stat_struct.st_gid,
                     st_rdev: stat_struct.st_rdev,
-                    st_size: stat_struct.st_size,
+                    // st_size: stat_struct.st_size,
                     st_blksize: stat_struct.st_blksize,
                     st_blocks: stat_struct.st_blocks,
                 };
@@ -966,7 +965,16 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
     };
 
     if let Some(path) = full_path {
-        execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, path);
+        if !path.starts_with("/tmp")
+            && !path.starts_with("/temp")
+            && !path.starts_with("/proc")
+            && !path.starts_with("/usr")
+            && !path.starts_with("/etc")
+            && !path.starts_with("/dev/null")
+            && !path.ends_with(".")
+        {
+            execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, path);
+        }
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::{fs::canonicalize, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use libc::{c_char, AT_FDCWD};
@@ -36,7 +36,12 @@ pub fn generate_open_syscall_file_event(
         return None;
     }
 
-    if full_path.starts_with("/tmp") {
+    if full_path.starts_with("/tmp")
+        || full_path.starts_with("/temp")
+        || full_path.starts_with("/proc")
+        || full_path.starts_with("/usr")
+        || full_path.starts_with("/etc")
+    {
         return None;
     }
 

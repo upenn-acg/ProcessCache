@@ -1,7 +1,7 @@
 use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
-    condition_generator::{generate_postconditions, generate_preconditions, ExecFileEvents},
+    condition_generator::{generate_preconditions, ExecFileEvents},
     condition_utils::{Conditions, Fact},
     syscalls::SyscallEvent,
 };
@@ -15,7 +15,6 @@ use std::{
     path::PathBuf,
     rc::Rc,
 };
-use tracing::debug;
 
 pub type ChildExecutions = Vec<RcExecution>;
 
@@ -398,7 +397,9 @@ pub fn copy_output_files_to_cache(
         for fact in fact_set {
             if fact == Fact::Exists || fact == Fact::FinalContents {
                 let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
-                fs::copy(path.clone(), cache_path).unwrap();
+                if path.clone().exists() {
+                    fs::copy(path.clone(), cache_path).unwrap();
+                }
             }
         }
     }

@@ -247,7 +247,9 @@ fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, fil
                 let cache_file_location = cache_subdir.join(file_name);
                 debug!("cache file location: {:?}", cache_file_location);
                 debug!("og file path: {:?}", file);
-                fs::copy(cache_file_location, file.clone()).unwrap();
+                if cache_file_location.exists() {
+                    fs::copy(cache_file_location, file.clone()).unwrap();
+                }
             }
             _ => (),
         }

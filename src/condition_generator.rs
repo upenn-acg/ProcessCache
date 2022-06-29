@@ -197,7 +197,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     st_uid: new_metadata.uid(),
                     st_gid: new_metadata.gid(),
                     st_rdev: new_metadata.rdev(),
-                    st_size: new_metadata.size() as i64,
+                    // st_size: new_metadata.size() as i64,
                     st_blksize: new_metadata.blksize() as i64,
                     st_blocks: new_metadata.blocks() as i64,
                 };
@@ -236,6 +236,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
         let mut curr_state_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
 
+        // println!("Full path: {:?}", full_path);
+        // println!("Events:");
+        // for event in event_list.clone() {
+        //     println!("{:?}", event);
+        // }
         // let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
         for event in event_list {
@@ -426,11 +431,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 }
                 (SyscallEvent::Delete(_), State::DoesntExist, Mod::Created, true) => (),
                 (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            has_been_deleted = true;
-                        }
-                        f => panic!("Delete failed for unexpected reason, last mod created, no delete yet: {:?}", f),
+                    if outcome == SyscallOutcome::Success {
+                        has_been_deleted = true;
                     }
                 }
                 (SyscallEvent::Delete(_), State::DoesntExist, Mod::Deleted, true) => (),
@@ -513,11 +515,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 // None state can be because TRUNC
                 (SyscallEvent::Delete(_), State::None, Mod::Modified, true) => (),
                 (SyscallEvent::Delete(outcome), State::None, Mod::Modified, false) => {
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            has_been_deleted = true;
-                        }
-                        f => panic!("Delete failed for unexpected reason, exists, last mod renamed, no delete yet: {:?}", f),
+                    if outcome == SyscallOutcome::Success {
+                        has_been_deleted = true;
                     }
                 }
                 (SyscallEvent::Delete(_), State::None, Mod::Renamed(_,_), _) => {
@@ -1066,8 +1065,9 @@ pub fn generate_postconditions(
                 (_, State::None, Mod::Deleted) => {
                     panic!("First state is none but last mod is deleted!!");
                 }
+                (SyscallEvent::ChildExec(_), State::None, Mod::Modified) => (),
                 (_, State::None, Mod::Modified) => {
-                    panic!("First state is none but last mod is modified!!");
+                    // panic!("First state is none but last mod is modified!!");
                 }
                 (_, State::None, Mod::Renamed(_, _)) => {
                     panic!("First state is none but last mod is rename!!");

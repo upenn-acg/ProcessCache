@@ -15,7 +15,7 @@ pub struct MyStat {
     pub st_uid: u32,
     pub st_gid: u32,
     pub st_rdev: u64,
-    pub st_size: i64,
+    // pub st_size: i64,
     pub st_blksize: i64,
     pub st_blocks: i64,
 }
