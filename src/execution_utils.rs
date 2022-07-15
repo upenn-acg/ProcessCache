@@ -45,13 +45,15 @@ pub fn generate_open_syscall_file_event(
         return None;
     }
 
-    let starting_hash = if syscall_outcome.is_ok()
-        && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
-    {
-        Some(generate_hash(full_path))
-    } else {
-        None
-    };
+    // let starting_hash = if syscall_outcome.is_ok()
+    //     && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
+    // {
+    //     Some(generate_hash(full_path))
+    // } else {
+    //     None
+    // };
+    let starting_hash = None;
+
     if creat_flag {
         if excl_flag {
             match syscall_outcome {

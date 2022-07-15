@@ -35,22 +35,32 @@ use crate::Ptracer;
 use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
+
+// Flags for turning on and off different parts of process cache.
+// For profiling purposes.
+// Run P$ with only ptrace system call interception.
+const PTRACE_ONLY: bool = false;
+// Run P$ with only ptrace system call interception and fact generation.
+const FACT_GEN: bool = true;
+
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
-    // We have to create the first execution struct outside
-    // trace process, so we don't accidentally overwrite it
-    // within trace_process().
 
-    let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
     // CWD of the root process + "/cache/"
     let mut cache_dir = std::env::current_dir().with_context(|| context!("Cannot get CWD."))?;
     cache_dir.push("cache/");
 
-    fs::create_dir_all(&cache_dir)
-        .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
+    // We have to create the first execution struct outside
+    // trace process, so we don't accidentally overwrite it
+    // within trace_process().
+    let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
+    if !(PTRACE_ONLY || FACT_GEN) {
+        fs::create_dir_all(&cache_dir)
+            .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
+    }
 
     let f = trace_process(
         async_runtime.clone(),
@@ -69,7 +79,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // Copy output files... carefully --> can't just do /cache/commandhash/yada
     // because of potential collisions on the hash.
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
-    if !full_tracking_on && !first_execution.is_empty_root_exec() {
+    if !full_tracking_on && !first_execution.is_empty_root_exec() && !(PTRACE_ONLY || FACT_GEN) {
         // const CACHE_LOCATION: &str = "./cache/cache";
         // let cache_path = PathBuf::from(CACHE_LOCATION);
 
@@ -161,302 +171,317 @@ pub async fn trace_process(
                 break;
             }
             TraceEvent::Prehook(_) => {
-                let e = s.enter();
+                if !PTRACE_ONLY {
+                    let e = s.enter();
 
-                // The default seccomp rule for unspecified system call rules is to send us
-                // a u32::MAX. If we see one, it is an unhandled system call!
-                let event_message = tracer
-                    .get_event_message()
-                    .with_context(|| context!("Cannot get event message on prehook"))?
-                    as u32;
+                    // The default seccomp rule for unspecified system call rules is to send us
+                    // a u32::MAX. If we see one, it is an unhandled system call!
+                    let event_message = tracer
+                        .get_event_message()
+                        .with_context(|| context!("Cannot get event message on prehook"))?
+                        as u32;
 
-                // Why do we use u16::MAX? See `RuleLoader::new`.
-                if event_message == u16::MAX as u32 {
-                    let regs = tracer.get_registers().with_context(|| {
-                        context!("Unable to fetch regs for unspecified syscall")
+                    // Why do we use u16::MAX? See `RuleLoader::new`.
+                    if event_message == u16::MAX as u32 {
+                        let regs = tracer.get_registers().with_context(|| {
+                            context!("Unable to fetch regs for unspecified syscall")
+                        })?;
+
+                        let syscall = regs.syscall_number::<usize>();
+                        let name = get_syscall_name(syscall).with_context(|| {
+                            context!("Unable to get syscall name for {}", syscall)
+                        })?;
+                        bail!(context!("Unhandled system call {:?}", name));
+                    }
+
+                    // Otherwise the syscall name holds the system call number :)
+                    // We do this to avoid unnecessarily fetching registers.
+                    let name = get_syscall_name(event_message as usize).with_context(|| {
+                        context!("Unable to get syscall name for syscall={}.", event_message)
                     })?;
 
-                    let syscall = regs.syscall_number::<usize>();
-                    let name = get_syscall_name(syscall)
-                        .with_context(|| context!("Unable to get syscall name for {}", syscall))?;
-                    bail!(context!("Unhandled system call {:?}", name));
-                }
+                    let sys_span = span!(Level::INFO, "Syscall", name);
+                    let ee = sys_span.enter();
 
-                // Otherwise the syscall name holds the system call number :)
-                // We do this to avoid unnecessarily fetching registers.
-                let name = get_syscall_name(event_message as usize).with_context(|| {
-                    context!("Unable to get syscall name for syscall={}.", event_message)
-                })?;
+                    // For file creation type events (creat, open, openat), we want to know if the file already existed
+                    // before the syscall happens (i.e. in the prehook).
+                    let mut file_existed_at_start = false;
+                    let mut nlinks_before = 0;
+                    // For unlink, we want to know the number of hardlinks.
+                    // For now, let's panic if it's > 1.
 
-                let sys_span = span!(Level::INFO, "Syscall", name);
-                let ee = sys_span.enter();
+                    // Special cases, we won't get a posthook event. Instead we will get
+                    // an execve event or a posthook if execve returns failure. We don't
+                    // bother handling it, let the main loop take care of it.
+                    // TODO: Handle them properly...
 
-                // For file creation type events (creat, open, openat), we want to know if the file already existed
-                // before the syscall happens (i.e. in the prehook).
-                let mut file_existed_at_start = false;
-                let mut nlinks_before = 0;
-                // For unlink, we want to know the number of hardlinks.
-                // For now, let's panic if it's > 1.
+                    if !caching_off {
+                        match name {
+                            // "chdir" => panic!("Program called chdir!!!"),
+                            // "chmod" => panic!("Program called chmod!!!"),
+                            "chown" => panic!("Program called chown!!!"),
+                            "creat" | "open" | "openat" => {
+                                // Get the full path and check if the file exists.
+                                let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                                file_existed_at_start = full_path.exists();
+                            }
+                            "execve" => {
+                                let regs = tracer.get_registers().with_context(|| {
+                                    context!("Failed to get regs in exec event")
+                                })?;
+                                let arg = regs.arg1();
+                                let executable = tracer.read_c_string(arg)?;
 
-                // Special cases, we won't get a posthook event. Instead we will get
-                // an execve event or a posthook if execve returns failure. We don't
-                // bother handling it, let the main loop take care of it.
-                // TODO: Handle them properly...
+                                let args = tracer
+                                    .read_c_string_array(regs.arg2())
+                                    .with_context(|| context!("Reading arguments to execve"))?;
+                                let envp = tracer.read_c_string_array(regs.arg3())?;
 
-                if !caching_off {
-                    match name {
-                        // "chdir" => panic!("Program called chdir!!!"),
-                        // "chmod" => panic!("Program called chmod!!!"),
-                        "chown" => panic!("Program called chown!!!"),
-                        "creat" | "open" | "openat" => {
-                            // Get the full path and check if the file exists.
-                            let full_path = get_full_path(&curr_execution, name, &tracer)?;
-                            file_existed_at_start = full_path.exists();
-                        }
-                        "execve" => {
-                            let regs = tracer
-                                .get_registers()
-                                .with_context(|| context!("Failed to get regs in exec event"))?;
-                            let arg = regs.arg1();
-                            let executable = tracer.read_c_string(arg)?;
+                                let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                                let cwd_path = readlink(cwd_link.as_str())
+                                    .with_context(|| context!("Failed to readlink (cwd)"))?;
+                                let cwd = cwd_path.to_str().unwrap().to_owned();
+                                let starting_cwd = PathBuf::from(cwd);
 
-                            let args = tracer
-                                .read_c_string_array(regs.arg2())
-                                .with_context(|| context!("Reading arguments to execve"))?;
-                            let envp = tracer.read_c_string_array(regs.arg3())?;
+                                let exec_path_buf = PathBuf::from(executable.clone());
+                                debug!("Raw executable: {:?}", exec_path_buf);
+                                let exec_path_buf = if exec_path_buf.is_relative() {
+                                    fs::canonicalize(exec_path_buf).unwrap()
+                                } else {
+                                    exec_path_buf
+                                };
+                                debug!("Execve event, executable: {:?}", exec_path_buf);
 
-                            let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-                            let cwd_path = readlink(cwd_link.as_str())
-                                .with_context(|| context!("Failed to readlink (cwd)"))?;
-                            let cwd = cwd_path.to_str().unwrap().to_owned();
-                            let starting_cwd = PathBuf::from(cwd);
+                                // Check the cache for the thing
+                                if !FACT_GEN {
+                                    if let Some(cache) = retrieve_existing_cache() {
+                                        let command = Command(
+                                            exec_path_buf
+                                                .clone()
+                                                .into_os_string()
+                                                .into_string()
+                                                .unwrap(),
+                                            args.clone(),
+                                        );
+                                        if let Some(entry) = cache.get(&command) {
+                                            debug!(
+                                                "Checking all preconditions: execution is: {:?}",
+                                                command
+                                            );
+                                            if full_tracking_on {
+                                                entry.check_all_preconditions_regardless()
+                                            } else if entry.check_all_preconditions() {
+                                                // Check if we should skip this execution.
+                                                // If we are gonna skip, we have to change:
+                                                // rax, orig_rax, arg1
+                                                skip_execution = true;
+                                                debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                                entry.apply_all_transitions();
+                                                let regs =
+                                                    tracer.get_registers().with_context(|| {
+                                                        context!(
+                                                            "Failed to get regs in skip exec event"
+                                                        )
+                                                    })?;
+                                                let mut regs = regs.make_modified();
+                                                let exit_syscall_num = libc::SYS_exit as u64;
 
-                            let exec_path_buf = PathBuf::from(executable.clone());
-                            debug!("Raw executable: {:?}", exec_path_buf);
-                            let exec_path_buf = if exec_path_buf.is_relative() {
-                                fs::canonicalize(exec_path_buf).unwrap()
-                            } else {
-                                exec_path_buf
-                            };
-                            debug!("Execve event, executable: {:?}", exec_path_buf);
+                                                // Change the arg1 to correct exit code?
+                                                regs.write_arg1(0);
+                                                // Change the orig rax val don't ask me why
+                                                regs.write_syscall_number(exit_syscall_num);
+                                                // Change the rax val
+                                                regs.write_rax(exit_syscall_num);
 
-                            // Check the cache for the thing
-                            if let Some(cache) = retrieve_existing_cache() {
-                                let command = Command(
+                                                tracer.set_regs(&mut regs)?;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let next_event =
+                                    tracer.get_next_syscall().await.with_context(|| {
+                                        context!("Unable to get posthook after execve prehook.")
+                                    })?;
+                                let mut new_exec_metadata =
+                                    ExecMetadata::new(Proc(tracer.curr_proc));
+                                new_exec_metadata.add_identifiers(
+                                    args,
+                                    envp,
                                     exec_path_buf
                                         .clone()
                                         .into_os_string()
                                         .into_string()
                                         .unwrap(),
-                                    args.clone(),
+                                    starting_cwd,
                                 );
-                                if let Some(entry) = cache.get(&command) {
-                                    debug!(
-                                        "Checking all preconditions: execution is: {:?}",
-                                        command
-                                    );
-                                    if full_tracking_on {
-                                        entry.check_all_preconditions_regardless()
-                                    } else if entry.check_all_preconditions() {
-                                        // Check if we should skip this execution.
-                                        // If we are gonna skip, we have to change:
-                                        // rax, orig_rax, arg1
-                                        skip_execution = true;
-                                        debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                                        entry.apply_all_transitions();
-                                        let regs = tracer.get_registers().with_context(|| {
-                                            context!("Failed to get regs in skip exec event")
-                                        })?;
-                                        let mut regs = regs.make_modified();
-                                        let exit_syscall_num = libc::SYS_exit as u64;
 
-                                        // Change the arg1 to correct exit code?
-                                        regs.write_arg1(0);
-                                        // Change the orig rax val don't ask me why
-                                        regs.write_syscall_number(exit_syscall_num);
-                                        // Change the rax val
-                                        regs.write_rax(exit_syscall_num);
+                                // TODO: handle child execs
+                                // TODO: don't add 2 successful execs from same proc, panic instead.
+                                match next_event {
+                                    TraceEvent::Exec(_) => {
+                                        // The execve succeeded!
+                                        s.in_scope(|| {
+                                            debug!("Execve succeeded!");
+                                        });
 
-                                        tracer.set_regs(&mut regs)?;
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            let next_event =
-                                tracer.get_next_syscall().await.with_context(|| {
-                                    context!("Unable to get posthook after execve prehook.")
-                                })?;
-                            let mut new_exec_metadata = ExecMetadata::new(Proc(tracer.curr_proc));
-                            new_exec_metadata.add_identifiers(
-                                args,
-                                envp,
-                                exec_path_buf
-                                    .clone()
-                                    .into_os_string()
-                                    .into_string()
-                                    .unwrap(),
-                                starting_cwd,
-                            );
-
-                            // TODO: handle child execs
-                            // TODO: don't add 2 successful execs from same proc, panic instead.
-                            match next_event {
-                                TraceEvent::Exec(_) => {
-                                    // The execve succeeded!
-                                    s.in_scope(|| {
-                                        debug!("Execve succeeded!");
-                                    });
-
-                                    // If we haven't seen a successful execve by this pid yet,
-                                    // update.
-                                    if curr_execution.is_empty_root_exec() {
-                                        curr_execution.update_successful_exec(new_exec_metadata);
-                                    } else if curr_execution.pid() != tracer.curr_proc {
-                                        // New rc exec for the child exec.
-                                        // Add to parent's struct.
-                                        // set curr execution to the new one.
-                                        let mut new_child_exec =
-                                            Execution::new(Proc(tracer.curr_proc));
-                                        new_child_exec.update_successful_exec(new_exec_metadata);
-                                        let new_rc_child_exec = RcExecution::new(new_child_exec);
-                                        curr_execution
-                                            .add_child_execution(new_rc_child_exec.clone());
-                                        curr_execution = new_rc_child_exec;
-                                    } else {
-                                        panic!("Process already called successful execve and is trying to do another!!");
-                                    }
-                                }
-                                TraceEvent::Posthook(_) => {
-                                    s.in_scope(|| {
-                                        debug!("Execve failed!");
-                                    });
-                                    let regs = tracer.get_registers().with_context(|| {
-                                        context!("Failed to get regs in handle_stat()")
-                                    })?;
-                                    let ret_val = regs.retval::<i32>();
-                                    let failed_exec = {
-                                        match ret_val {
-                                            -2 => SyscallEvent::FailedExec(
-                                                SyscallFailure::FileDoesntExist,
-                                            ),
-                                            -13 => SyscallEvent::FailedExec(
-                                                SyscallFailure::PermissionDenied,
-                                            ),
-                                            e => panic!(
-                                                "Unexpected error returned by stat syscall!: {}",
-                                                e
-                                            ),
+                                        // If we haven't seen a successful execve by this pid yet,
+                                        // update.
+                                        if curr_execution.is_empty_root_exec() {
+                                            curr_execution
+                                                .update_successful_exec(new_exec_metadata);
+                                        } else if curr_execution.pid() != tracer.curr_proc {
+                                            // New rc exec for the child exec.
+                                            // Add to parent's struct.
+                                            // set curr execution to the new one.
+                                            let mut new_child_exec =
+                                                Execution::new(Proc(tracer.curr_proc));
+                                            new_child_exec
+                                                .update_successful_exec(new_exec_metadata);
+                                            let new_rc_child_exec =
+                                                RcExecution::new(new_child_exec);
+                                            curr_execution
+                                                .add_child_execution(new_rc_child_exec.clone());
+                                            curr_execution = new_rc_child_exec;
+                                        } else {
+                                            panic!("Process already called successful execve and is trying to do another!!");
                                         }
-                                    };
-                                    curr_execution.add_new_file_event(
-                                        tracer.curr_proc,
-                                        failed_exec,
-                                        exec_path_buf,
-                                    );
+                                    }
+                                    TraceEvent::Posthook(_) => {
+                                        s.in_scope(|| {
+                                            debug!("Execve failed!");
+                                        });
+                                        let regs = tracer.get_registers().with_context(|| {
+                                            context!("Failed to get regs in handle_stat()")
+                                        })?;
+                                        let ret_val = regs.retval::<i32>();
+                                        let failed_exec = {
+                                            match ret_val {
+                                                -2 => SyscallEvent::FailedExec(
+                                                    SyscallFailure::FileDoesntExist,
+                                                ),
+                                                -13 => SyscallEvent::FailedExec(
+                                                    SyscallFailure::PermissionDenied,
+                                                ),
+                                                e => panic!(
+                                                    "Unexpected error returned by stat syscall!: {}",
+                                                    e
+                                                ),
+                                            }
+                                        };
+                                        curr_execution.add_new_file_event(
+                                            tracer.curr_proc,
+                                            failed_exec,
+                                            exec_path_buf,
+                                        );
+                                    }
+                                    e => panic!("Unexpected event after execve prehook: {:?}", e),
                                 }
-                                e => panic!("Unexpected event after execve prehook: {:?}", e),
-                            }
-                            continue;
-                        }
-                        "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2"
-                        | "clone3" => {
-                            debug!("Special event: {}. Do not go to posthook.", name);
-                            continue;
-                        }
-                        // "umask" => panic!("Program called umask!!"),
-                        "unlink" | "unlinkat" => {
-                            use std::os::unix::fs::MetadataExt;
-                            let full_path = get_full_path(&curr_execution, name, &tracer)?;
-                            if full_path.exists() {
-                                let meta = full_path.as_path().metadata().unwrap();
-                                nlinks_before = meta.nlink();
-                            } else {
-                                nlinks_before = 0;
-                            }
-                        }
-                        _ => {
-                            if !iostream_redirected {
-                                const STDOUT_FD: u32 = 1;
-                                // const STDERR_FD: u32 = 2;
-                                // TODO: Deal with PID recycling?
-                                let exec = curr_execution.executable();
-                                let args = curr_execution.args();
-                                let comm_hash = hash_command(Command(exec, args));
-                                let cache_subdir = fs::canonicalize("./cache").unwrap();
-                                let cache_subdir = cache_subdir.join(format!("{:?}", comm_hash));
-                                if !cache_subdir.exists() {
-                                    fs::create_dir(cache_subdir.clone()).unwrap();
-                                }
-
-                                // This is the first real system call this program is doing after exec-ing.
-                                // We will redirect their stdout and stderr output here by writing them to files.
-                                redirection::redirect_io_stream(
-                                    &stdout_file,
-                                    STDOUT_FD,
-                                    &mut tracer,
-                                )
-                                .await
-                                .with_context(|| context!("Unable to redirect stdout."))?;
-                                // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
-                                //     .await
-                                //     .with_context(|| context!("Unable to redirect stderr."))?;
-                                // TODO: Add stderr redirection.
-
-                                iostream_redirected = true;
-                                // Continue to let original system call run.
                                 continue;
                             }
+                            "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2"
+                            | "clone3" => {
+                                debug!("Special event: {}. Do not go to posthook.", name);
+                                continue;
+                            }
+                            // "umask" => panic!("Program called umask!!"),
+                            "unlink" | "unlinkat" => {
+                                use std::os::unix::fs::MetadataExt;
+                                let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                                if full_path.exists() {
+                                    let meta = full_path.as_path().metadata().unwrap();
+                                    nlinks_before = meta.nlink();
+                                } else {
+                                    nlinks_before = 0;
+                                }
+                            }
+                            _ => {
+                                if !iostream_redirected {
+                                    const STDOUT_FD: u32 = 1;
+                                    // const STDERR_FD: u32 = 2;
+                                    // TODO: Deal with PID recycling?
+                                    if !(PTRACE_ONLY || FACT_GEN) {
+                                        let exec = curr_execution.executable();
+                                        let args = curr_execution.args();
+                                        let comm_hash = hash_command(Command(exec, args));
+                                        let cache_subdir = fs::canonicalize("./cache").unwrap();
+                                        let cache_subdir =
+                                            cache_subdir.join(format!("{:?}", comm_hash));
+                                        if !cache_subdir.exists() {
+                                            fs::create_dir(cache_subdir.clone()).unwrap();
+                                        }
+                                    }
+
+                                    // This is the first real system call this program is doing after exec-ing.
+                                    // We will redirect their stdout and stderr output here by writing them to files.
+                                    redirection::redirect_io_stream(
+                                        &stdout_file,
+                                        STDOUT_FD,
+                                        &mut tracer,
+                                    )
+                                    .await
+                                    .with_context(|| context!("Unable to redirect stdout."))?;
+                                    // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
+                                    //     .await
+                                    //     .with_context(|| context!("Unable to redirect stderr."))?;
+                                    // TODO: Add stderr redirection.
+
+                                    iostream_redirected = true;
+                                    // Continue to let original system call run.
+                                    continue;
+                                }
+                            }
                         }
+                    } else {
+                        continue;
                     }
-                } else {
-                    continue;
-                }
 
-                trace!("Waiting for posthook event...");
-                drop(e);
-                drop(ee);
-                let regs: Regs<Unmodified> = tracer.posthook().await?;
-                trace!("Waiting for posthook event...");
+                    trace!("Waiting for posthook event...");
+                    drop(e);
+                    drop(ee);
+                    let regs: Regs<Unmodified> = tracer.posthook().await?;
+                    trace!("Waiting for posthook event...");
 
-                // In posthook.
-                let _ = s.enter();
-                let _ = sys_span.enter();
-                let retval = regs.retval::<i32>();
+                    // In posthook.
+                    let _ = s.enter();
+                    let _ = sys_span.enter();
+                    let retval = regs.retval::<i32>();
 
-                span!(Level::INFO, "Posthook", retval).in_scope(|| info!(name));
+                    span!(Level::INFO, "Posthook", retval).in_scope(|| info!(name));
 
-                match name {
-                    "access" => handle_access(&curr_execution, &tracer)?,
-                    "creat" | "openat" | "open" => {
-                        handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
-                    }
-                    // TODO: newfstatat
-                    "fstat" | "lstat" | "stat" => {
-                        handle_stat_family(&curr_execution, name, &tracer)?
-                    }
-                    "getdents64" => {
-                        // TODO: Kelly, you can use this variable to know what directories were read.
-                        handle_get_dents64(&curr_execution, &regs, &tracer)?
-                    }
-                    // "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
-                    "pipe2" => handle_pipe2(&regs)?,
-                    "rename" | "renameat" | "renameat2" => {
-                        handle_rename(&curr_execution, name, &tracer)?
-                    }
-                    "unlink" | "unlinkat" => {
-                        if nlinks_before == 1 {
-                            // before facts? (success)
-                            // - exists
-                            // - contents
-                            // - write access to dir
-                            // - x access to dir
-                            // after facts? (success)
-                            // - doesnt exist
-                            handle_unlink(&curr_execution, name, &tracer)?
+                    match name {
+                        "access" => handle_access(&curr_execution, &tracer)?,
+                        "creat" | "openat" | "open" => {
+                            handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                         }
+                        // TODO: newfstatat
+                        "fstat" | "lstat" | "stat" => {
+                            handle_stat_family(&curr_execution, name, &tracer)?
+                        }
+                        "getdents64" => {
+                            // TODO: Kelly, you can use this variable to know what directories were read.
+                            handle_get_dents64(&curr_execution, &regs, &tracer)?
+                        }
+                        // "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
+                        "pipe2" => handle_pipe2(&regs)?,
+                        "rename" | "renameat" | "renameat2" => {
+                            handle_rename(&curr_execution, name, &tracer)?
+                        }
+                        "unlink" | "unlinkat" => {
+                            if nlinks_before == 1 {
+                                // before facts? (success)
+                                // - exists
+                                // - contents
+                                // - write access to dir
+                                // - x access to dir
+                                // after facts? (success)
+                                // - doesnt exist
+                                handle_unlink(&curr_execution, name, &tracer)?
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             TraceEvent::Clone(_) => {
@@ -544,10 +569,6 @@ pub async fn trace_process(
         TraceEvent::ProcessExited(pid, exit_code) => {
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
             s.in_scope(|| debug!("Exit code: {}", exit_code));
-            // Add exit code to the exec struct, if this is the
-            // pid that exec'd the exec. execececececec.
-            // TODO: don't add this here if skipping?
-            curr_execution.add_exit_code(exit_code);
 
             // TODO:
             // append file event lists
@@ -559,7 +580,11 @@ pub async fn trace_process(
             // if the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
             // instead of recomputing the child's along with its own
-            if !skip_execution {
+            if !skip_execution && !(PTRACE_ONLY || FACT_GEN) {
+                // Add exit code to the exec struct, if this is the
+                // pid that exec'd the exec. execececececec.
+                // panic!("SHOULD NOT BE HERE");
+                curr_execution.add_exit_code(exit_code);
                 let children = curr_execution.children();
                 let new_events = if children.is_empty() {
                     curr_execution.file_events()
