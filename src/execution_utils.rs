@@ -16,6 +16,7 @@ use crate::{
     Ptracer,
 };
 
+const DONT_HASH_FILES: bool = true;
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
@@ -45,14 +46,18 @@ pub fn generate_open_syscall_file_event(
         return None;
     }
 
-    // let starting_hash = if syscall_outcome.is_ok()
-    //     && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
-    // {
-    //     Some(generate_hash(full_path))
-    // } else {
-    //     None
-    // };
-    let starting_hash = None;
+    let starting_hash = if DONT_HASH_FILES {
+        None
+    } else {
+        if syscall_outcome.is_ok()
+            && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
+        {
+            Some(generate_hash(full_path))
+        } else {
+            None
+        }
+    };
+    // let starting_hash = None;
 
     if creat_flag {
         if excl_flag {

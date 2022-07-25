@@ -20,6 +20,7 @@ use crate::{
     syscalls::Stat,
 };
 
+const DONT_HASH_FILES: bool = true;
 // Actual accesses to the file system performed by
 // a successful execution.
 // Full path mapped to
@@ -594,8 +595,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                         match outcome {
                             SyscallOutcome::Success => {
-                                let hash = hash_option.clone().unwrap();
-                                // This precondition needs to be added to the old path's precodns.
+                                let hash = if DONT_HASH_FILES {
+                                    Vec::new()
+                                } else {
+                                    hash_option.clone().unwrap()
+                                };
+                                // This precondition needs to be added to the old path's preconds.
                                 old_path_preconds.insert(Fact::StartingContents(hash));
                                 old_path_preconds.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                             }
@@ -612,7 +617,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         match outcome {
                             SyscallOutcome::Success => {
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                let hash = hash_option.clone().unwrap();
+                                let hash = if DONT_HASH_FILES {
+                                    Vec::new()
+                                } else {
+                                    hash_option.clone().unwrap()
+                                };
                                 old_path_preconds.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                                 old_path_preconds.insert(Fact::StartingContents(hash));
                             }
@@ -667,7 +676,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            let hash = hash_option.clone().unwrap();
+                            let hash = if DONT_HASH_FILES {
+                                Vec::new()
+                            } else {
+                                hash_option.clone().unwrap()
+                            };
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits()));
                             curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                             curr_set.insert(Fact::StartingContents(hash));
@@ -683,7 +696,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            let hash = hash_option.clone().unwrap();
+                            let hash = if DONT_HASH_FILES {
+                                Vec::new()
+                            } else {
+                                hash_option.clone().unwrap()
+                            };
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits()));
                             curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
                             curr_set.insert(Fact::StartingContents(hash));
@@ -724,7 +741,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            let hash = hash_option.clone().unwrap();
+                            let hash = if DONT_HASH_FILES {
+                                Vec::new()
+                            } else {
+                                hash_option.clone().unwrap()
+                            };
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits()));
                             curr_set.insert(Fact::StartingContents(hash));
                             curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
@@ -749,7 +770,11 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            let hash = hash_option.clone().unwrap();
+                                let hash = if DONT_HASH_FILES {
+                                    Vec::new()
+                                } else {
+                                    hash_option.clone().unwrap()
+                                };
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits()));
                             curr_set.insert(Fact::StartingContents(hash));
                             curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));

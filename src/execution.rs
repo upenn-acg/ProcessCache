@@ -41,7 +41,7 @@ use anyhow::{bail, Context, Result};
 // Run P$ with only ptrace system call interception.
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
-const FACT_GEN: bool = true;
+const FACT_GEN: bool = false;
 
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
