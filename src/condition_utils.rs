@@ -67,6 +67,7 @@ pub enum Fact {
     // c_int = AccessFlags
     HasDirPermission(c_int),
     HasPermission(c_int),
+    Mtime(i64),
     NoDirPermission(c_int),
     NoPermission(c_int),
     Or(Box<Fact>, Box<Fact>),

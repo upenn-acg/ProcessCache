@@ -38,9 +38,15 @@ pub enum SyscallEvent {
     DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome),
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
-    Open(OFlag, Option<Vec<u8>>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
-    Rename(PathBuf, PathBuf, SyscallOutcome),     // Old, new, outcome
+    Open(OFlag, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
+    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CheckMechanism {
+    Mtime(i64),
+    Hash(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fs::metadata, os::linux::fs::MetadataExt, path::PathBuf};
 
 use anyhow::Context;
 use libc::{c_char, AT_FDCWD};
@@ -12,7 +12,7 @@ use crate::{
     cache_utils::generate_hash,
     context,
     recording::RcExecution,
-    syscalls::{SyscallEvent, SyscallFailure, SyscallOutcome},
+    syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome},
     Ptracer,
 };
 
@@ -46,18 +46,25 @@ pub fn generate_open_syscall_file_event(
         return None;
     }
 
-    let starting_hash = if DONT_HASH_FILES {
+    // HERE!! THIS IS WHERE YOU DECIDE BETWEEN
+    // - HASHING
+    // - MTIME
+    // - COPYING FILES
+    let optional_checking_mech = if DONT_HASH_FILES {
         None
     } else {
         if syscall_outcome.is_ok()
             && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
         {
-            Some(generate_hash(full_path))
+            // HASH
+            // Some(CheckMechanism::Hash(generate_hash(full_path)))
+            // MTIME
+            let curr_metadata = metadata(&full_path).unwrap();
+            Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
         } else {
             None
         }
     };
-    // let starting_hash = None;
 
     if creat_flag {
         if excl_flag {
@@ -95,10 +102,10 @@ pub fn generate_open_syscall_file_event(
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
                             (OFlag::O_APPEND, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_APPEND, starting_hash, SyscallOutcome::Success))
+                                Some(SyscallEvent::Open(OFlag::O_APPEND, optional_checking_mech, SyscallOutcome::Success))
                             }
                             (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_TRUNC, starting_hash, SyscallOutcome::Success))
+                                Some(SyscallEvent::Open(OFlag::O_TRUNC, optional_checking_mech, SyscallOutcome::Success))
                             }
                             (offset_flag, mode_flag) => panic!("Unexpected offset flag: {:?} and mode flag: {:?}", offset_flag, mode_flag),
                         }
@@ -128,7 +135,7 @@ pub fn generate_open_syscall_file_event(
                 // Retval is pretty useless here but whatever.
                 (OFlag::O_RDONLY, OFlag::O_RDONLY) => Some(SyscallEvent::Open(
                     OFlag::O_RDONLY,
-                    starting_hash,
+                    optional_checking_mech,
                     SyscallOutcome::Success,
                 )),
                 (OFlag::O_TRUNC | OFlag::O_APPEND, OFlag::O_RDONLY) => {
@@ -141,12 +148,12 @@ pub fn generate_open_syscall_file_event(
                 }
                 (OFlag::O_APPEND, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
                     OFlag::O_APPEND,
-                    starting_hash,
+                    optional_checking_mech,
                     SyscallOutcome::Success,
                 )),
                 (OFlag::O_TRUNC, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
                     OFlag::O_TRUNC,
-                    starting_hash,
+                    optional_checking_mech,
                     SyscallOutcome::Success,
                 )),
                 (offset_flag, mode_flag) => panic!(
@@ -158,19 +165,19 @@ pub fn generate_open_syscall_file_event(
                 // ENOENT
                 -2 => Some(SyscallEvent::Open(
                     offset_mode,
-                    starting_hash,
+                    optional_checking_mech,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 )),
                 // EACCES
                 -13 => match offset_mode {
                     OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
                         offset_mode,
-                        starting_hash,
+                        optional_checking_mech,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     _ => Some(SyscallEvent::Open(
                         offset_mode,
-                        starting_hash,
+                        optional_checking_mech,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                 },
