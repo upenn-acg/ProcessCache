@@ -1,4 +1,8 @@
-use std::{fs::metadata, os::linux::fs::MetadataExt, path::PathBuf};
+use std::{
+    fs::{self, metadata},
+    os::linux::fs::MetadataExt,
+    path::PathBuf,
+};
 
 use anyhow::Context;
 use libc::{c_char, AT_FDCWD};
@@ -9,19 +13,20 @@ use nix::{
 use tracing::debug;
 
 use crate::{
-    cache_utils::generate_hash,
+    cache_utils::{generate_hash, hash_command, Command},
     context,
     recording::RcExecution,
     syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome},
     Ptracer,
 };
 
-const DONT_HASH_FILES: bool = true;
+const DONT_HASH_FILES: bool = false;
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
 pub fn generate_open_syscall_file_event(
     creat_flag: bool,
+    curr_execution: &RcExecution,
     excl_flag: bool,
     file_existed_at_start: bool,
     full_path: PathBuf,
@@ -56,6 +61,8 @@ pub fn generate_open_syscall_file_event(
         if syscall_outcome.is_ok()
             && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
         {
+            // DIFF FILES
+            // Some(CheckMechanism::DiffFiles)
             // HASH
             // Some(CheckMechanism::Hash(generate_hash(full_path)))
             // MTIME
@@ -133,11 +140,18 @@ pub fn generate_open_syscall_file_event(
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
                 // Retval is pretty useless here but whatever.
-                (OFlag::O_RDONLY, OFlag::O_RDONLY) => Some(SyscallEvent::Open(
-                    OFlag::O_RDONLY,
-                    optional_checking_mech,
-                    SyscallOutcome::Success,
-                )),
+                (OFlag::O_RDONLY, OFlag::O_RDONLY) => {
+                    if let Some(mech) = optional_checking_mech.clone() {
+                        if mech == CheckMechanism::DiffFiles {
+                            copy_input_file_to_cache(curr_execution, full_path);
+                        }
+                    }
+                    Some(SyscallEvent::Open(
+                        OFlag::O_RDONLY,
+                        optional_checking_mech,
+                        SyscallOutcome::Success,
+                    ))
+                }
                 (OFlag::O_TRUNC | OFlag::O_APPEND, OFlag::O_RDONLY) => {
                     panic!("Undefined by POSIX/LINUX.")
                 }
@@ -146,11 +160,18 @@ pub fn generate_open_syscall_file_event(
                 (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
                     panic!("Do not support O_WRONLY without offset flag!")
                 }
-                (OFlag::O_APPEND, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
-                    OFlag::O_APPEND,
-                    optional_checking_mech,
-                    SyscallOutcome::Success,
-                )),
+                (OFlag::O_APPEND, OFlag::O_WRONLY) => {
+                    if let Some(mech) = optional_checking_mech.clone() {
+                        if mech == CheckMechanism::DiffFiles {
+                            copy_input_file_to_cache(curr_execution, full_path);
+                        }
+                    }
+                    Some(SyscallEvent::Open(
+                        OFlag::O_APPEND,
+                        optional_checking_mech,
+                        SyscallOutcome::Success,
+                    ))
+                }
                 (OFlag::O_TRUNC, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
                     OFlag::O_TRUNC,
                     optional_checking_mech,
@@ -187,6 +208,27 @@ pub fn generate_open_syscall_file_event(
                 ),
             },
         }
+    }
+}
+
+fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathBuf) {
+    const CACHE_LOCATION: &str = "./cache";
+    let cache_dir = PathBuf::from(CACHE_LOCATION);
+    let input_str = PathBuf::from("input_files");
+
+    let command = Command(curr_execution.executable(), curr_execution.args());
+    let hashed_command = hash_command(command);
+    let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
+    let cache_subdir_hashed_command_inputs_dir = cache_subdir_hashed_command.join(input_str);
+
+    if !cache_subdir_hashed_command_inputs_dir.exists() {
+        fs::create_dir(cache_subdir_hashed_command_inputs_dir.clone()).unwrap();
+    }
+
+    let cache_input_file_path =
+        cache_subdir_hashed_command_inputs_dir.join(input_file_path.file_name().unwrap());
+    if input_file_path.exists() && !input_file_path.is_dir() {
+        fs::copy(input_file_path, cache_input_file_path).unwrap();
     }
 }
 

@@ -20,7 +20,7 @@ use crate::{
     syscalls::Stat,
 };
 
-const DONT_HASH_FILES: bool = true;
+const DONT_HASH_FILES: bool = false;
 // Actual accesses to the file system performed by
 // a successful execution.
 // Full path mapped to
@@ -120,6 +120,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
+            Fact::InputFilesMatch => true,
             Fact::HasDirPermission(flags) => {
                 debug!("Dir perm flags: {:?}", flags);
                 let parent_dir = path_name.parent().unwrap();
@@ -604,6 +605,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                             SyscallOutcome::Success => {
                                 if let Some(check_mechanism) = optional_check_mechanism {
                                     match check_mechanism {
+                                        CheckMechanism::DiffFiles => {
+                                            old_path_preconds.insert(Fact::InputFilesMatch);
+                                        }
                                         CheckMechanism::Hash(hash) => {
                                             let hash = if DONT_HASH_FILES {
                                                 Vec::new()
@@ -636,6 +640,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                                 let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
                                 if let Some(check_mech) = optional_check_mech {
                                     match check_mech {
+                                        CheckMechanism::DiffFiles => {
+                                            old_path_preconds.insert(Fact::InputFilesMatch);
+                                        }
                                         CheckMechanism::Hash(hash) => {
                                             let hash = if DONT_HASH_FILES {
                                                 Vec::new()
@@ -705,6 +712,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
+                                    CheckMechanism::DiffFiles => {
+                                        curr_set.insert(Fact::InputFilesMatch);
+                                    }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
                                             Vec::new()
@@ -735,6 +745,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
+                                    CheckMechanism::DiffFiles => {
+                                        curr_set.insert(Fact::InputFilesMatch);
+                                    }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
                                             Vec::new()
@@ -790,6 +803,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
+                                    CheckMechanism::DiffFiles => {
+                                        curr_set.insert(Fact::InputFilesMatch);
+                                    }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
                                             Vec::new()
@@ -829,6 +845,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
+                                    CheckMechanism::DiffFiles => {
+                                        curr_set.insert(Fact::InputFilesMatch);
+                                    }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
                                             Vec::new()

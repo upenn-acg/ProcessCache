@@ -838,6 +838,7 @@ fn handle_open(
 
     let open_syscall_event = generate_open_syscall_file_event(
         creat_flag,
+        execution,
         excl_flag,
         file_existed_at_start,
         full_path.clone(),
