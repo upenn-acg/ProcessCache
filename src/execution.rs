@@ -8,9 +8,21 @@ use nix::{
     sys::stat::FileStat,
     unistd::Pid,
 };
-use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc};
+use std::{
+    collections::HashMap,
+    ffi::CStr,
+    fs,
+    path::PathBuf,
+    rc::Rc,
+    sync::mpsc::{self, channel, Receiver, Sender},
+    thread,
+};
 
-use crate::{async_runtime::AsyncRuntime, condition_utils::FileType};
+use crate::{
+    async_runtime::AsyncRuntime, condition_utils::FileType,
+    execution_utils::background_thread_copying_outputs,
+    recording::generate_list_of_files_to_copy_to_cache,
+};
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
     syscalls::Stat,
@@ -62,12 +74,20 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
             .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
     }
 
+    // Initialize the channel for communication between the tracer and background thread.
+    let (sender, receiver): (
+        Sender<Vec<(PathBuf, PathBuf)>>,
+        Receiver<Vec<(PathBuf, PathBuf)>>,
+    ) = mpsc::channel();
+    let handle = thread::spawn(move || background_thread_copying_outputs(receiver));
+
     let f = trace_process(
         async_runtime.clone(),
         full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
         Rc::new(cache_dir.clone()),
+        sender.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -124,6 +144,9 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // }
         // serialize_execs_to_cache(new_cache);
     }
+
+    drop(sender);
+    let _ = handle.join();
     Ok(())
 }
 
@@ -141,6 +164,7 @@ pub async fn trace_process(
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
+    send_end: Sender<Vec<(PathBuf, PathBuf)>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -517,6 +541,7 @@ pub async fn trace_process(
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
+                    send_end.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -538,6 +563,7 @@ pub async fn trace_process(
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
+                    send_end.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -570,12 +596,11 @@ pub async fn trace_process(
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
             s.in_scope(|| debug!("Exit code: {}", exit_code));
 
-            // TODO:
             // append file event lists
             // update the event lists of this execution struct
             // generate postconditions
             // copy output files to /cache/hash_of_my_command_key/output_file_x
-            // TODO maybe:
+
             // record postconditions in the execution struct?
             // if the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
@@ -595,26 +620,18 @@ pub async fn trace_process(
 
                     for child in children {
                         append_file_events(&mut new_map, child.file_events(), child.pid());
-                        // println!("Map");
-                        // for (path, events) in new_map.clone() {
-                        //     println!("Path: {:?}", path);
-                        //     println!("Events: {:?}", events);
-                        // }
-                        // println!();
                     }
                     ExecFileEvents(new_map)
                 };
-                // println!("New events: {:?}", new_events);
                 curr_execution.update_file_events(new_events.clone());
                 let postconditions = generate_postconditions(new_events);
-                // println!("MY PID: {:?}", pid);
-                // println!("Postconditions:");
-                // for (path, facts) in postconditions.clone() {
-                //     println!("Path: {:?}", path);
-                //     println!("Facts: {:?}", facts);
-                // }
+
                 curr_execution.update_postconditions(postconditions.clone());
-                copy_output_files_to_cache(&curr_execution, postconditions);
+                // Send background thread files to copy.
+                let file_pairs =
+                    generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
+                send_end.send(file_pairs).unwrap();
+                // copy_output_files_to_cache(&curr_execution, postconditions);
             }
         }
         other => bail!(

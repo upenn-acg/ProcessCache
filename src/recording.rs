@@ -447,3 +447,77 @@ pub fn copy_output_files_to_cache(
         }
     }
 }
+
+pub fn generate_list_of_files_to_copy_to_cache(
+    curr_execution: &RcExecution,
+    // command: Command,
+    // pid: Pid,
+    postconditions: HashMap<PathBuf, HashSet<Fact>>,
+    // starting_cwd: PathBuf,
+) -> Vec<(PathBuf, PathBuf)> {
+    let mut list_of_files: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    const CACHE_LOCATION: &str = "./cache";
+    let cache_dir = PathBuf::from(CACHE_LOCATION);
+
+    let command = Command(curr_execution.executable(), curr_execution.args());
+    let hashed_command = hash_command(command);
+    let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
+    if !cache_subdir_hashed_command.exists() {
+        fs::create_dir(cache_subdir_hashed_command.clone()).unwrap();
+    }
+
+    // All the current proc's output files.
+    for (path, fact_set) in postconditions {
+        for fact in fact_set {
+            if fact == Fact::Exists || fact == Fact::FinalContents {
+                let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
+                if path.clone().exists() {
+                    list_of_files.push((path.clone(), cache_path));
+                }
+            }
+        }
+    }
+
+    // The current proc's stdout file.
+    let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
+    let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
+    let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
+
+    if stdout_file_path.exists() {
+        // fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
+        list_of_files.push((stdout_file_path.clone(), cache_stdout_file_path));
+        let mut f = File::open(stdout_file_path).unwrap();
+        let mut buf = Vec::new();
+        // Write the bytes to stdout.
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
+        // We don't want to remove the file before the thread even has the chance to copy it to the cache...
+        // fs::remove_file(stdout_file_path).unwrap();
+    }
+
+    // Children's stdout files.
+    let children = curr_execution.children();
+    for child in children {
+        let child_command = Command(child.executable(), child.args());
+        let hashed_command = hash_command(child_command);
+        let child_subdir = cache_dir.join(hashed_command.to_string());
+
+        if !child_subdir.exists() {
+            fs::create_dir(child_subdir.clone()).unwrap();
+        }
+        let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
+        let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
+
+        let parents_spot_for_childs_stdout =
+            cache_subdir_hashed_command.join(childs_cached_stdout_file);
+        if childs_cached_stdout_path.exists() {
+            // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+            list_of_files.push((childs_cached_stdout_path, parents_spot_for_childs_stdout))
+        }
+    }
+
+    list_of_files
+}

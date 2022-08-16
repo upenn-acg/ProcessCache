@@ -1,7 +1,9 @@
 use std::{
-    fs::{self, metadata},
+    fs::{self, metadata, File},
+    io::{self, Read, Write},
     os::linux::fs::MetadataExt,
     path::PathBuf,
+    sync::mpsc::Receiver,
 };
 
 use anyhow::Context;
@@ -21,6 +23,23 @@ use crate::{
 };
 
 const DONT_HASH_FILES: bool = false;
+
+pub fn background_thread_copying_outputs(recv_end: Receiver<Vec<(PathBuf, PathBuf)>>) {
+    // TODO: is loop needed?
+    loop {
+        if let Ok(file_vec) = recv_end.recv() {
+            for (source, dest) in file_vec {
+                fs::copy(source.clone(), dest).unwrap();
+                let source_str = source.clone().into_os_string().into_string().unwrap();
+                if source_str.contains("stdout") {
+                    fs::remove_file(source).unwrap();
+                }
+            }
+        } else {
+            break;
+        }
+    }
+}
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
