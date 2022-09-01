@@ -54,6 +54,7 @@ use anyhow::{bail, Context, Result};
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
 const FACT_GEN: bool = false;
+const BACKGROUND_THREAD: bool = true;
 
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
@@ -79,15 +80,24 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         Sender<Vec<(PathBuf, PathBuf)>>,
         Receiver<Vec<(PathBuf, PathBuf)>>,
     ) = mpsc::channel();
-    let handle = thread::spawn(move || background_thread_copying_outputs(receiver));
-
+    let option_handle = if BACKGROUND_THREAD {
+        let handle = thread::spawn(move || background_thread_copying_outputs(receiver));
+        Some(handle)
+    } else {
+        None
+    };
+    let option_sender = if BACKGROUND_THREAD {
+        Some(sender)
+    } else {
+        None
+    };
     let f = trace_process(
         async_runtime.clone(),
         full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
         Rc::new(cache_dir.clone()),
-        sender.clone(),
+        option_sender.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -145,8 +155,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // serialize_execs_to_cache(new_cache);
     }
 
-    drop(sender);
-    let _ = handle.join();
+    if let Some(sender) = option_sender {
+        drop(sender);
+    }
+    if let Some(handle) = option_handle {
+        let _ = handle.join();
+    }
     Ok(())
 }
 
@@ -164,7 +178,7 @@ pub async fn trace_process(
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
-    send_end: Sender<Vec<(PathBuf, PathBuf)>>,
+    send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -627,11 +641,14 @@ pub async fn trace_process(
                 let postconditions = generate_postconditions(new_events);
 
                 curr_execution.update_postconditions(postconditions.clone());
-                // Send background thread files to copy.
-                let file_pairs =
-                    generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
-                send_end.send(file_pairs).unwrap();
-                // copy_output_files_to_cache(&curr_execution, postconditions);
+                if let Some(sender) = send_end {
+                    // Send background thread files to copy.
+                    let file_pairs =
+                        generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
+                    sender.send(file_pairs).unwrap();
+                } else {
+                    copy_output_files_to_cache(&curr_execution, postconditions);
+                }
             }
         }
         other => bail!(

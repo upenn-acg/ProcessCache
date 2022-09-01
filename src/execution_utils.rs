@@ -83,7 +83,7 @@ pub fn generate_open_syscall_file_event(
             // DIFF FILES
             // Some(CheckMechanism::DiffFiles)
             // HASH
-            // Some(CheckMechanism::Hash(generate_hash(full_path)))
+            // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
             // MTIME
             let curr_metadata = metadata(&full_path).unwrap();
             Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
