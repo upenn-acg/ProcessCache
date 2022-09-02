@@ -1,3 +1,4 @@
+use crossbeam::channel::{unbounded, Sender};
 use libc::{
     c_char, c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE, O_RDONLY,
     O_RDWR, O_WRONLY,
@@ -14,7 +15,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::mpsc::{self, channel, Receiver, Sender},
+    // sync::mpsc::{self, channel, Receiver, Sender},
     thread,
 };
 
@@ -54,7 +55,7 @@ use anyhow::{bail, Context, Result};
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
 const FACT_GEN: bool = false;
-const BACKGROUND_THREAD: bool = true;
+const BACKGROUND_THREADS: bool = true;
 
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
@@ -76,17 +77,22 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     }
 
     // Initialize the channel for communication between the tracer and background thread.
-    let (sender, receiver): (
-        Sender<Vec<(PathBuf, PathBuf)>>,
-        Receiver<Vec<(PathBuf, PathBuf)>>,
-    ) = mpsc::channel();
-    let option_handle = if BACKGROUND_THREAD {
-        let handle = thread::spawn(move || background_thread_copying_outputs(receiver));
-        Some(handle)
+    let (sender, receiver) = unbounded();
+
+    let option_handle_vec = if BACKGROUND_THREADS {
+        let mut handle_vec = Vec::new();
+        // HERE is where we can modify the number of background threads.
+        for _ in 0..5 {
+            let r2 = receiver.clone();
+            let handle = thread::spawn(move || background_thread_copying_outputs(r2));
+            handle_vec.push(handle);
+        }
+        Some(handle_vec)
     } else {
         None
     };
-    let option_sender = if BACKGROUND_THREAD {
+
+    let option_sender = if BACKGROUND_THREADS {
         Some(sender)
     } else {
         None
@@ -158,8 +164,10 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     if let Some(sender) = option_sender {
         drop(sender);
     }
-    if let Some(handle) = option_handle {
-        let _ = handle.join();
+    if let Some(handle_vec) = option_handle_vec {
+        for handle in handle_vec {
+            let _ = handle.join();
+        }
     }
     Ok(())
 }
@@ -178,7 +186,8 @@ pub async fn trace_process(
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
-    send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
+    // send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
+    send_end: Option<Sender<(PathBuf, PathBuf)>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -642,10 +651,14 @@ pub async fn trace_process(
 
                 curr_execution.update_postconditions(postconditions.clone());
                 if let Some(sender) = send_end {
-                    // Send background thread files to copy.
+                    // Get the (source, dest) pairs of files to copy.
                     let file_pairs =
                         generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
-                    sender.send(file_pairs).unwrap();
+
+                    // Send each pair to across the channel.
+                    for pair in file_pairs {
+                        sender.send(pair).unwrap();
+                    }
                 } else {
                     copy_output_files_to_cache(&curr_execution, postconditions);
                 }
