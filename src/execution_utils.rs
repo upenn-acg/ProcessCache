@@ -28,13 +28,13 @@ const DONT_HASH_FILES: bool = false;
 pub fn background_thread_copying_outputs(recv_end: Receiver<(PathBuf, PathBuf)>) {
     loop {
         if let Ok((source, dest)) = recv_end.recv() {
-            // fs::copy(source.clone(), dest).unwrap();
+            fs::copy(source.clone(), dest).unwrap();
 
-            // let source_str = source.clone().into_os_string().into_string().unwrap();
-            // // The thread removes the old stdout files once t
-            // if source_str.contains("stdout") {
-            //     fs::remove_file(source).unwrap();
-            // }
+            let source_str = source.clone().into_os_string().into_string().unwrap();
+            // The thread removes the old stdout files once t
+            if source_str.contains("stdout") {
+                fs::remove_file(source).unwrap();
+            }
         } else {
             break;
         }
