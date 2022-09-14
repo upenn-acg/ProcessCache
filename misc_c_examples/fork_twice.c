@@ -6,13 +6,13 @@
 
 int main() {
     if (fork() == 0) { 
-        char* args[] = {"./empty_c", NULL};
-        execvp("./empty_c", args);
+        char* args[] = {"./write_file2", NULL};
+        execvp("./write_file2", args);
         exit(EXIT_SUCCESS);
     } else {
         if (fork() == 0) {
-            char* args[] = {"./empty_c", NULL};
-            execvp("./empty_c", args);
+            char* args[] = {"./write_file3", NULL};
+            execvp("./write_file3", args);
             exit(EXIT_SUCCESS);
         } else {
             printf("Hello from parent\n");

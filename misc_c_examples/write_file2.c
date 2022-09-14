@@ -8,7 +8,7 @@
 int main() {
     int fd1, bytes;
     // Program opens file for reading.
-    fd1 = openat(AT_FDCWD, "/home/kelly/research/IOTracker/misc_c_examples/file2.txt", O_WRONLY | O_APPEND);
+    fd1 = openat(AT_FDCWD, "file2.txt", O_WRONLY | O_APPEND);
     char buf[7];
     // Program reads some crap in.
     bytes = write(fd1, "I'm just writing stuff to this file right here  lalala\n", 56);

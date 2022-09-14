@@ -132,35 +132,65 @@ impl Ptracer {
         Ok(InjectedHandle::new(original_regs))
     }
 
-    /// TODO: This could probably be optimized to use process_vm_read instead.
-    /// Currently this function read 8 bytes at a time for strings, which is probably waaayy slow!
+    /// "New" better version.
     pub(crate) fn read_c_string(&self, address: *const c_char) -> anyhow::Result<String> {
         ensure!(!address.is_null(), context!("Address is null."));
 
-        let address = address as *mut c_void;
-        let mut string = String::new();
-        // Move 8 bytes up each time for next read.
-        let mut count = 0;
-        let word_size = 8;
+        const NAME_MAX: usize = 256;
+        let mut c_string = String::with_capacity(NAME_MAX);
+        let mut address_counter = address as *const u8;
 
-        'done: loop {
-            let mut bytes: Vec<u8> = vec![];
-            let res = ptrace::read(self.curr_proc, unsafe { address.offset(count) })?;
+        loop {
+            // Read all bytes in a path.
+            let mut bytes = self
+                .read_bytes(address_counter, NAME_MAX)
+                .with_context(|| context!("Cannot read bytes from memory."))?;
+            address_counter = unsafe { address_counter.add(NAME_MAX) };
 
-            bytes.write_i64::<LittleEndian>(res).unwrap();
-            for b in bytes {
-                if b != 0 {
-                    string.push(b as char);
-                } else {
-                    break 'done;
+            match bytes.iter().position(|b| *b == 0) {
+                None => {
+                    let s: &str = std::str::from_utf8(bytes.as_slice()).unwrap();
+                    c_string.push_str(s);
+                }
+                Some(null_index) => {
+                    bytes.truncate(null_index);
+                    let s: &str = std::str::from_utf8(bytes.as_slice()).unwrap();
+                    c_string.push_str(s);
+                    break;
                 }
             }
-            count += word_size;
         }
 
-        // trace!(read_string = ?string);
-        Ok(string)
+        Ok(c_string)
     }
+
+    // pub(crate) fn read_c_string(&self, address: *const c_char) -> anyhow::Result<String> {
+    //     ensure!(!address.is_null(), context!("Address is null."));
+
+    //     let address = address as *mut c_void;
+    //     let mut string = String::new();
+    //     // Move 8 bytes up each time for next read.
+    //     let mut count = 0;
+    //     let word_size = 8;
+
+    //     'done: loop {
+    //         let mut bytes: Vec<u8> = vec![];
+    //         let res = ptrace::read(self.curr_proc, unsafe { address.offset(count) })?;
+
+    //         bytes.write_i64::<LittleEndian>(res).unwrap();
+    //         for b in bytes {
+    //             if b != 0 {
+    //                 string.push(b as char);
+    //             } else {
+    //                 break 'done;
+    //             }
+    //         }
+    //         count += word_size;
+    //     }
+
+    //     // trace!(read_string = ?string);
+    //     Ok(string)
+    // }
 
     /// TODO Not sure why the Copy trait bound is here. I was probably trying to say only "simple"
     /// types should be copied, e.g. types made up of just bytes. Should 'static be used as a
