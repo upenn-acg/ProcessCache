@@ -71,6 +71,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // trace process, so we don't accidentally overwrite it
     // within trace_process().
     let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
+    first_execution.set_to_root();
+
     if !(PTRACE_ONLY || FACT_GEN) {
         fs::create_dir_all(&cache_dir)
             .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
@@ -642,7 +644,8 @@ pub async fn trace_process(
                     let mut new_map = new_map;
 
                     for child in children {
-                        append_file_events(&mut new_map, child.file_events(), child.pid());
+                        let command = child.command();
+                        append_file_events(&mut new_map, command, child.file_events(), child.pid());
                     }
                     ExecFileEvents(new_map)
                 };
@@ -650,17 +653,25 @@ pub async fn trace_process(
                 let postconditions = generate_postconditions(new_events);
 
                 curr_execution.update_postconditions(postconditions.clone());
-                if let Some(sender) = send_end {
-                    // Get the (source, dest) pairs of files to copy.
-                    let file_pairs =
-                        generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
 
-                    // Send each pair to across the channel.
-                    for pair in file_pairs {
-                        sender.send(pair).unwrap();
+                // TODO: a flag?
+                // Here is where we send the files to be copied to the background threads.
+                // We want to skip this for the root execution (for benchmarking purposes).
+                if !curr_execution.is_root() {
+                    if let Some(sender) = send_end {
+                        // Get the (source, dest) pairs of files to copy.
+                        let file_pairs = generate_list_of_files_to_copy_to_cache(
+                            &curr_execution,
+                            postconditions,
+                        );
+
+                        // Send each pair to across the channel.
+                        for pair in file_pairs {
+                            sender.send(pair).unwrap();
+                        }
+                    } else {
+                        copy_output_files_to_cache(&curr_execution, postconditions);
                     }
-                } else {
-                    copy_output_files_to_cache(&curr_execution, postconditions);
                 }
             }
         }

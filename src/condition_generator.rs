@@ -13,7 +13,7 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
+use crate::{syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome}, cache_utils::Command};
 use crate::{cache_utils::generate_hash, condition_utils::FileType};
 use crate::{
     condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State},
@@ -21,15 +21,23 @@ use crate::{
 };
 
 const DONT_HASH_FILES: bool = false;
+
+// Who done the accessin'?
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Accessor {
+    ChildProc(Command, PathBuf),
+    CurrProc(PathBuf),
+}
+
 // Actual accesses to the file system performed by
 // a successful execution.
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecFileEvents(pub HashMap<PathBuf, Vec<SyscallEvent>>);
+pub struct ExecFileEvents(pub HashMap<Accessor, Vec<SyscallEvent>>);
 
 impl ExecFileEvents {
-    pub fn new(map: HashMap<PathBuf, Vec<SyscallEvent>>) -> ExecFileEvents {
+    pub fn new(map: HashMap<Accessor, Vec<SyscallEvent>>) -> ExecFileEvents {
         ExecFileEvents(map)
     }
 
@@ -50,13 +58,13 @@ impl ExecFileEvents {
 
         s.in_scope(|| "in add_new_file_event");
         // First case, we already saw this file and now we are adding another event to it.
-        if let Some(event_list) = self.0.get_mut(&full_path) {
+        if let Some(event_list) = self.0.get_mut(&Accessor::CurrProc(full_path)) {
             s.in_scope(|| "adding to existing event list");
             event_list.push(file_event);
         } else {
             let event_list = vec![file_event];
             s.in_scope(|| "adding new event list");
-            self.0.insert(full_path, event_list);
+            self.0.insert(Accessor::CurrProc(full_path), event_list);
         }
     }
 
@@ -66,11 +74,11 @@ impl ExecFileEvents {
         }
     }
 
-    pub fn events(&self) -> HashMap<PathBuf, Vec<SyscallEvent>> {
+    pub fn events(&self) -> HashMap<Accessor, Vec<SyscallEvent>> {
         self.0.clone()
     }
 
-    pub fn update_events(&mut self, new_events: HashMap<PathBuf, Vec<SyscallEvent>>) {
+    pub fn update_events(&mut self, new_events: HashMap<Accessor, Vec<SyscallEvent>>) {
         self.0 = new_events;
     }
 }
@@ -236,11 +244,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
     let sys_span = span!(Level::INFO, "generate_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
-    for full_path in exec_file_events.events().keys() {
-        curr_file_preconditions.insert(full_path.clone(), HashSet::new());
+    for accessor in exec_file_events.events().keys() {
+        // For preconditions, I am not concerned with with who accessed.
+        let path = match accessor {
+            Accessor::ChildProc(_, full_path) => full_path,
+            Accessor::CurrProc(full_path) => full_path,
+        };
+        curr_file_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
-    for (full_path, event_list) in exec_file_events.events() {
+    for (accessor, event_list) in exec_file_events.events() {
+        let full_path = match accessor {
+            Accessor::ChildProc(_, path) => path,
+            Accessor::CurrProc(path) => path,
+        };
+        
         let mut first_state_struct = FirstState(State::None);
         let mut curr_state_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
@@ -1068,7 +1086,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> HashMap<PathB
                 (SyscallEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
                     if *new_path == full_path {
                         // We actually have to add the stat struct matching to the old path's
-                        if let Some(list) = exec_file_events.events().get(&old_path.clone()) {
+                        if let Some(list) = exec_file_events.events().get(&Accessor::CurrProc(*old_path)) {
+                            // &old_path.clone()
                             let no_mods_before_rename = no_mods_before_rename(list.to_vec());
                             if no_mods_before_rename {
                                 let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();

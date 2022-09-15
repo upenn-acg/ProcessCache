@@ -1,7 +1,7 @@
 use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
-    condition_generator::{generate_preconditions, ExecFileEvents},
+    condition_generator::{generate_preconditions, ExecFileEvents, Accessor},
     condition_utils::{Conditions, Fact},
     syscalls::SyscallEvent,
 };
@@ -91,6 +91,7 @@ pub struct Execution {
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
     file_events: ExecFileEvents,
+    is_root: bool,
     postconditions: Conditions,
     successful_exec: ExecMetadata,
 }
@@ -101,6 +102,7 @@ impl Execution {
             child_execs: Vec::new(),
             exit_code: None,
             file_events: ExecFileEvents::new(HashMap::new()),
+            is_root: false,
             postconditions: HashMap::new(),
             successful_exec: ExecMetadata::new(calling_pid),
         }
@@ -136,6 +138,10 @@ impl Execution {
 
     fn children(&self) -> Vec<RcExecution> {
         self.child_execs.clone()
+    }
+
+    fn command(&self) -> Command {
+        self.successful_exec.command()
     }
 
     fn env_vars(&self) -> Vec<String> {
@@ -207,12 +213,20 @@ impl Execution {
         self.successful_exec.is_empty_root_exec()
     }
 
+    fn is_root(&self) -> bool {
+        self.is_root
+    }
+
     fn pid(&self) -> Pid {
         self.successful_exec.caller_pid()
     }
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.successful_exec.starting_cwd()
+    }
+
+    fn set_to_root(&mut self) {
+        self.is_root = true;
     }
 
     fn update_file_events(&mut self, file_events: ExecFileEvents) {
@@ -279,6 +293,10 @@ impl RcExecution {
         self.0.borrow().children()
     }
 
+    pub fn command(&self) -> Command {
+        self.0.borrow().command()
+    }    
+
     // pub fn env_vars(&self) -> Vec<String> {
     //     self.0.borrow().env_vars()
     // }
@@ -302,8 +320,15 @@ impl RcExecution {
         self.0.borrow().generate_cached_exec(cache_map)
     }
 
+    // Tells us that the Execution struct has not been filled
+    // in (this is the root proc and it has not execve'd yet).
     pub fn is_empty_root_exec(&self) -> bool {
         self.0.borrow().is_empty_root_exec()
+    }
+
+    // Just tells us whether this is the root process.
+    pub fn is_root(&self) -> bool {
+        self.0.borrow().is_root()
     }
 
     pub fn pid(&self) -> Pid {
@@ -314,6 +339,9 @@ impl RcExecution {
         self.0.borrow().populate_cache_map(cache_map)
     }
 
+    pub fn set_to_root(&self) {
+        self.0.borrow_mut().set_to_root()
+    }
     // pub fn exit_code(&self) -> Option<i32> {
     //     self.execution.borrow().exit_code()
     // }
@@ -338,7 +366,8 @@ impl RcExecution {
 }
 
 pub fn append_file_events(
-    parent_events: &mut HashMap<PathBuf, Vec<SyscallEvent>>,
+    parent_events: &mut HashMap<Accessor, Vec<SyscallEvent>>,
+    child_command: Command,
     child_events: ExecFileEvents,
     child_pid: Pid,
 ) {
@@ -350,7 +379,7 @@ pub fn append_file_events(
     // whether we have personally seen the file or not.
 
     for (path_name, child_file_event_list) in child_events {
-        if let Some(parents_event_list) = parent_events.get(&path_name) {
+        if let Some(parents_event_list) = parent_events.get(&Accessor::CurrProc(path_name)) {
             // If the parent HAS touched this resource, we need to
             // - get the parent's event list
             // - remove the ChildExec event from the parent's list
@@ -365,12 +394,12 @@ pub fn append_file_events(
                 let mut new_events = before_events.to_vec();
                 new_events.append(&mut childs_events);
                 new_events.append(&mut after_events.to_vec());
-                parent_events.insert(path_name, new_events);
+                parent_events.insert(Accessor::CurrProc(path_name), new_events);
             }
         } else {
             // If the parent has never touched this file we must copy the child's
             // events to the parent's map.
-            parent_events.insert(path_name, child_file_event_list);
+            parent_events.insert(Accessor::ChildProc(child_command, path_name), child_file_event_list);
         }
     }
 }
