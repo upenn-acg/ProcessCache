@@ -1,7 +1,7 @@
 use crate::{
     cache_utils::{hash_command, CachedExecMetadata, Command},
-    condition_generator::check_preconditions,
-    condition_utils::{Conditions, Fact},
+    condition_generator::{check_preconditions, Accessor},
+    condition_utils::{Fact, Preconditions, Postconditions},
 };
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -29,16 +29,16 @@ pub type CacheMap = HashMap<Command, RcCachedExec>;
 pub struct CachedExecution {
     cached_metadata: CachedExecMetadata,
     child_execs: Vec<RcCachedExec>,
-    preconditions: Conditions,
-    postconditions: Conditions,
+    preconditions: Preconditions,
+    postconditions: Postconditions,
 }
 
 impl CachedExecution {
     pub fn new(
         cached_metadata: CachedExecMetadata,
         child_execs: Vec<RcCachedExec>,
-        preconditions: Conditions,
-        postconditions: Conditions,
+        preconditions: Preconditions,
+        postconditions: Postconditions,
     ) -> CachedExecution {
         CachedExecution {
             cached_metadata,
@@ -52,11 +52,11 @@ impl CachedExecution {
         self.child_execs.push(child)
     }
 
-    pub fn add_postconditions(&mut self, posts: Conditions) {
+    pub fn add_postconditions(&mut self, posts: Postconditions) {
         self.postconditions = posts;
     }
 
-    pub fn add_preconditions(&mut self, pres: Conditions) {
+    pub fn add_preconditions(&mut self, pres: Preconditions) {
         self.preconditions = pres;
     }
 
@@ -103,8 +103,8 @@ impl CachedExecution {
             }
         }
 
-        for (file, fact_set) in postconditions {
-            apply_transition_function(cache_subdir.clone(), fact_set, file);
+        for (accessor, fact_set) in postconditions {
+            apply_transition_function(accessor, cache_subdir.clone(), fact_set);
         }
     }
 
@@ -187,11 +187,11 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    pub fn preconditions(&self) -> Conditions {
+    pub fn preconditions(&self) -> Preconditions {
         self.preconditions.clone()
     }
 
-    pub fn postconditions(&self) -> Conditions {
+    pub fn postconditions(&self) -> Postconditions {
         self.postconditions.clone()
     }
 }
@@ -224,31 +224,60 @@ impl RcCachedExec {
         self.0.children()
     }
 
-    pub fn preconditions(&self) -> Conditions {
+    pub fn preconditions(&self) -> Preconditions {
         self.0.preconditions()
     }
 
-    pub fn postconditions(&self) -> Conditions {
+    pub fn postconditions(&self) -> Postconditions {
         self.0.postconditions()
     }
 }
 
-fn apply_transition_function(cache_subdir: PathBuf, fact_set: HashSet<Fact>, file: PathBuf) {
+fn apply_transition_function(accessor_and_file: Accessor, cache_subdir: PathBuf, fact_set: HashSet<Fact>) {
     for fact in fact_set {
         debug!("Applying transition for fact");
         match fact {
             Fact::DoesntExist => {
+                let file = match &accessor_and_file {
+                    Accessor::ChildProc(_, path) => path,
+                    Accessor::CurrProc(path) => path,
+                };
+
                 if file.exists() {
                     fs::remove_file(file.clone()).unwrap();
                 }
             }
             Fact::FinalContents | Fact::Exists => {
-                let file_name = file.file_name().unwrap();
-                let cache_file_location = cache_subdir.join(file_name);
-                debug!("cache file location: {:?}", cache_file_location);
-                debug!("og file path: {:?}", file);
-                if cache_file_location.exists() {
-                    fs::copy(cache_file_location, file.clone()).unwrap();
+                // Okay we want to copy the file from the cache to the correct
+                // output location.
+                match &accessor_and_file {
+                    Accessor::ChildProc(cmd, file) => {
+                        // Who done it? Child.
+                        // Ex: Child writes to foo. cache/child/foo
+                        // Parent will have this in its cache: cache/parent/child/foo
+                        let file_name = file.file_name().unwrap();
+                        let hashed_cmd = hash_command(cmd.clone());
+                        let childs_subdir_in_parents_cache = cache_subdir.join(hashed_cmd.to_string());
+                        let cache_file_location = childs_subdir_in_parents_cache.join(file_name);
+                        
+                        debug!("child's subdir in parent's cache: {:?}", childs_subdir_in_parents_cache);
+                        debug!("cache file location: {:?}", cache_file_location);
+                        debug!("og file path: {:?}", file);
+
+                        if cache_file_location.exists() {
+                            fs::copy(cache_file_location, file.clone()).unwrap();
+                        }
+                    }
+                    Accessor::CurrProc(file) => {
+                        // Simple case when curr proc was the writer of the file.
+                        let file_name = file.file_name().unwrap();
+                        let cache_file_location = cache_subdir.join(file_name);
+                        debug!("cache file location: {:?}", cache_file_location);
+                        debug!("og file path: {:?}", file);
+                        if cache_file_location.exists() {
+                            fs::copy(cache_file_location, file.clone()).unwrap();
+                        }
+                    }
                 }
             }
             _ => (),
