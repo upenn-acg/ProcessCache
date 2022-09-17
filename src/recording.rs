@@ -427,27 +427,26 @@ pub fn copy_output_files_to_cache(
     }
 
     for (accessor, fact_set) in postconditions {
+
+        let (option_cmd, path) = match accessor {
+            Accessor::ChildProc(cmd, path) => (Some(cmd), path),
+            Accessor::CurrProc(path) => (None, path),
+        };
+
+        let cache_path = if let Some(cmd) = option_cmd {
+            let child_hashed_cmd = hash_command(cmd);
+            let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(child_hashed_cmd.to_string());
+            if !childs_subdir_in_parents_cache.exists() {
+                fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
+            }
+            childs_subdir_in_parents_cache.join(path.file_name().unwrap())
+        } else {
+            cache_subdir_hashed_command.join(path.file_name().unwrap())
+        };
+
         for fact in fact_set {
-            if fact == Fact::Exists || fact == Fact::FinalContents {
-
-                let (og_path, cache_path) = match accessor {
-                    Accessor::ChildProc(cmd, path) => {
-                        let hashed_child_command = hash_command(cmd);
-                        let child_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_child_command.to_string());
-                        if !child_subdir_in_parents_cache.exists() {
-                            fs::create_dir(child_subdir_in_parents_cache.clone()).unwrap();
-                        }
-
-                        (path.clone(), child_subdir_in_parents_cache.join(path.file_name().unwrap()))
-                    }
-                    Accessor::CurrProc(path) => {
-                        (path.clone(), cache_subdir_hashed_command.join(path.file_name().unwrap()))
-                    }
-                };
-
-                if og_path.clone().exists() {
-                    fs::copy(og_path.clone(), cache_path).unwrap();
-                }
+            if (fact == Fact::Exists || fact == Fact::FinalContents) && path.clone().exists() {
+                fs::copy(path.clone(), cache_path.clone()).unwrap();
             }
         }
     }
@@ -484,14 +483,14 @@ pub fn copy_output_files_to_cache(
         //     "Child's cached stdout path: {:?}",
         //     childs_cached_stdout_path
         // );
+        let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_command.to_string());
         let parents_spot_for_childs_stdout =
-            cache_subdir_hashed_command.join(childs_cached_stdout_file);
-        // println!(
-        //     "Parent's cached stdout path for child: {:?}",
-        //     parents_spot_for_childs_stdout
-        // );
+            childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
+
+        // We want to hardlink instead of actually copying if it's a child's output file.
         if childs_cached_stdout_path.exists() {
-            fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+            // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+            fs::hard_link(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
         }
     }
 }
@@ -522,34 +521,25 @@ pub fn generate_list_of_files_to_copy_to_cache(
             Accessor::CurrProc(path) => (None, path),
         };
 
-        let cache_subdir = if let Some(comm) = option_comm {
+        let cache_path = if let Some(comm) = option_comm {
             let hashed_command = hash_command(comm);
-
+            let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_command.to_string());
+            if !childs_subdir_in_parents_cache.exists() {
+                fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
+            }
+            childs_subdir_in_parents_cache.join(path.file_name().unwrap())
         } else {
             cache_subdir_hashed_command.join(path.file_name().unwrap())
-        }
+        };
+        
         for fact in fact_set {
-            if fact == Fact::Exists || fact == Fact::FinalContents {
-                match accessor {
-                    Accessor::ChildProc(cmd, path) => {
-                        let hashed_command = hash_command(cmd);
-                        let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_command.to_string());
-                        let cache_path = childs_subdir_in_parents_cache.join(path.file_name().unwrap());
-                        if path.exists() {
-                            list_of_files.push((path, cache_path));
-                        }
-                    }
-                    Accessor::CurrProc(path) => {
-                        let cache_path = cache_subdir_hashed_command.join(path.file_name().unwrap());
-                        if path.exists() {
-                            list_of_files.push((path, cache_path));
-                        }
-                    }
-                }
+            if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
+                list_of_files.push((path.clone(), cache_path.clone()));
             }
         }
     }
 
+    // Start here?
     // The current proc's stdout file.
     let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
     let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
@@ -573,8 +563,8 @@ pub fn generate_list_of_files_to_copy_to_cache(
     let children = curr_execution.children();
     for child in children {
         let child_command = Command(child.executable(), child.args());
-        let hashed_command = hash_command(child_command);
-        let child_subdir = cache_dir.join(hashed_command.to_string());
+        let hashed_child_command = hash_command(child_command);
+        let child_subdir = cache_dir.join(hashed_child_command.to_string());
 
         if !child_subdir.exists() {
             fs::create_dir(child_subdir.clone()).unwrap();
@@ -582,8 +572,9 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
+        let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_child_command.to_string());
         let parents_spot_for_childs_stdout =
-            cache_subdir_hashed_command.join(childs_cached_stdout_file);
+            childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
         if childs_cached_stdout_path.exists() {
             // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
             list_of_files.push((childs_cached_stdout_path, parents_spot_for_childs_stdout))

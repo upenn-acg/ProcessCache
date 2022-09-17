@@ -30,6 +30,22 @@ pub enum Accessor {
     CurrProc(PathBuf),
 }
 
+impl Accessor {
+    pub fn path(&self) -> &PathBuf {
+        match self {
+            Accessor::ChildProc(_, path) => path,
+            Accessor::CurrProc(path) => path,
+        }
+    }
+
+    pub fn command(&self) -> Option<Command> {
+        match self {
+            Accessor::ChildProc(cmd, _) => Some(cmd.clone()),
+            _ => None,
+        }
+    }
+}
+
 // Actual accesses to the file system performed by
 // a successful execution.
 // Full path mapped to
@@ -1184,10 +1200,11 @@ pub fn generate_postconditions(
     for (accessor, event_list) in exec_file_events.events() {
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);
-        let full_path = match accessor {
-            Accessor::ChildProc(_, path) => path,
-            Accessor::CurrProc(path) => path, 
+        let (full_path, option_cmd) = match accessor.clone() {
+            Accessor::ChildProc(cmd, path) => (path, Some(cmd)),
+            Accessor::CurrProc(path) => (path, None), 
         };
+
 
         for event in event_list {
             let first_state = first_state_struct.state();
@@ -1271,7 +1288,7 @@ pub fn generate_postconditions(
                     if outcome == SyscallOutcome::Success && full_path == *new_path {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor, new_set);
+                        curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
@@ -1280,14 +1297,14 @@ pub fn generate_postconditions(
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor, new_set);
+                        curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor, new_set);
+                        curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(_), State::Exists, Mod::Deleted) => (),
@@ -1295,7 +1312,7 @@ pub fn generate_postconditions(
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor, new_set);
+                        curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
                 (SyscallEvent::Delete(outcome), State::None, Mod::None) => {
@@ -1369,20 +1386,21 @@ pub fn generate_postconditions(
                     Mod::Created | Mod::Modified,
                 ) => {
                     if outcome == SyscallOutcome::Success && old_path == full_path {
-                        let new_accessor = match accessor {
-                            Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd, new_path),
-                            Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                        let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                            Accessor::ChildProc(cmd, new_path)
+                        } else {
+                            Accessor::CurrProc(new_path)
                         };
                         
                         if curr_file_postconditions.contains_key(&accessor) {
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
                             // We have never seen old path before.
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                             // new path is just "exists", that's all we know!
                             curr_file_postconditions
                                 .insert(new_accessor , HashSet::from([Fact::Exists]));
@@ -1394,9 +1412,10 @@ pub fn generate_postconditions(
                     State::DoesntExist,
                     Mod::Renamed(_, last_new_path),
                 ) => {
-                    let new_accessor = match accessor {
-                        Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd, new_path),
-                        Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
                     };
 
                     // This file is getting renamed. Again. For some god damn reason.
@@ -1405,7 +1424,7 @@ pub fn generate_postconditions(
                         // let _ = curr_file_postconditions.remove(&new_path);
                         curr_file_postconditions.insert(new_accessor, curr_set);
                         curr_file_postconditions
-                            .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
@@ -1415,9 +1434,10 @@ pub fn generate_postconditions(
                     State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => {
-                    let new_accessor = match accessor {
-                        Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd, new_path),
-                        Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
                     };
 
                     if outcome == SyscallOutcome::Success && old_path == full_path {
@@ -1425,11 +1445,11 @@ pub fn generate_postconditions(
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
                             // We have never seen old path before.
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                             // new path is just "exists", that's all we know!
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
@@ -1441,9 +1461,10 @@ pub fn generate_postconditions(
                     State::Exists,
                     Mod::Renamed(_, _),
                 ) => {
-                    let new_accessor = match accessor {
-                        Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd, new_path),
-                        Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
                     };
 
                     // First state existing tells us this must be the old path
@@ -1453,11 +1474,11 @@ pub fn generate_postconditions(
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
                             // We have never seen old path before.
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                             // new path is just "exists", that's all we know!
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
@@ -1466,9 +1487,10 @@ pub fn generate_postconditions(
                 }
                 (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
                 (SyscallEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None) => {
-                    let new_accessor = match accessor {
-                        Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd, new_path),
-                        Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
                     };
                     
                     if outcome == SyscallOutcome::Success && full_path == old_path {
@@ -1476,11 +1498,11 @@ pub fn generate_postconditions(
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
                             // We have never seen old path before.
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                             // new path is just "exists", that's all we know!
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
@@ -1490,9 +1512,10 @@ pub fn generate_postconditions(
 
                 // We haven't seen old path before.
                 (SyscallEvent::Rename(old_path, new_path, outcome), State::None, Mod::None) => {
-                    let new_accessor = match accessor {
-                        Accessor::ChildProc(cmd, _) => Accessor::ChildProc(cmd.clone(), new_path),
-                        Accessor::CurrProc(_) => Accessor::CurrProc(new_path),
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
                     };
 
                     if outcome == SyscallOutcome::Success && full_path == old_path {
@@ -1500,7 +1523,7 @@ pub fn generate_postconditions(
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
                             curr_file_postconditions
-                                .insert(accessor, HashSet::from([Fact::DoesntExist]));
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
                             // We have never seen old path before.
                             curr_file_postconditions
