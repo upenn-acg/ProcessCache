@@ -2,7 +2,7 @@ use nix::{
     fcntl::OFlag,
     unistd::{access, AccessFlags, Pid},
 };
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -14,8 +14,12 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::{syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome}, cache_utils::Command, condition_utils::{Postconditions, Preconditions}};
 use crate::{cache_utils::generate_hash, condition_utils::FileType};
+use crate::{
+    cache_utils::Command,
+    condition_utils::{Postconditions, Preconditions},
+    syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome},
+};
 use crate::{
     condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
@@ -275,7 +279,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
             Accessor::ChildProc(_, path) => path,
             Accessor::CurrProc(path) => path,
         };
-        
+
         let mut first_state_struct = FirstState(State::None);
         let mut curr_state_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
@@ -1185,9 +1189,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
 
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-pub fn generate_postconditions(
-    exec_file_events: ExecFileEvents,
-) -> Postconditions {
+pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditions {
     let sys_span = span!(Level::INFO, "generate_file_postconditions");
     let _ = sys_span.enter();
 
@@ -1202,9 +1204,8 @@ pub fn generate_postconditions(
         let mut last_mod_struct = LastMod(Mod::None);
         let (full_path, option_cmd) = match accessor.clone() {
             Accessor::ChildProc(cmd, path) => (path, Some(cmd)),
-            Accessor::CurrProc(path) => (path, None), 
+            Accessor::CurrProc(path) => (path, None),
         };
-
 
         for event in event_list {
             let first_state = first_state_struct.state();
@@ -1391,7 +1392,7 @@ pub fn generate_postconditions(
                         } else {
                             Accessor::CurrProc(new_path)
                         };
-                        
+
                         if curr_file_postconditions.contains_key(&accessor) {
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();
                             curr_file_postconditions.insert(new_accessor, old_set);
@@ -1403,7 +1404,7 @@ pub fn generate_postconditions(
                                 .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                             // new path is just "exists", that's all we know!
                             curr_file_postconditions
-                                .insert(new_accessor , HashSet::from([Fact::Exists]));
+                                .insert(new_accessor, HashSet::from([Fact::Exists]));
                         }
                     }
                 }
@@ -1492,7 +1493,7 @@ pub fn generate_postconditions(
                     } else {
                         Accessor::CurrProc(new_path)
                     };
-                    
+
                     if outcome == SyscallOutcome::Success && full_path == old_path {
                         if curr_file_postconditions.contains_key(&accessor) {
                             let old_set = curr_file_postconditions.remove(&accessor).unwrap();

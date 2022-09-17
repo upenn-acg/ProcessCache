@@ -16,27 +16,27 @@ use nix::{
 use tracing::debug;
 
 use crate::{
-    cache_utils::{generate_hash, hash_command, Command},
+    cache_utils::{hash_command, Command},
     context,
-    recording::RcExecution,
+    recording::{LinkType, RcExecution},
     syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome},
     Ptracer,
 };
 
 const DONT_HASH_FILES: bool = false;
 
-pub fn background_thread_copying_outputs(recv_end: Receiver<(PathBuf, PathBuf)>) {
-    loop {
-        if let Ok((source, dest)) = recv_end.recv() {
+pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, PathBuf)>) {
+    while let Ok((link_type, source, dest)) = recv_end.recv() {
+        if link_type == LinkType::Copy {
             fs::copy(source.clone(), dest).unwrap();
-
-            let source_str = source.clone().into_os_string().into_string().unwrap();
-            // The thread removes the old stdout files once t
-            if source_str.contains("stdout") {
-                fs::remove_file(source).unwrap();
-            }
         } else {
-            break;
+            fs::hard_link(source.clone(), dest).unwrap();
+        }
+
+        let source_str = source.clone().into_os_string().into_string().unwrap();
+        // The thread removes the old stdout files once they have been moved to the cache.
+        if source_str.contains("stdout") {
+            fs::remove_file(source).unwrap();
         }
     }
 }

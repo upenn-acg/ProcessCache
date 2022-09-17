@@ -8,10 +8,7 @@ use std::ffi::CString;
 use std::mem::size_of;
 use std::{mem, slice};
 
-use byteorder::LittleEndian;
 use nix::sys::signal::Signal;
-
-use byteorder::WriteBytesExt;
 
 use crate::context;
 use crate::regs::Modified;

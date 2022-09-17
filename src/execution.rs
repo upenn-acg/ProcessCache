@@ -20,9 +20,10 @@ use std::{
 };
 
 use crate::{
-    async_runtime::AsyncRuntime, condition_utils::FileType,
+    async_runtime::AsyncRuntime,
+    condition_utils::FileType,
     execution_utils::background_thread_copying_outputs,
-    recording::generate_list_of_files_to_copy_to_cache,
+    recording::{generate_list_of_files_to_copy_to_cache, LinkType},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -189,7 +190,7 @@ pub async fn trace_process(
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
     // send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
-    send_end: Option<Sender<(PathBuf, PathBuf)>>,
+    send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));

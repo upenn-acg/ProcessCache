@@ -1,7 +1,7 @@
 use crate::{
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{check_preconditions, Accessor},
-    condition_utils::{Fact, Preconditions, Postconditions},
+    condition_utils::{Fact, Postconditions, Preconditions},
 };
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -233,7 +233,11 @@ impl RcCachedExec {
     }
 }
 
-fn apply_transition_function(accessor_and_file: Accessor, cache_subdir: PathBuf, fact_set: HashSet<Fact>) {
+fn apply_transition_function(
+    accessor_and_file: Accessor,
+    cache_subdir: PathBuf,
+    fact_set: HashSet<Fact>,
+) {
     for fact in fact_set {
         debug!("Applying transition for fact");
         match fact {
@@ -257,10 +261,14 @@ fn apply_transition_function(accessor_and_file: Accessor, cache_subdir: PathBuf,
                         // Parent will have this in its cache: cache/parent/child/foo
                         let file_name = file.file_name().unwrap();
                         let hashed_cmd = hash_command(cmd.clone());
-                        let childs_subdir_in_parents_cache = cache_subdir.join(hashed_cmd.to_string());
+                        let childs_subdir_in_parents_cache =
+                            cache_subdir.join(hashed_cmd.to_string());
                         let cache_file_location = childs_subdir_in_parents_cache.join(file_name);
-                        
-                        debug!("child's subdir in parent's cache: {:?}", childs_subdir_in_parents_cache);
+
+                        debug!(
+                            "child's subdir in parent's cache: {:?}",
+                            childs_subdir_in_parents_cache
+                        );
                         debug!("cache file location: {:?}", cache_file_location);
                         debug!("og file path: {:?}", file);
 

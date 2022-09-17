@@ -1,7 +1,7 @@
 use crate::{
-    cache::{CacheMap, CachedExecution, RcCachedExec},
+    cache::{self, CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
-    condition_generator::{generate_preconditions, ExecFileEvents, Accessor},
+    condition_generator::{generate_preconditions, Accessor, ExecFileEvents},
     condition_utils::{Fact, Postconditions},
     syscalls::SyscallEvent,
 };
@@ -13,10 +13,16 @@ use std::{
     hash::Hash,
     io::{self, Read, Write},
     path::PathBuf,
-    rc::Rc, ptr::hash,
+    rc::Rc,
 };
 
 pub type ChildExecutions = Vec<RcExecution>;
+
+#[derive(Clone, Eq, PartialEq, PartialOrd, Ord)]
+pub enum LinkType {
+    Copy,
+    Hardlink,
+}
 
 // Info about the execution that we want to keep around
 // even if the execution fails (so we know it should fail
@@ -295,7 +301,7 @@ impl RcExecution {
 
     pub fn command(&self) -> Command {
         self.0.borrow().command()
-    }    
+    }
 
     // pub fn env_vars(&self) -> Vec<String> {
     //     self.0.borrow().env_vars()
@@ -403,7 +409,10 @@ pub fn append_file_events(
                 Accessor::ChildProc(_, path) => path,
                 Accessor::CurrProc(path) => path,
             };
-            parent_events.insert(Accessor::ChildProc(child_command.clone(), path), child_file_event_list);
+            parent_events.insert(
+                Accessor::ChildProc(child_command.clone(), path),
+                child_file_event_list,
+            );
         }
     }
 }
@@ -427,26 +436,45 @@ pub fn copy_output_files_to_cache(
     }
 
     for (accessor, fact_set) in postconditions {
-
         let (option_cmd, path) = match accessor {
             Accessor::ChildProc(cmd, path) => (Some(cmd), path),
             Accessor::CurrProc(path) => (None, path),
         };
 
-        let cache_path = if let Some(cmd) = option_cmd {
+        // For regular files the parent accessed: copy the file from its OG path to the parent's
+        // cache subdir.
+        // For child's files: copy from cache/childs_cache/file -->  cache/parents_cache/childs_cache/file
+        let (source_path, destination_path, is_child) = if let Some(cmd) = option_cmd {
             let child_hashed_cmd = hash_command(cmd);
-            let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(child_hashed_cmd.to_string());
+            let childs_subdir_in_parents_cache =
+                cache_subdir_hashed_command.join(child_hashed_cmd.to_string());
             if !childs_subdir_in_parents_cache.exists() {
                 fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
             }
-            childs_subdir_in_parents_cache.join(path.file_name().unwrap())
+            let childs_cache_path = cache_dir.join(child_hashed_cmd.to_string());
+            let childs_cache_path = childs_cache_path.join(path.file_name().unwrap());
+            (
+                childs_cache_path,
+                childs_subdir_in_parents_cache.join(path.file_name().unwrap()),
+                true,
+            )
         } else {
-            cache_subdir_hashed_command.join(path.file_name().unwrap())
+            (
+                path.clone(),
+                cache_subdir_hashed_command.join(path.file_name().unwrap()),
+                false,
+            )
         };
 
         for fact in fact_set {
             if (fact == Fact::Exists || fact == Fact::FinalContents) && path.clone().exists() {
-                fs::copy(path.clone(), cache_path.clone()).unwrap();
+                if is_child {
+                    // If it's a child's file, then we need to copy from the
+                    // child's cache to the parent's.
+                    fs::hard_link(source_path.clone(), destination_path.clone()).unwrap();
+                } else {
+                    fs::copy(source_path.clone(), destination_path.clone()).unwrap();
+                }
             }
         }
     }
@@ -483,7 +511,8 @@ pub fn copy_output_files_to_cache(
         //     "Child's cached stdout path: {:?}",
         //     childs_cached_stdout_path
         // );
-        let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_command.to_string());
+        let childs_subdir_in_parents_cache =
+            cache_subdir_hashed_command.join(hashed_command.to_string());
         let parents_spot_for_childs_stdout =
             childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
 
@@ -501,8 +530,8 @@ pub fn generate_list_of_files_to_copy_to_cache(
     // pid: Pid,
     postconditions: Postconditions,
     // starting_cwd: PathBuf,
-) -> Vec<(PathBuf, PathBuf)> {
-    let mut list_of_files: Vec<(PathBuf, PathBuf)> = Vec::new();
+) -> Vec<(LinkType, PathBuf, PathBuf)> {
+    let mut list_of_files: Vec<(LinkType, PathBuf, PathBuf)> = Vec::new();
 
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
@@ -521,20 +550,30 @@ pub fn generate_list_of_files_to_copy_to_cache(
             Accessor::CurrProc(path) => (None, path),
         };
 
-        let cache_path = if let Some(comm) = option_comm {
+        let (source_path, dest_path, link_type) = if let Some(comm) = option_comm {
             let hashed_command = hash_command(comm);
-            let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_command.to_string());
+            let childs_subdir_in_parents_cache =
+                cache_subdir_hashed_command.join(hashed_command.to_string());
             if !childs_subdir_in_parents_cache.exists() {
                 fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
             }
-            childs_subdir_in_parents_cache.join(path.file_name().unwrap())
+            let parents_location_for_child =
+                childs_subdir_in_parents_cache.join(path.file_name().unwrap());
+            let childs_cache_subdir = cache_dir.join(hashed_command.to_string());
+            let childs_cache_location = childs_cache_subdir.join(path.file_name().unwrap());
+            (
+                childs_cache_location,
+                parents_location_for_child,
+                LinkType::Hardlink,
+            )
         } else {
-            cache_subdir_hashed_command.join(path.file_name().unwrap())
+            let cache_location = cache_subdir_hashed_command.join(path.file_name().unwrap());
+            (path.clone(), cache_location, LinkType::Copy)
         };
-        
+
         for fact in fact_set {
             if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
-                list_of_files.push((path.clone(), cache_path.clone()));
+                list_of_files.push((link_type.clone(), source_path.clone(), dest_path.clone()));
             }
         }
     }
@@ -547,7 +586,11 @@ pub fn generate_list_of_files_to_copy_to_cache(
 
     if stdout_file_path.exists() {
         // fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
-        list_of_files.push((stdout_file_path.clone(), cache_stdout_file_path));
+        list_of_files.push((
+            LinkType::Copy,
+            stdout_file_path.clone(),
+            cache_stdout_file_path,
+        ));
         let mut f = File::open(stdout_file_path).unwrap();
         let mut buf = Vec::new();
         // Write the bytes to stdout.
@@ -572,12 +615,17 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
-        let childs_subdir_in_parents_cache = cache_subdir_hashed_command.join(hashed_child_command.to_string());
+        let childs_subdir_in_parents_cache =
+            cache_subdir_hashed_command.join(hashed_child_command.to_string());
         let parents_spot_for_childs_stdout =
             childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
         if childs_cached_stdout_path.exists() {
             // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
-            list_of_files.push((childs_cached_stdout_path, parents_spot_for_childs_stdout))
+            list_of_files.push((
+                LinkType::Hardlink,
+                childs_cached_stdout_path,
+                parents_spot_for_childs_stdout,
+            ))
         }
     }
 

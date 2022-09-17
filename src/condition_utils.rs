@@ -8,12 +8,15 @@ use libc::c_int;
 use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 
-use crate::{syscalls::{Stat, SyscallEvent, SyscallFailure, SyscallOutcome}, condition_generator::Accessor};
+use crate::{
+    condition_generator::Accessor,
+    syscalls::{Stat, SyscallEvent, SyscallFailure, SyscallOutcome},
+};
 
 pub type Preconditions = HashMap<PathBuf, HashSet<Fact>>;
- // Postconditions are a little different. We need to know
- // if the accessor was the child, so we can just link
- // that file baby. No copyin' required.
+// Postconditions are a little different. We need to know
+// if the accessor was the child, so we can just link
+// that file baby. No copyin' required.
 pub type Postconditions = HashMap<Accessor, HashSet<Fact>>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
