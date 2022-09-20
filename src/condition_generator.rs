@@ -16,13 +16,12 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use crate::{cache_utils::generate_hash, condition_utils::FileType};
 use crate::{
-    cache_utils::Command,
-    condition_utils::{Postconditions, Preconditions},
-    syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome},
-};
-use crate::{
     condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
+};
+use crate::{
+    condition_utils::{Postconditions, Preconditions},
+    syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome},
 };
 
 const DONT_HASH_FILES: bool = false;
@@ -30,21 +29,24 @@ const DONT_HASH_FILES: bool = false;
 // Who done the accessin'?
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Accessor {
-    ChildProc(Command, PathBuf),
+    // String = hash of the child's command.
+    // We know hashing is slow, let's do it one time,
+    // and just pass the results around.
+    ChildProc(String, PathBuf),
     CurrProc(PathBuf),
 }
 
 impl Accessor {
-    pub fn path(&self) -> &PathBuf {
+    pub fn path(&self) -> PathBuf {
         match self {
-            Accessor::ChildProc(_, path) => path,
-            Accessor::CurrProc(path) => path,
+            Accessor::ChildProc(_, path) => path.clone(),
+            Accessor::CurrProc(path) => path.clone(),
         }
     }
 
-    pub fn command(&self) -> Option<Command> {
+    pub fn hashed_command(&self) -> Option<String> {
         match self {
-            Accessor::ChildProc(cmd, _) => Some(cmd.clone()),
+            Accessor::ChildProc(hash, _) => Some(hash.clone()),
             _ => None,
         }
     }
@@ -97,10 +99,6 @@ impl ExecFileEvents {
 
     pub fn events(&self) -> HashMap<Accessor, Vec<SyscallEvent>> {
         self.0.clone()
-    }
-
-    pub fn update_events(&mut self, new_events: HashMap<Accessor, Vec<SyscallEvent>>) {
-        self.0 = new_events;
     }
 }
 

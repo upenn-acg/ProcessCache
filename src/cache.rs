@@ -52,10 +52,6 @@ impl CachedExecution {
         self.child_execs.push(child)
     }
 
-    pub fn add_postconditions(&mut self, posts: Postconditions) {
-        self.postconditions = posts;
-    }
-
     pub fn add_preconditions(&mut self, pres: Preconditions) {
         self.preconditions = pres;
     }
@@ -67,16 +63,6 @@ impl CachedExecution {
         let comm_hash = hash_command(self.command());
         let cache_subdir = cache_subdir.join(comm_hash.to_string());
         debug!("cache_subdir: {:?}", cache_subdir);
-
-        // let stdout_filename = format!("stdout_{:?}", self.cached_metadata.caller_pid());
-        // let cache_stdout_file_path = cache_subdir.join(stdout_filename);
-        // let mut f = File::open(cache_stdout_file_path).unwrap();
-        // let mut buf = Vec::new();
-        // let bytes = f.read_to_end(&mut buf).unwrap();
-        // if bytes != 0 {
-        //     io::stdout().write_all(&buf).unwrap();
-        // }
-
         let dir = read_dir(cache_subdir.clone()).unwrap();
 
         // get vec of all files that contain "stdout" in their file name
@@ -107,10 +93,6 @@ impl CachedExecution {
             apply_transition_function(accessor, cache_subdir.clone(), fact_set);
         }
     }
-
-    // pub fn caller_pid(&self) -> SessionId {
-    //     self.cached_metadata.caller_pid()
-    // }
 
     fn check_all_preconditions(&self) -> bool {
         let my_preconds = self.preconditions.clone();
@@ -179,16 +161,8 @@ impl CachedExecution {
         }
     }
 
-    fn children(&self) -> Vec<RcCachedExec> {
-        self.child_execs.clone()
-    }
-
     pub fn command(&self) -> Command {
         self.cached_metadata.command()
-    }
-
-    pub fn preconditions(&self) -> Preconditions {
-        self.preconditions.clone()
     }
 
     pub fn postconditions(&self) -> Postconditions {
@@ -219,23 +193,11 @@ impl RcCachedExec {
     pub fn check_all_preconditions_regardless(&self) {
         self.0.check_all_preconditions_regardless()
     }
-
-    pub fn children(&self) -> Vec<RcCachedExec> {
-        self.0.children()
-    }
-
-    pub fn preconditions(&self) -> Preconditions {
-        self.0.preconditions()
-    }
-
-    pub fn postconditions(&self) -> Postconditions {
-        self.0.postconditions()
-    }
 }
 
 fn apply_transition_function(
     accessor_and_file: Accessor,
-    cache_subdir: PathBuf,
+    parents_cache_subdir: PathBuf,
     fact_set: HashSet<Fact>,
 ) {
     for fact in fact_set {
@@ -255,31 +217,31 @@ fn apply_transition_function(
                 // Okay we want to copy the file from the cache to the correct
                 // output location.
                 match &accessor_and_file {
-                    Accessor::ChildProc(cmd, file) => {
+                    Accessor::ChildProc(hashed_child_cmd, file) => {
                         // Who done it? Child.
                         // Ex: Child writes to foo. cache/child/foo
                         // Parent will have this in its cache: cache/parent/child/foo
                         let file_name = file.file_name().unwrap();
-                        let hashed_cmd = hash_command(cmd.clone());
                         let childs_subdir_in_parents_cache =
-                            cache_subdir.join(hashed_cmd.to_string());
-                        let cache_file_location = childs_subdir_in_parents_cache.join(file_name);
+                            parents_cache_subdir.join(hashed_child_cmd);
+                        let childs_cache_file_location =
+                            childs_subdir_in_parents_cache.join(file_name);
 
                         debug!(
                             "child's subdir in parent's cache: {:?}",
                             childs_subdir_in_parents_cache
                         );
-                        debug!("cache file location: {:?}", cache_file_location);
+                        debug!("cache file location: {:?}", childs_cache_file_location);
                         debug!("og file path: {:?}", file);
 
-                        if cache_file_location.exists() {
-                            fs::copy(cache_file_location, file.clone()).unwrap();
+                        if childs_cache_file_location.exists() {
+                            fs::copy(childs_cache_file_location, file.clone()).unwrap();
                         }
                     }
                     Accessor::CurrProc(file) => {
                         // Simple case when curr proc was the writer of the file.
                         let file_name = file.file_name().unwrap();
-                        let cache_file_location = cache_subdir.join(file_name);
+                        let cache_file_location = parents_cache_subdir.join(file_name);
                         debug!("cache file location: {:?}", cache_file_location);
                         debug!("og file path: {:?}", file);
                         if cache_file_location.exists() {

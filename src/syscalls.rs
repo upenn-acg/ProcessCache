@@ -44,6 +44,7 @@ pub enum SyscallEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub enum CheckMechanism {
     DiffFiles,
     Mtime(i64),

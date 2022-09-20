@@ -118,7 +118,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // Copy output files... carefully --> can't just do /cache/commandhash/yada
     // because of potential collisions on the hash.
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
-    if !full_tracking_on && !first_execution.is_empty_root_exec() && !(PTRACE_ONLY || FACT_GEN) {
+    if !(full_tracking_on || first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
         // const CACHE_LOCATION: &str = "./cache/cache";
         // let cache_path = PathBuf::from(CACHE_LOCATION);
 
@@ -631,7 +631,7 @@ pub async fn trace_process(
             // if the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
             // instead of recomputing the child's along with its own
-            if !skip_execution && !(PTRACE_ONLY || FACT_GEN) {
+            if !(skip_execution || PTRACE_ONLY || FACT_GEN) {
                 // Add exit code to the exec struct, if this is the
                 // pid that exec'd the exec. execececececec.
                 // panic!("SHOULD NOT BE HERE");

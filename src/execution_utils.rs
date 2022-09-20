@@ -77,20 +77,18 @@ pub fn generate_open_syscall_file_event(
     // - COPYING FILES
     let optional_checking_mech = if DONT_HASH_FILES {
         None
+    } else if syscall_outcome.is_ok()
+        && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
+    {
+        // DIFF FILES
+        // Some(CheckMechanism::DiffFiles)
+        // HASH
+        // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+        // MTIME
+        let curr_metadata = metadata(&full_path).unwrap();
+        Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
     } else {
-        if syscall_outcome.is_ok()
-            && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
-        {
-            // DIFF FILES
-            // Some(CheckMechanism::DiffFiles)
-            // HASH
-            // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
-            // MTIME
-            let curr_metadata = metadata(&full_path).unwrap();
-            Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
-        } else {
-            None
-        }
+        None
     };
 
     if creat_flag {
