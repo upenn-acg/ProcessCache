@@ -186,6 +186,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_mremap)?;
     loader.let_pass(libc::SYS_munmap)?;
     loader.let_pass(libc::SYS_prlimit64)?;
+    loader.let_pass(libc::SYS_rseq)?;
     loader.let_pass(libc::SYS_rt_sigaction)?;
     loader.let_pass(libc::SYS_rt_sigprocmask)?;
     loader.let_pass(libc::SYS_rt_sigreturn)?;

@@ -29,14 +29,16 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
     while let Ok((link_type, source, dest)) = recv_end.recv() {
         if link_type == LinkType::Copy {
             fs::copy(source.clone(), dest).unwrap();
+            let source_str = source.clone().into_os_string().into_string().unwrap();
+            // The thread removes the old stdout files once they have been moved to the cache.
+            // We don't want to do this if we are hardlinking the child's stdout file from
+            // the child's cache to the parent's cache. Because then we are just deleting
+            // from the child's cache -.-
+            if source_str.contains("stdout") {
+                fs::remove_file(source).unwrap();
+            }
         } else {
             fs::hard_link(source.clone(), dest).unwrap();
-        }
-
-        let source_str = source.clone().into_os_string().into_string().unwrap();
-        // The thread removes the old stdout files once they have been moved to the cache.
-        if source_str.contains("stdout") {
-            fs::remove_file(source).unwrap();
         }
     }
 }
