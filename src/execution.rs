@@ -658,22 +658,20 @@ pub async fn trace_process(
                 // TODO: a flag?
                 // Here is where we send the files to be copied to the background threads.
                 // We want to skip this for the root execution (for benchmarking purposes).
-                if !curr_execution.is_root() {
-                    if let Some(sender) = send_end {
-                        // Get the (source, dest) pairs of files to copy.
-                        let file_pairs = generate_list_of_files_to_copy_to_cache(
-                            &curr_execution,
-                            postconditions,
-                        );
+                // if !curr_execution.is_root() {
+                if let Some(sender) = send_end {
+                    // Get the (source, dest) pairs of files to copy.
+                    let file_pairs =
+                        generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
 
-                        // Send each pair to across the channel.
-                        for pair in file_pairs {
-                            sender.send(pair).unwrap();
-                        }
-                    } else {
-                        copy_output_files_to_cache(&curr_execution, postconditions);
+                    // Send each pair to across the channel.
+                    for pair in file_pairs {
+                        sender.send(pair).unwrap();
                     }
+                } else {
+                    copy_output_files_to_cache(&curr_execution, postconditions);
                 }
+                // }
             }
         }
         other => bail!(
