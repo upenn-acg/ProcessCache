@@ -9,15 +9,7 @@ use nix::{
     sys::stat::FileStat,
     unistd::Pid,
 };
-use std::{
-    collections::HashMap,
-    ffi::CStr,
-    fs,
-    path::PathBuf,
-    rc::Rc,
-    // sync::mpsc::{self, channel, Receiver, Sender},
-    thread,
-};
+use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 
 use crate::{
     async_runtime::AsyncRuntime,
@@ -50,13 +42,21 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
 
+// These flags are optimizations to P$.
+// This one allows the user to skip caching the root execution
+// because it may just not be worth it anyway (think raxml).
+const DONT_CACHE_ROOT: bool = true;
+// Probably always going to be true? Why wouldn't you want background
+// thread copying for outputs, and at least parallel copying at the
+// end of execution.
+const BACKGROUND_THREADS: bool = true;
+
 // Flags for turning on and off different parts of process cache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
 const FACT_GEN: bool = false;
-const BACKGROUND_THREADS: bool = true;
 
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {

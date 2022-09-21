@@ -28,32 +28,28 @@ pub type CacheMap = HashMap<Command, RcCachedExec>;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecution {
     cached_metadata: CachedExecMetadata,
-    child_execs: Vec<RcCachedExec>,
-    preconditions: Preconditions,
-    postconditions: Postconditions,
+    is_ignored: bool,
+    preconditions: Option<Preconditions>,
+    postconditions: Option<Postconditions>,
 }
 
 impl CachedExecution {
     pub fn new(
         cached_metadata: CachedExecMetadata,
-        child_execs: Vec<RcCachedExec>,
-        preconditions: Preconditions,
-        postconditions: Postconditions,
+        is_ignored: bool,
+        preconditions: Option<Preconditions>,
+        postconditions: Option<Postconditions>,
     ) -> CachedExecution {
         CachedExecution {
             cached_metadata,
-            child_execs,
+            is_ignored,
             preconditions,
             postconditions,
         }
     }
 
-    pub fn add_child(&mut self, child: RcCachedExec) {
-        self.child_execs.push(child)
-    }
-
     pub fn add_preconditions(&mut self, pres: Preconditions) {
-        self.preconditions = pres;
+        self.preconditions = Some(pres);
     }
 
     fn apply_all_transitions(&self) {
@@ -65,6 +61,7 @@ impl CachedExecution {
         debug!("cache_subdir: {:?}", cache_subdir);
         let dir = read_dir(cache_subdir.clone()).unwrap();
 
+        // TODO: this doesn't make sense with the (now corrected) cache hierarchy setup.
         // get vec of all files that contain "stdout" in their file name
         let mut vec_of_stdout_files = Vec::new();
         for file in dir {
@@ -89,75 +86,75 @@ impl CachedExecution {
             }
         }
 
-        for (accessor, fact_set) in postconditions {
-            apply_transition_function(accessor, cache_subdir.clone(), fact_set);
+        // If an execution has no postconditions, it may just not have output files.
+        // That's not a reason to panic.
+        if let Some(posts) = postconditions {
+            if !self.is_ignored {
+                for (accessor, fact_set) in posts {
+                    apply_transition_function(accessor, cache_subdir.clone(), fact_set);
+                }
+            } else {
+                panic!("Should not be trying to apply transition function for ignored execution!!")
+            }
         }
     }
 
+    // TODO: this needs to work with the "ignored" stuff.
     fn check_all_preconditions(&self) -> bool {
-        let my_preconds = self.preconditions.clone();
-        let vars = std::env::vars();
-        let mut vec_vars = Vec::new();
-        for (first, second) in vars {
-            vec_vars.push(format!("{}={}", first, second));
+        if !self.is_ignored {
+            let my_preconds = self.preconditions.clone();
+            let vars = std::env::vars();
+            let mut vec_vars = Vec::new();
+            for (first, second) in vars {
+                vec_vars.push(format!("{}={}", first, second));
+            }
+
+            let curr_cwd = std::env::current_dir().unwrap();
+            if self.cached_metadata.starting_cwd() != curr_cwd {
+                debug!("starting cwd doesn't match");
+                debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
+                debug!("new cwd: {:?}", curr_cwd);
+                // panic!("cwd");
+                return false;
+            }
+
+            // Preconditions are recursively created now
+            // so we only have to check the root.
+
+            if let Some(preconds) = my_preconds {
+                check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()))
+            } else {
+                panic!("Trying to check preconditions for non-ignored cache entry but there are none!!")
+            }
+        } else {
+            false
         }
-
-        let curr_cwd = std::env::current_dir().unwrap();
-        if self.cached_metadata.starting_cwd() != curr_cwd {
-            debug!("starting cwd doesn't match");
-            debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
-            debug!("new cwd: {:?}", curr_cwd);
-            // panic!("cwd");
-            return false;
-        }
-
-        // Preconditions are recursively created now
-        // so we only have to check the root.
-        // if !check_preconditions(
-        //     my_preconds,
-        //     Pid::from_raw(self.cached_metadata.caller_pid()),
-        // ) {
-        //     return false;
-        // }
-
-        // let children = self.child_execs.clone();
-        // for child in children {
-        //     if !child.check_all_preconditions() {
-        //         return false;
-        //     }
-        // }
-        // true
-
-        check_preconditions(
-            my_preconds,
-            Pid::from_raw(self.cached_metadata.caller_pid()),
-        )
     }
 
     fn check_all_preconditions_regardless(&self) {
-        debug!("CHECKING ALL PRECONDS REGARDLESS!!");
-        let my_preconds = self.preconditions.clone();
-        let vars = std::env::vars();
-        let mut vec_vars = Vec::new();
-        for (first, second) in vars {
-            vec_vars.push(format!("{}={}", first, second));
-        }
+        if !self.is_ignored {
+            debug!("CHECKING ALL PRECONDS REGARDLESS!!");
+            let my_preconds = self.preconditions.clone();
+            let vars = std::env::vars();
+            let mut vec_vars = Vec::new();
+            for (first, second) in vars {
+                vec_vars.push(format!("{}={}", first, second));
+            }
 
-        let curr_cwd = std::env::current_dir().unwrap();
-        if self.cached_metadata.starting_cwd() != curr_cwd {
-            debug!("starting cwd doesn't match");
-            debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
-            debug!("new cwd: {:?}", curr_cwd);
-        }
+            let curr_cwd = std::env::current_dir().unwrap();
+            if self.cached_metadata.starting_cwd() != curr_cwd {
+                debug!("starting cwd doesn't match");
+                debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
+                debug!("new cwd: {:?}", curr_cwd);
+            }
 
-        check_preconditions(
-            my_preconds,
-            Pid::from_raw(self.cached_metadata.caller_pid()),
-        );
-
-        let children = self.child_execs.clone();
-        for child in children {
-            child.check_all_preconditions_regardless();
+            if let Some(preconds) = my_preconds {
+                if !self.is_ignored {
+                    check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
+                } else {
+                    panic!("Trying to check preconditions of ignored cached execution!!")
+                }
+            }
         }
     }
 
@@ -165,7 +162,7 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    pub fn postconditions(&self) -> Postconditions {
+    pub fn postconditions(&self) -> Option<Postconditions> {
         self.postconditions.clone()
     }
 }
