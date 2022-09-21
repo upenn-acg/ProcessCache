@@ -97,8 +97,9 @@ pub struct Execution {
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
     file_events: ExecFileEvents,
+    is_ignored: bool,
     is_root: bool,
-    postconditions: Postconditions,
+    postconditions: Option<Postconditions>,
     successful_exec: ExecMetadata,
 }
 
@@ -108,8 +109,9 @@ impl Execution {
             child_execs: Vec::new(),
             exit_code: None,
             file_events: ExecFileEvents::new(HashMap::new()),
+            is_ignored: false,
             is_root: false,
-            postconditions: HashMap::new(),
+            postconditions: None,
             successful_exec: ExecMetadata::new(calling_pid),
         }
     }
@@ -158,10 +160,7 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    fn generate_cached_exec(
-        &self,
-        cache_map: &mut HashMap<Command, RcCachedExec>,
-    ) -> CachedExecution {
+    fn generate_cached_exec(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
         let command_key = Command(self.executable(), self.args());
 
         // let preconditions = generate_preconditions(file_events);
@@ -173,8 +172,8 @@ impl Execution {
         );
         let mut new_cached_exec = CachedExecution::new(
             cached_metadata,
-            Vec::new(),
-            HashMap::new(),
+            self.is_ignored,
+            None,
             self.postconditions(),
         );
 
@@ -182,32 +181,24 @@ impl Execution {
         let file_events = self.file_events.clone();
 
         for child in children {
-            let child_exec = child.generate_cached_exec(cache_map);
-            new_cached_exec.add_child(RcCachedExec::new(child_exec));
+            child.generate_cached_exec(cache_map);
+            // new_cached_exec.add_child(RcCachedExec::new(child_exec));
         }
 
-        // let stdout_file = format!("stdout_{:?}", self.pid().as_raw());
-        // let starting_cwd = self.starting_cwd();
-        // let curr_stdout_file_path = starting_cwd.join(stdout_file.clone());
-        // let cache_dir = PathBuf::from("./cache");
-        // let cache_dir = cache_dir.join(format!("{}", command_hash));
-        // let cache_stdout_file_path = cache_dir.join(stdout_file);
-        // fs::copy(curr_stdout_file_path, cache_stdout_file_path).unwrap();
+        if !self.is_ignored {
+            let preconditions = generate_preconditions(file_events);
+            new_cached_exec.add_preconditions(preconditions);
+        }
 
-        let preconditions = generate_preconditions(file_events);
-        new_cached_exec.add_preconditions(preconditions);
         let new_rc_cached_exec = RcCachedExec::new(new_cached_exec.clone());
-        // let e = cache_map.entry(command_key).or_insert(Vec::new());
-        // e.push(new_rc_cached_exec);
         cache_map.insert(command_key, new_rc_cached_exec);
-        new_cached_exec
     }
 
     pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
         let _ = self.generate_cached_exec(cache_map);
     }
 
-    fn postconditions(&self) -> Postconditions {
+    fn postconditions(&self) -> Option<Postconditions> {
         self.postconditions.clone()
     }
 
@@ -231,6 +222,12 @@ impl Execution {
         self.successful_exec.starting_cwd()
     }
 
+    fn set_to_ignored(&mut self) {
+        self.is_ignored = true;
+        self.exit_code = None;
+        self.postconditions = None;
+    }
+
     fn set_to_root(&mut self) {
         self.is_root = true;
     }
@@ -240,7 +237,7 @@ impl Execution {
     }
 
     fn update_postconditions(&mut self, postconditions: Postconditions) {
-        self.postconditions = postconditions;
+        self.postconditions = Some(postconditions);
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
@@ -319,10 +316,7 @@ impl RcExecution {
     //     self.0.borrow().generate_cached_exec(cache_map)
     // }
 
-    pub fn generate_cached_exec(
-        &self,
-        cache_map: &mut HashMap<Command, RcCachedExec>,
-    ) -> CachedExecution {
+    pub fn generate_cached_exec(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
         self.0.borrow().generate_cached_exec(cache_map)
     }
 

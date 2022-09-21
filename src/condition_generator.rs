@@ -244,7 +244,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
 }
 
 // TODO: check env vars and starting cwd
-pub fn check_preconditions(conditions: HashMap<PathBuf, HashSet<Fact>>, pid: Pid) -> bool {
+pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     for (path_name, fact_set) in conditions {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
