@@ -376,11 +376,18 @@ pub async fn trace_process(
                                             debug!("Execve succeeded!");
                                         });
 
-                                        // If we haven't seen a successful execve by this pid yet,
-                                        // update.
                                         if curr_execution.is_empty_root_exec() {
-                                            curr_execution
-                                                .update_successful_exec(new_exec_metadata);
+                                            if DONT_CACHE_ROOT {
+                                                // If we know it's the root exec that hasn't exec'd,
+                                                // and we see the DONT_CACHE_ROOT flag is true, we update
+                                                // this Execution to be ignored.
+                                                curr_execution.set_to_ignored(new_exec_metadata);
+                                            } else {
+                                                // Otherwise, we start caching by first updating the exec
+                                                // metadata.
+                                                curr_execution
+                                                    .update_successful_exec(new_exec_metadata);
+                                            }
                                         } else if curr_execution.pid() != tracer.curr_proc {
                                             // New rc exec for the child exec.
                                             // Add to parent's struct.
@@ -650,28 +657,31 @@ pub async fn trace_process(
                     }
                     ExecFileEvents(new_map)
                 };
+
                 curr_execution.update_file_events(new_events.clone());
-                let postconditions = generate_postconditions(new_events);
 
-                curr_execution.update_postconditions(postconditions.clone());
+                // If the execution was set to "ignored", we don't want to
+                // generate + add postconditions.
+                if !curr_execution.is_ignored() {
+                    let postconditions = generate_postconditions(new_events);
+                    curr_execution.update_postconditions(postconditions.clone());
 
-                // TODO: a flag?
-                // Here is where we send the files to be copied to the background threads.
-                // We want to skip this for the root execution (for benchmarking purposes).
-                // if !curr_execution.is_root() {
-                if let Some(sender) = send_end {
-                    // Get the (source, dest) pairs of files to copy.
-                    let file_pairs =
-                        generate_list_of_files_to_copy_to_cache(&curr_execution, postconditions);
+                    // Here is where we send the files to be copied to the background threads.
+                    if let Some(sender) = send_end {
+                        // Get the (source, dest) pairs of files to copy.
+                        let file_pairs = generate_list_of_files_to_copy_to_cache(
+                            &curr_execution,
+                            postconditions,
+                        );
 
-                    // Send each pair to across the channel.
-                    for pair in file_pairs {
-                        sender.send(pair).unwrap();
+                        // Send each pair to across the channel.
+                        for pair in file_pairs {
+                            sender.send(pair).unwrap();
+                        }
+                    } else {
+                        copy_output_files_to_cache(&curr_execution, postconditions);
                     }
-                } else {
-                    copy_output_files_to_cache(&curr_execution, postconditions);
                 }
-                // }
             }
         }
         other => bail!(

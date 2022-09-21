@@ -207,12 +207,16 @@ impl Execution {
     }
 
     fn is_empty_root_exec(&self) -> bool {
-        self.successful_exec.is_empty_root_exec()
+        self.successful_exec.is_empty_root_exec() && self.is_root
     }
 
-    // fn is_root(&self) -> bool {
-    //     self.is_root
-    // }
+    fn is_ignored(&self) -> bool {
+        self.is_ignored
+    }
+
+    fn is_root(&self) -> bool {
+        self.is_root
+    }
 
     fn pid(&self) -> Pid {
         self.successful_exec.caller_pid()
@@ -222,10 +226,11 @@ impl Execution {
         self.successful_exec.starting_cwd()
     }
 
-    fn set_to_ignored(&mut self) {
+    fn set_to_ignored(&mut self, exec_metadata: ExecMetadata) {
         self.is_ignored = true;
         self.exit_code = None;
         self.postconditions = None;
+        self.successful_exec = exec_metadata;
     }
 
     fn set_to_root(&mut self) {
@@ -326,10 +331,14 @@ impl RcExecution {
         self.0.borrow().is_empty_root_exec()
     }
 
+    pub fn is_ignored(&self) -> bool {
+        self.0.borrow().is_ignored()
+    }
+
     // Just tells us whether this is the root process.
-    // pub fn is_root(&self) -> bool {
-    //     self.0.borrow().is_root()
-    // }
+    pub fn is_root(&self) -> bool {
+        self.0.borrow().is_root()
+    }
 
     pub fn pid(&self) -> Pid {
         self.0.borrow().pid()
@@ -339,12 +348,13 @@ impl RcExecution {
         self.0.borrow().populate_cache_map(cache_map)
     }
 
+    pub fn set_to_ignored(&self, new_exec_metadata: ExecMetadata) {
+        self.0.borrow_mut().set_to_ignored(new_exec_metadata)
+    }
+
     pub fn set_to_root(&self) {
         self.0.borrow_mut().set_to_root()
     }
-    // pub fn exit_code(&self) -> Option<i32> {
-    //     self.execution.borrow().exit_code()
-    // }
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.0.borrow().starting_cwd()
@@ -508,14 +518,9 @@ pub fn copy_output_files_to_cache(
         }
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
-        // println!(
-        //     "Child's cached stdout path: {:?}",
-        //     childs_cached_stdout_path
-        // );
-        let childs_subdir_in_parents_cache =
-            cache_subdir_hashed_command.join(hashed_command.to_string());
+
         let parents_spot_for_childs_stdout =
-            childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
+            cache_subdir_hashed_command.join(childs_cached_stdout_file);
 
         // We want to hardlink instead of actually copying if it's a child's output file.
         if childs_cached_stdout_path.exists() {
@@ -610,10 +615,8 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
-        let childs_subdir_in_parents_cache =
-            cache_subdir_hashed_command.join(hashed_child_command.to_string());
         let parents_spot_for_childs_stdout =
-            childs_subdir_in_parents_cache.join(childs_cached_stdout_file);
+            cache_subdir_hashed_command.join(childs_cached_stdout_file);
         if childs_cached_stdout_path.exists() {
             // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
             list_of_files.push((
