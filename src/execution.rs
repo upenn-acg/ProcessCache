@@ -642,7 +642,9 @@ pub async fn trace_process(
                 // Add exit code to the exec struct, if this is the
                 // pid that exec'd the exec. execececececec.
                 // panic!("SHOULD NOT BE HERE");
-                curr_execution.add_exit_code(exit_code);
+                if !curr_execution.is_ignored() {
+                    curr_execution.add_exit_code(exit_code);
+                }
                 let children = curr_execution.children();
                 let new_events = if children.is_empty() {
                     curr_execution.file_events()
