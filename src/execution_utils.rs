@@ -34,7 +34,7 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
             // We don't want to do this if we are hardlinking the child's stdout file from
             // the child's cache to the parent's cache. Because then we are just deleting
             // from the child's cache -.-
-            if source_str.contains("stdout") {
+            if source_str.contains("stdout") && source.exists() {
                 fs::remove_file(source).unwrap();
             }
         } else {
