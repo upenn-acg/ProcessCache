@@ -551,30 +551,34 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let option_hashed_command = accessor.hashed_command();
         let path = accessor.path();
 
-        let (source_path, dest_path, link_type) =
-            if let Some(hashed_child_command) = option_hashed_command {
-                let childs_subdir_in_parents_cache =
-                    cache_subdir_hashed_command.join(hashed_child_command.clone());
-                if !childs_subdir_in_parents_cache.exists() {
-                    fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
-                }
-                let parents_location_for_child =
-                    childs_subdir_in_parents_cache.join(path.file_name().unwrap());
-                let childs_cache_subdir = cache_dir.join(hashed_child_command);
-                let childs_cache_location = childs_cache_subdir.join(path.file_name().unwrap());
-                (
-                    childs_cache_location,
-                    parents_location_for_child,
-                    LinkType::Hardlink,
-                )
-            } else {
-                let cache_location = cache_subdir_hashed_command.join(path.file_name().unwrap());
-                (path.clone(), cache_location, LinkType::Copy)
-            };
+        // Don't have to do any of this if the fact set is empty.
+        if !fact_set.is_empty() {
+            let file_name = path.file_name().unwrap();
 
-        for fact in fact_set {
-            if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
-                list_of_files.push((link_type.clone(), source_path.clone(), dest_path.clone()));
+            let (source_path, dest_path, link_type) =
+                if let Some(hashed_child_command) = option_hashed_command {
+                    let childs_subdir_in_parents_cache =
+                        cache_subdir_hashed_command.join(hashed_child_command.clone());
+                    if !childs_subdir_in_parents_cache.exists() {
+                        fs::create_dir(childs_subdir_in_parents_cache.clone()).unwrap();
+                    }
+                    let parents_location_for_child = childs_subdir_in_parents_cache.join(file_name);
+                    let childs_cache_subdir = cache_dir.join(hashed_child_command);
+                    let childs_cache_location = childs_cache_subdir.join(file_name);
+                    (
+                        childs_cache_location,
+                        parents_location_for_child,
+                        LinkType::Hardlink,
+                    )
+                } else {
+                    let cache_location = cache_subdir_hashed_command.join(file_name);
+                    (path.clone(), cache_location, LinkType::Copy)
+                };
+
+            for fact in fact_set {
+                if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
+                    list_of_files.push((link_type.clone(), source_path.clone(), dest_path.clone()));
+                }
             }
         }
     }

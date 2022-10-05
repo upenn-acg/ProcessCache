@@ -1,7 +1,7 @@
 use crossbeam::channel::{unbounded, Sender};
 use libc::{
-    c_char, c_uchar, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE, O_RDONLY,
-    O_RDWR, O_WRONLY,
+    c_char, c_uchar, CLONE_THREAD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK,
+    O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
 };
 use nix::{
     dir,
@@ -45,7 +45,7 @@ use anyhow::{bail, Context, Result};
 // These flags are optimizations to P$.
 // This one allows the user to skip caching the root execution
 // because it may just not be worth it anyway (think raxml).
-const DONT_CACHE_ROOT: bool = true;
+const DONT_CACHE_ROOT: bool = false;
 // Probably always going to be true? Why wouldn't you want background
 // thread copying for outputs, and at least parallel copying at the
 // end of execution.
@@ -552,10 +552,15 @@ pub async fn trace_process(
                 // unsigned long flags = (unsigned long)tracer.arg1();
                 // isThread = (flags & CLONE_THREAD) != 0;
 
+                let regs = tracer
+                    .get_registers()
+                    .with_context(|| context!("Failed to get regs in handle_access()"))?;
+
                 // flags are the 3rd arg to clone.
-                // if (flags & CLONE_THREAD) != 0 {
-                //     panic!("THREADSSSSSSSSSS!");
-                // }
+                let flags = regs.arg3::<i32>();
+                if (flags & CLONE_THREAD) != 0 {
+                    panic!("THREADSSSSSSSSSS!");
+                }
 
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
