@@ -1,7 +1,7 @@
 use crossbeam::channel::{unbounded, Sender};
 use libc::{
-    c_char, c_uchar, CLONE_THREAD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK,
-    O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
+    c_char, c_uchar, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_THREAD, DT_BLK, DT_CHR,
+    DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
 };
 use nix::{
     dir,
@@ -269,7 +269,6 @@ pub async fn trace_process(
                         match name {
                             // "chdir" => panic!("Program called chdir!!!"),
                             // "chmod" => panic!("Program called chmod!!!"),
-                            "chown" => panic!("Program called chown!!!"),
                             "creat" | "open" | "openat" => {
                                 // Get the full path and check if the file exists.
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -442,7 +441,6 @@ pub async fn trace_process(
                                 debug!("Special event: {}. Do not go to posthook.", name);
                                 continue;
                             }
-                            // "umask" => panic!("Program called umask!!"),
                             "unlink" | "unlinkat" => {
                                 use std::os::unix::fs::MetadataExt;
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -509,6 +507,8 @@ pub async fn trace_process(
 
                     match name {
                         "access" => handle_access(&curr_execution, &tracer)?,
+                        "chown" => panic!("Program called chown!!!"),
+                        "connect" => panic!("Program called connect!!"),
                         "creat" | "openat" | "open" => {
                             handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                         }
@@ -520,11 +520,13 @@ pub async fn trace_process(
                             // TODO: Kelly, you can use this variable to know what directories were read.
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
-                        // "pipe" => panic!("Program is calling pipe, which does not allow O_CLOEXEC, and so is not supported."),
+                        "futex" => panic!("Program called futex!!"),
+                        "pipe" => panic!("Program called pipe (not pipe2)!!"),
                         "pipe2" => handle_pipe2(&regs)?,
                         "rename" | "renameat" | "renameat2" => {
                             handle_rename(&curr_execution, name, &tracer)?
                         }
+                        "socket" => panic!("Program called socket!!"),
                         "unlink" | "unlinkat" => {
                             if nlinks_before == 1 {
                                 // before facts? (success)
@@ -558,7 +560,10 @@ pub async fn trace_process(
 
                 // flags are the 3rd arg to clone.
                 let flags = regs.arg3::<i32>();
-                if (flags & CLONE_THREAD) != 0 {
+                if (flags & CLONE_THREAD) != 0
+                    || (flags & CLONE_CHILD_CLEARTID) != 0
+                    || (flags & CLONE_CHILD_SETTID) != 0
+                {
                     panic!("THREADSSSSSSSSSS!");
                 }
 

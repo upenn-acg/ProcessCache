@@ -142,12 +142,14 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_creat)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
+    loader.intercept(libc::SYS_connect)?;
     loader.intercept(libc::SYS_execve)?;
     loader.intercept(libc::SYS_execveat)?;
     loader.intercept(libc::SYS_exit)?;
     loader.intercept(libc::SYS_exit_group)?;
     loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_fstat)?;
+    loader.intercept(libc::SYS_futex)?;
     loader.intercept(libc::SYS_getdents)?;
     loader.intercept(libc::SYS_getdents64)?;
     loader.intercept(libc::SYS_lstat)?;
@@ -159,6 +161,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_rename)?;
     loader.intercept(libc::SYS_renameat)?;
     loader.intercept(libc::SYS_renameat2)?;
+    loader.intercept(libc::SYS_socket)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_vfork)?;
     loader.intercept(libc::SYS_umask)?;
@@ -172,7 +175,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_chown)?;
     loader.let_pass(libc::SYS_fadvise64)?;
     loader.let_pass(libc::SYS_fsync)?;
-    loader.let_pass(libc::SYS_futex)?;
     loader.let_pass(libc::SYS_getegid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getgid)?;
@@ -200,7 +202,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     // might need to be handled later.
     loader.let_pass(libc::SYS_clock_gettime)?;
     loader.let_pass(libc::SYS_close)?;
-    loader.let_pass(libc::SYS_connect)?;
     loader.let_pass(libc::SYS_dup)?;
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_faccessat)?;
@@ -218,7 +219,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_pselect6)?;
     loader.let_pass(libc::SYS_read)?;
     loader.let_pass(libc::SYS_readlink)?;
-    loader.let_pass(libc::SYS_socket)?;
     loader.let_pass(libc::SYS_sysinfo)?;
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_times)?;

@@ -216,7 +216,14 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 // let metadata_result = fs::metadata(&path_name);
                 let (old_stat, new_metadata) = match old_stat {
                     Stat::Stat(stat) => {
-                        let metadata = fs::metadata(&path_name).unwrap();
+                        // let metadata = fs::metadata(&path_name).unwrap();
+                        let metadata = match fs::metadata(&path_name) {
+                            Ok(meta) => meta,
+                            Err(e) => panic!(
+                                "failed to get metadata of path: {:?}, error: {:?}",
+                                path_name, e
+                            ),
+                        };
                         (stat, metadata)
                     }
                     Stat::Lstat(stat) => {
