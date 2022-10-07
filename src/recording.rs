@@ -8,7 +8,7 @@ use crate::{
 use nix::unistd::Pid;
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fs::{self, File},
     hash::Hash,
     io::{self, Read, Write},
@@ -22,6 +22,12 @@ pub type ChildExecutions = Vec<RcExecution>;
 pub enum LinkType {
     Copy,
     Hardlink,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TaskType {
+    Process,
+    Thread,
 }
 
 // Info about the execution that we want to keep around
@@ -214,10 +220,6 @@ impl Execution {
         self.is_ignored
     }
 
-    fn is_root(&self) -> bool {
-        self.is_root
-    }
-
     fn pid(&self) -> Pid {
         self.successful_exec.caller_pid()
     }
@@ -335,11 +337,6 @@ impl RcExecution {
         self.0.borrow().is_ignored()
     }
 
-    // Just tells us whether this is the root process.
-    pub fn is_root(&self) -> bool {
-        self.0.borrow().is_root()
-    }
-
     pub fn pid(&self) -> Pid {
         self.0.borrow().pid()
     }
@@ -372,6 +369,50 @@ impl RcExecution {
         self.0
             .borrow_mut()
             .update_successful_exec(new_exec_metadata);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskTypeMap(HashMap<Proc, TaskType>);
+
+impl TaskTypeMap {
+    fn add_new_task(&mut self, pid: Pid, task_type: TaskType) {
+        if let Entry::Vacant(_) = self.0.entry(Proc(pid)) {
+            self.0.insert(Proc(pid), task_type);
+        } else {
+            panic!("Pid already in task type map!!");
+        }
+    }
+
+    fn is_process(&self, pid: Pid) -> bool {
+        if let Some(entry) = self.0.get(&Proc(pid)) {
+            *entry == TaskType::Process
+        } else {
+            panic!(
+                "Trying to check task type map for pid that doesn't exist in it!!: {:?}",
+                pid
+            );
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RcTaskTypeMap(Rc<RefCell<TaskTypeMap>>);
+
+impl RcTaskTypeMap {
+    // The first pid is gonna be from a process.
+    pub fn new(first_proc: Pid) -> RcTaskTypeMap {
+        let mut map = HashMap::new();
+        map.insert(Proc(first_proc), TaskType::Process);
+        RcTaskTypeMap(Rc::new(RefCell::new(TaskTypeMap(map))))
+    }
+
+    pub fn add_new_task(&self, pid: Pid, task_type: TaskType) {
+        self.0.borrow_mut().add_new_task(pid, task_type);
+    }
+
+    pub fn is_process(&self, pid: Pid) -> bool {
+        self.0.borrow().is_process(pid)
     }
 }
 

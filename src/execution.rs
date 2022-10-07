@@ -14,8 +14,8 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 use crate::{
     async_runtime::AsyncRuntime,
     condition_utils::FileType,
-    execution_utils::background_thread_copying_outputs,
-    recording::{generate_list_of_files_to_copy_to_cache, LinkType},
+    execution_utils::{background_thread_copying_outputs, OpenFlags},
+    recording::{generate_list_of_files_to_copy_to_cache, LinkType, RcTaskTypeMap, TaskType},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -73,6 +73,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // within trace_process().
     let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
     first_execution.set_to_root();
+    let task_type_map = RcTaskTypeMap::new(first_proc);
 
     if !(PTRACE_ONLY || FACT_GEN) {
         fs::create_dir_all(&cache_dir)
@@ -100,14 +101,17 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     } else {
         None
     };
+
     let f = trace_process(
         async_runtime.clone(),
-        full_tracking_on,
-        Ptracer::new(first_proc),
-        first_execution.clone(),
         Rc::new(cache_dir.clone()),
+        first_execution.clone(),
+        full_tracking_on,
         option_sender.clone(),
+        task_type_map,
+        Ptracer::new(first_proc),
     );
+
     async_runtime
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
@@ -185,12 +189,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
-    full_tracking_on: bool,
-    mut tracer: Ptracer,
-    mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
-    // send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
+    mut curr_execution: RcExecution,
+    full_tracking_on: bool,
     send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
+    task_type_map: RcTaskTypeMap,
+    mut tracer: Ptracer,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -375,6 +379,7 @@ pub async fn trace_process(
                                             debug!("Execve succeeded!");
                                         });
 
+                                        let is_process = task_type_map.is_process(tracer.curr_proc);
                                         if curr_execution.is_empty_root_exec() {
                                             if DONT_CACHE_ROOT {
                                                 // If we know it's the root exec that hasn't exec'd,
@@ -387,7 +392,11 @@ pub async fn trace_process(
                                                 curr_execution
                                                     .update_successful_exec(new_exec_metadata);
                                             }
-                                        } else if curr_execution.pid() != tracer.curr_proc {
+                                        // We don't want to create a new Execution struct if this is a thread.
+                                        // We just want to add onto the current Execution struct.
+                                        } else if curr_execution.pid() != tracer.curr_proc
+                                            && is_process
+                                        {
                                             // New rc exec for the child exec.
                                             // Add to parent's struct.
                                             // set curr execution to the new one.
@@ -560,18 +569,21 @@ pub async fn trace_process(
 
                 // flags are the 3rd arg to clone.
                 let flags = regs.arg3::<i32>();
-                if (flags & CLONE_THREAD) != 0
+                let task_type = if (flags & CLONE_THREAD) != 0
                     || (flags & CLONE_CHILD_CLEARTID) != 0
                     || (flags & CLONE_CHILD_SETTID) != 0
                 {
-                    panic!("THREADSSSSSSSSSS!");
-                }
+                    TaskType::Thread
+                } else {
+                    TaskType::Process
+                };
 
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
+                task_type_map.add_new_task(child, task_type);
 
                 // When a process forks, we pass the current execution struct to the
                 // child process' future as both the curr execution and the parent execution.
@@ -580,11 +592,12 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
-                    full_tracking_on,
-                    Ptracer::new(child),
-                    curr_execution.clone(),
                     cache_dir.clone(),
+                    curr_execution.clone(),
+                    full_tracking_on,
                     send_end.clone(),
+                    task_type_map.clone(),
+                    Ptracer::new(child),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -594,6 +607,7 @@ pub async fn trace_process(
                     debug!("Fork Event. Creating task for new child: {:?}", child);
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
+                task_type_map.add_new_task(child, TaskType::Process);
 
                 // When a process forks, we pass the current execution struct to the
                 // child process' future as both the curr execution and the parent execution.
@@ -602,11 +616,12 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
-                    full_tracking_on,
-                    Ptracer::new(child),
-                    curr_execution.clone(),
                     cache_dir.clone(),
+                    curr_execution.clone(),
+                    full_tracking_on,
                     send_end.clone(),
+                    task_type_map.clone(),
+                    Ptracer::new(child),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -915,16 +930,16 @@ fn handle_open(
     // If it hasn't we need to add the full path -> file struct
     // to the vector of files this exec has accessed.
 
-    let open_syscall_event = generate_open_syscall_file_event(
+    let open_flags = OpenFlags {
         creat_flag,
-        execution,
         excl_flag,
         file_existed_at_start,
-        full_path.clone(),
         offset_mode,
         open_mode,
-        syscall_outcome,
-    );
+    };
+
+    let open_syscall_event =
+        generate_open_syscall_file_event(execution, full_path.clone(), open_flags, syscall_outcome);
 
     if let Some(event) = open_syscall_event {
         execution.add_new_file_event(tracer.curr_proc, event, full_path);
