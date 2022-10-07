@@ -529,7 +529,6 @@ pub async fn trace_process(
                             // TODO: Kelly, you can use this variable to know what directories were read.
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
-                        "futex" => panic!("Program called futex!!"),
                         "pipe" => panic!("Program called pipe (not pipe2)!!"),
                         "pipe2" => handle_pipe2(&regs)?,
                         "rename" | "renameat" | "renameat2" => {
