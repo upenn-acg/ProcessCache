@@ -569,8 +569,8 @@ pub async fn trace_process(
                 // flags are the 3rd arg to clone.
                 let flags = regs.arg3::<i32>();
                 let task_type = if (flags & CLONE_THREAD) != 0
-                    || (flags & CLONE_CHILD_CLEARTID) != 0
-                    || (flags & CLONE_CHILD_SETTID) != 0
+                // || (flags & CLONE_CHILD_CLEARTID) != 0
+                // || (flags & CLONE_CHILD_SETTID) != 0
                 {
                     TaskType::Thread
                 } else {
