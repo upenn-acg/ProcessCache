@@ -72,11 +72,11 @@ pub enum Fact {
     FinalContents,
     // Then we can have one fact holding all the perms we need to check for?
     // c_int = AccessFlags
-    HasDirPermission(c_int),
+    HasDirPermission(c_int, Option<PathBuf>), // Optionally supply a root dir, otherwise assume parent dir
     HasPermission(c_int),
     InputFilesMatch,
     Mtime(i64),
-    NoDirPermission(c_int),
+    NoDirPermission(c_int, Option<PathBuf>),
     NoPermission(c_int),
     Or(Box<Fact>, Box<Fact>),
     StartingContents(Vec<u8>),
@@ -247,6 +247,15 @@ impl FirstState {
                 }
                 SyscallEvent::Rename(_, _, _) => (),
                 SyscallEvent::FailedExec(_) => (),
+                SyscallEvent::DirectoryCreate(_, outcome) => match outcome {
+                    SyscallOutcome::Success => {
+                        self.0 = State::DoesntExist;
+                    }
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                        self.0 = State::Exists;
+                    }
+                    _ => (),
+                },
             }
         }
     }

@@ -1,7 +1,7 @@
 use crossbeam::channel::{unbounded, Sender};
 use libc::{
-    c_char, c_uchar, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_THREAD, DT_BLK, DT_CHR,
-    DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
+    c_char, c_uchar, AT_FDCWD, CLONE_THREAD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG,
+    DT_SOCK, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
 };
 use nix::{
     dir,
@@ -520,9 +520,7 @@ pub async fn trace_process(
                             // TODO: Kelly, you can use this variable to know what directories were read.
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
-                        "mkdir" | "mkdirat" => {
-                            handle_mkdir(&curr_execution, &tracer)?
-                        }
+                        "mkdir" | "mkdirat" => handle_mkdir(&curr_execution, name, &tracer)?,
                         "pipe" => {
                             curr_execution.set_to_ignored();
                         }
@@ -816,9 +814,34 @@ fn handle_get_dents64(
     Ok(())
 }
 
-fn handle_mkdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_mkdir", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
+
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_mkdir()"))?;
+
+    let full_path = get_full_path(execution, syscall_name, tracer)?;
+    let dir_fd = regs.arg1::<i32>();
+    let root_dir = if dir_fd == AT_FDCWD {
+        execution.starting_cwd()
+    } else {
+        path_from_fd(tracer.curr_proc, dir_fd)?
+    };
+    let ret_val = regs.retval::<i32>();
+    let syscall_outcome = match ret_val {
+        0 => SyscallOutcome::Success,
+        -13 => SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+        -17 => SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
+        // TODO: ENOENT?
+        // TODO: ENOTDIR
+        e => panic!("Unrecognized failure for mkdir: {:?}", e),
+    };
+
+    let mkdir_event = SyscallEvent::DirectoryCreate(root_dir, syscall_outcome);
+    execution.add_new_file_event(tracer.curr_proc, mkdir_event, full_path);
+    Ok(())
 }
 
 fn handle_open(

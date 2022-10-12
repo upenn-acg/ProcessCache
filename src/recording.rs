@@ -576,8 +576,18 @@ pub fn generate_list_of_files_to_copy_to_cache(
                 };
 
             for fact in fact_set {
+                // We don't want to copy if it's a directory...
                 if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
-                    list_of_files.push((link_type.clone(), source_path.clone(), dest_path.clone()));
+                    if path.is_dir() {
+                        // We want to create the dir in the cache if it's a dir.
+                        fs::create_dir(dest_path.clone()).unwrap();
+                    } else {
+                        list_of_files.push((
+                            link_type.clone(),
+                            source_path.clone(),
+                            dest_path.clone(),
+                        ));
+                    }
                 }
             }
         }

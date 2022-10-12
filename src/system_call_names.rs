@@ -8,7 +8,7 @@ pub fn get_syscall_name(number: usize) -> anyhow::Result<&'static str> {
     Ok(*name)
 }
 
-static SYSTEM_CALL_NAMES: [&str; 345] = [
+static SYSTEM_CALL_NAMES: [&str; 347] = [
     "read",
     "write",
     "open",
@@ -38,6 +38,8 @@ static SYSTEM_CALL_NAMES: [&str; 345] = [
     "msync",
     "mincore",
     "madvise",
+    "mkdir",
+    "mkdirat",
     "shmget",
     "shmat",
     "shmctl",
