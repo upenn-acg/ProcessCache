@@ -35,7 +35,8 @@ pub enum SyscallEvent {
     Access(c_int, SyscallOutcome),
     Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
-    DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome),
+    DirectoryCreate(PathBuf, SyscallOutcome),
+    DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
     Open(OFlag, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied

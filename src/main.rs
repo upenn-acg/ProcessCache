@@ -153,6 +153,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_getdents)?;
     loader.intercept(libc::SYS_getdents64)?;
     loader.intercept(libc::SYS_lstat)?;
+    loader.intercept(libc::SYS_mkdir)?;
+    loader.intercept(libc::SYS_mkdirat)?;
     loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
@@ -213,7 +215,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getxattr)?;
     loader.let_pass(libc::SYS_lgetxattr)?;
     loader.let_pass(libc::SYS_madvise)?;
-    loader.let_pass(libc::SYS_mkdir)?;
     loader.let_pass(libc::SYS_poll)?;
     loader.let_pass(libc::SYS_pread64)?;
     loader.let_pass(libc::SYS_pselect6)?;
