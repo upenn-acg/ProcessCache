@@ -824,10 +824,16 @@ fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -
 
     let full_path = get_full_path(execution, syscall_name, tracer)?;
     let dir_fd = regs.arg1::<i32>();
-    let root_dir = if dir_fd == AT_FDCWD {
+    // TODO: not fully correct for mkdir...
+    let root_dir = if syscall_name == "mkdir" {
         execution.starting_cwd()
     } else {
-        path_from_fd(tracer.curr_proc, dir_fd)?
+        if dir_fd == AT_FDCWD {
+            execution.starting_cwd()
+        } else {
+            let dir_fd = regs.arg1::<i32>();
+            path_from_fd(tracer.curr_proc, dir_fd)?
+        }
     };
     let ret_val = regs.retval::<i32>();
     let syscall_outcome = match ret_val {
