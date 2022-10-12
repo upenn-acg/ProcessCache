@@ -28,7 +28,11 @@ const DONT_HASH_FILES: bool = false;
 pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, PathBuf)>) {
     while let Ok((link_type, source, dest)) = recv_end.recv() {
         if link_type == LinkType::Copy {
-            fs::copy(source.clone(), dest).unwrap();
+            // fs::copy(source.clone(), dest).unwrap();
+            match fs::copy(source.clone(), dest.clone()) {
+                Ok(_) => (),
+                Err(e) => panic!("Failed to copy source: {:?}, dest: {:?}", source, dest),
+            }
             let source_str = source.clone().into_os_string().into_string().unwrap();
             // The thread removes the old stdout files once they have been moved to the cache.
             // We don't want to do this if we are hardlinking the child's stdout file from

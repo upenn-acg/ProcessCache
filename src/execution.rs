@@ -520,9 +520,13 @@ pub async fn trace_process(
                             // TODO: Kelly, you can use this variable to know what directories were read.
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
-                        "futex" => panic!("Program called futex!!"),
-                        "pipe" => panic!("Program called pipe (not pipe2)!!"),
-                        "pipe2" => handle_pipe2(&regs)?,
+                        "mkdir" | "mkdirat" => {
+                            handle_mkdir(&curr_execution, &tracer)?
+                        }
+                        "pipe" => {
+                            curr_execution.set_to_ignored();
+                        }
+                        "pipe2" => handle_pipe2(&curr_execution, &tracer)?,
                         "rename" | "renameat" | "renameat2" => {
                             handle_rename(&curr_execution, name, &tracer)?
                         }
@@ -812,26 +816,9 @@ fn handle_get_dents64(
     Ok(())
 }
 
-fn getdents_file_type(file_type: c_uchar) -> dir::Type {
-    use nix::dir::Type;
-
-    if file_type == DT_BLK {
-        Type::BlockDevice
-    } else if file_type == DT_CHR {
-        Type::CharacterDevice
-    } else if file_type == DT_DIR {
-        Type::Directory
-    } else if file_type == DT_FIFO {
-        Type::Fifo
-    } else if file_type == DT_LNK {
-        Type::Symlink
-    } else if file_type == DT_REG {
-        Type::File
-    } else if file_type == DT_SOCK {
-        Type::Socket
-    } else {
-        panic!("Unknown file type: {}", file_type);
-    }
+fn handle_mkdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_mkdir", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
 }
 
 fn handle_open(
@@ -1104,4 +1091,26 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
 
     execution.add_new_file_event(tracer.curr_proc, delete_syscall_event, full_path);
     Ok(())
+}
+
+fn getdents_file_type(file_type: c_uchar) -> dir::Type {
+    use nix::dir::Type;
+
+    if file_type == DT_BLK {
+        Type::BlockDevice
+    } else if file_type == DT_CHR {
+        Type::CharacterDevice
+    } else if file_type == DT_DIR {
+        Type::Directory
+    } else if file_type == DT_FIFO {
+        Type::Fifo
+    } else if file_type == DT_LNK {
+        Type::Symlink
+    } else if file_type == DT_REG {
+        Type::File
+    } else if file_type == DT_SOCK {
+        Type::Socket
+    } else {
+        panic!("Unknown file type: {}", file_type);
+    }
 }
