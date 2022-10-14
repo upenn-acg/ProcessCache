@@ -149,7 +149,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_exit_group)?;
     loader.intercept(libc::SYS_fork)?;
     loader.intercept(libc::SYS_fstat)?;
-    loader.intercept(libc::SYS_futex)?;
     loader.intercept(libc::SYS_getdents)?;
     loader.intercept(libc::SYS_getdents64)?;
     loader.intercept(libc::SYS_lstat)?;
@@ -208,6 +207,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_faccessat)?;
     loader.let_pass(libc::SYS_fcntl)?;
+    loader.let_pass(libc::SYS_futex)?;
     loader.let_pass(libc::SYS_getcwd)?;
     loader.let_pass(libc::SYS_getrandom)?;
     loader.let_pass(libc::SYS_getrlimit)?;
