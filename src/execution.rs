@@ -507,8 +507,8 @@ pub async fn trace_process(
 
                     match name {
                         "access" => handle_access(&curr_execution, &tracer)?,
-                        "chown" => panic!("Program called chown!!!"),
-                        "connect" => panic!("Program called connect!!"),
+                        // "chown" => panic!("Program called chown!!!"),
+                        // "connect" => panic!("Program called connect!!"),
                         "creat" | "openat" | "open" => {
                             handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                         }
@@ -521,10 +521,10 @@ pub async fn trace_process(
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
                         "mkdir" | "mkdirat" => handle_mkdir(&curr_execution, name, &tracer)?,
-                        "pipe" => {
-                            curr_execution.set_to_ignored();
-                        }
-                        "pipe2" => handle_pipe2(&curr_execution, &tracer)?,
+                        // "pipe" => {
+                        //     curr_execution.set_to_ignored();
+                        // }
+                        // "pipe2" => handle_pipe2(&curr_execution, &tracer)?,
                         "rename" | "renameat" | "renameat2" => {
                             handle_rename(&curr_execution, name, &tracer)?
                         }
@@ -541,7 +541,7 @@ pub async fn trace_process(
                                 handle_unlink(&curr_execution, name, &tracer)?
                             }
                         }
-                        _ => {}
+                        _ => panic!("Unhandled system call: {:?}", name),
                     }
                 }
             }
@@ -562,10 +562,7 @@ pub async fn trace_process(
 
                 // flags are the 3rd arg to clone.
                 let flags = regs.arg3::<i32>();
-                if (flags & CLONE_THREAD) != 0
-                    || (flags & CLONE_CHILD_CLEARTID) != 0
-                    || (flags & CLONE_CHILD_SETTID) != 0
-                {
+                if (flags & CLONE_THREAD) != 0 {
                     panic!("THREADSSSSSSSSSS!");
                 }
 
