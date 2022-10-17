@@ -154,8 +154,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     root_dir
                 } else {
                     let path = path_name.parent().unwrap();
-                    let path_buf = PathBuf::from(path);
-                    path_buf
+                    PathBuf::from(path)
                 };
 
                 access(&dir, AccessFlags::from_bits(flags).unwrap()).is_ok()
@@ -172,8 +171,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     root_dir
                 } else {
                     let path = path_name.parent().unwrap();
-                    let path_buf = PathBuf::from(path);
-                    path_buf
+                    PathBuf::from(path)
                 };
                 debug!("Dir no perm flags: {:?}", flags);
                 access(&dir, AccessFlags::from_bits(flags).unwrap()).is_err()

@@ -14,7 +14,7 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 use crate::{
     async_runtime::AsyncRuntime,
     condition_utils::FileType,
-    execution_utils::background_thread_copying_outputs,
+    execution_utils::{background_thread_copying_outputs, OpenFlags},
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
 };
 use crate::{
@@ -509,6 +509,7 @@ pub async fn trace_process(
                         "access" => handle_access(&curr_execution, &tracer)?,
                         // "chown" => panic!("Program called chown!!!"),
                         // "connect" => panic!("Program called connect!!"),
+                        "chdir" => handle_chdir(&curr_execution, &tracer)?,
                         "creat" | "openat" | "open" => {
                             handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                         }
@@ -747,6 +748,30 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     Ok(())
 }
 
+fn handle_chdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_chdir", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_chdir()"))?;
+    let ret_val = regs.retval::<i32>();
+
+    // If they successfully change the cwd, we could check proc/pid/cwd for the full path to
+    // the cwd. But, if they fail to, we'd have to do something else. I will leave that
+    // to future Kelly.
+    if ret_val == 0 {
+        let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+        let cwd_path =
+            readlink(cwd_link.as_str()).with_context(|| context!("Failed to readlink (cwd)"))?;
+        let cwd = cwd_path.to_str().unwrap().to_owned();
+        let cwd = PathBuf::from(cwd);
+        execution.update_cwd(cwd);
+    }
+
+    Ok(())
+}
+
 /// Read directories returned by an intercepted system call to get_dents64. Return the d_name and
 /// d_type fields from the get_dents64 struct.
 fn handle_get_dents64(
@@ -920,7 +945,7 @@ fn handle_open(
     sys_span.in_scope(|| info!("File name arg: {:?}", file_name_arg));
 
     let full_path = get_full_path(execution, syscall_name, tracer)?;
-    sys_span.in_scope(|| info!("Full path: {:?}", full_path));
+    sys_span.in_scope(|| debug!("Full path: {:?}", full_path));
 
     // We need to check the current exec's map of files it has accessed,
     // to see if the file has been accessed before.
@@ -928,16 +953,16 @@ fn handle_open(
     // If it hasn't we need to add the full path -> file struct
     // to the vector of files this exec has accessed.
 
-    let open_syscall_event = generate_open_syscall_file_event(
+    let open_flags = OpenFlags {
         creat_flag,
-        execution,
         excl_flag,
         file_existed_at_start,
-        full_path.clone(),
         offset_mode,
         open_mode,
-        syscall_outcome,
-    );
+    };
+
+    let open_syscall_event =
+        generate_open_syscall_file_event(execution, full_path.clone(), open_flags, syscall_outcome);
 
     if let Some(event) = open_syscall_event {
         execution.add_new_file_event(tracer.curr_proc, event, full_path);

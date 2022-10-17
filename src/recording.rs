@@ -32,6 +32,7 @@ pub enum LinkType {
 pub struct ExecMetadata {
     caller_pid: Proc,
     command: Command,
+    cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
@@ -44,6 +45,7 @@ impl ExecMetadata {
         ExecMetadata {
             caller_pid,
             command: Command(String::new(), Vec::new()),
+            cwd: PathBuf::new(),
             env_vars: Vec::new(),
             starting_cwd: PathBuf::new(),
         }
@@ -59,6 +61,8 @@ impl ExecMetadata {
         self.command.1 = args;
         self.env_vars = env_vars;
         self.command.0 = executable;
+        // These are the same to start.
+        self.cwd = starting_cwd.clone();
         self.starting_cwd = starting_cwd;
     }
 
@@ -75,6 +79,10 @@ impl ExecMetadata {
         self.command.clone()
     }
 
+    fn cwd(&self) -> PathBuf {
+        self.cwd.clone()
+    }
+
     fn executable(&self) -> String {
         self.command.0.clone()
     }
@@ -89,6 +97,10 @@ impl ExecMetadata {
 
     fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
+    }
+
+    fn update_cwd(&mut self, new_cwd: PathBuf) {
+        self.cwd = new_cwd;
     }
 }
 
@@ -152,6 +164,10 @@ impl Execution {
         self.successful_exec.command()
     }
 
+    fn cwd(&self) -> PathBuf {
+        self.successful_exec.cwd()
+    }
+
     fn env_vars(&self) -> Vec<String> {
         self.successful_exec.env_vars()
     }
@@ -194,14 +210,6 @@ impl Execution {
         cache_map.insert(command_key, new_rc_cached_exec);
     }
 
-    pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-        let _ = self.generate_cached_exec(cache_map);
-    }
-
-    fn postconditions(&self) -> Option<Postconditions> {
-        self.postconditions.clone()
-    }
-
     fn file_events(&self) -> ExecFileEvents {
         self.file_events.clone()
     }
@@ -222,6 +230,14 @@ impl Execution {
         self.successful_exec.caller_pid()
     }
 
+    pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
+        let _ = self.generate_cached_exec(cache_map);
+    }
+
+    fn postconditions(&self) -> Option<Postconditions> {
+        self.postconditions.clone()
+    }
+
     pub fn starting_cwd(&self) -> PathBuf {
         self.successful_exec.starting_cwd()
     }
@@ -235,6 +251,14 @@ impl Execution {
 
     fn set_to_root(&mut self) {
         self.is_root = true;
+    }
+
+    fn update_cwd(&mut self, new_cwd: PathBuf) {
+        self.successful_exec.update_cwd(new_cwd.clone());
+        let children = self.child_execs.clone();
+        for child in children {
+            child.update_cwd(new_cwd.clone());
+        }
     }
 
     fn update_file_events(&mut self, file_events: ExecFileEvents) {
@@ -305,9 +329,9 @@ impl RcExecution {
         self.0.borrow().command()
     }
 
-    // pub fn env_vars(&self) -> Vec<String> {
-    //     self.0.borrow().env_vars()
-    // }
+    pub fn cwd(&self) -> PathBuf {
+        self.0.borrow().cwd()
+    }
 
     pub fn executable(&self) -> String {
         self.0.borrow().executable()
@@ -358,6 +382,10 @@ impl RcExecution {
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.0.borrow().starting_cwd()
+    }
+
+    pub fn update_cwd(&self, new_cwd: PathBuf) {
+        self.0.borrow_mut().update_cwd(new_cwd);
     }
 
     pub fn update_file_events(&mut self, file_events: ExecFileEvents) {

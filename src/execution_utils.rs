@@ -31,7 +31,10 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
             // fs::copy(source.clone(), dest).unwrap();
             match fs::copy(source.clone(), dest.clone()) {
                 Ok(_) => (),
-                Err(e) => panic!("Failed to copy source: {:?}, dest: {:?}", source, dest),
+                Err(e) => panic!(
+                    "Failed to copy source: {:?}, dest: {:?}, error: {:?}",
+                    source, dest, e
+                ),
             }
             let source_str = source.clone().into_os_string().into_string().unwrap();
             // The thread removes the old stdout files once they have been moved to the cache.
@@ -47,20 +50,24 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
     }
 }
 
+pub struct OpenFlags {
+    pub creat_flag: bool,
+    pub excl_flag: bool,
+    pub file_existed_at_start: bool,
+    pub offset_mode: OFlag,
+    pub open_mode: OFlag,
+}
+
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
 pub fn generate_open_syscall_file_event(
-    creat_flag: bool,
     curr_execution: &RcExecution,
-    excl_flag: bool,
-    file_existed_at_start: bool,
     full_path: PathBuf,
-    offset_mode: OFlag, // trunc, append, readonly. doesn't have to be a weird option anymore b/c
-    open_mode: OFlag,
+    open_flags: OpenFlags,
     syscall_outcome: Result<i32, i32>,
 ) -> Option<SyscallEvent> {
-    if excl_flag && !creat_flag {
+    if open_flags.excl_flag && !open_flags.creat_flag {
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
 
@@ -84,7 +91,7 @@ pub fn generate_open_syscall_file_event(
     let optional_checking_mech = if DONT_HASH_FILES {
         None
     } else if syscall_outcome.is_ok()
-        && (offset_mode == OFlag::O_APPEND || offset_mode == OFlag::O_RDONLY)
+        && (open_flags.offset_mode == OFlag::O_APPEND || open_flags.offset_mode == OFlag::O_RDONLY)
     {
         // DIFF FILES
         // Some(CheckMechanism::DiffFiles)
@@ -97,8 +104,8 @@ pub fn generate_open_syscall_file_event(
         None
     };
 
-    if creat_flag {
-        if excl_flag {
+    if open_flags.creat_flag {
+        if open_flags.excl_flag {
             match syscall_outcome {
                 Ok(_) => Some(SyscallEvent::Create(
                     OFlag::O_CREAT,
@@ -123,8 +130,8 @@ pub fn generate_open_syscall_file_event(
         } else {
             match syscall_outcome {
                 Ok(_) => {
-                    if file_existed_at_start {
-                        match (offset_mode, open_mode) {
+                    if open_flags.file_existed_at_start {
+                        match (open_flags.offset_mode, open_flags.open_mode) {
                             (_, OFlag::O_RDONLY) => {
                                 panic!("O_CREAT + O_RDONLY AND the system call succeeded????")
                             }
@@ -158,7 +165,7 @@ pub fn generate_open_syscall_file_event(
     } else {
         // Only opens file, no need to worry about it creating a file.
         match syscall_outcome {
-            Ok(_) => match (offset_mode, open_mode) {
+            Ok(_) => match (open_flags.offset_mode, open_flags.open_mode) {
                 // TODO: Hmm. There should be a case for
                 // (None, OpenOFlag::O_RDONLY)
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
@@ -209,19 +216,19 @@ pub fn generate_open_syscall_file_event(
             Err(ret_val) => match ret_val {
                 // ENOENT
                 -2 => Some(SyscallEvent::Open(
-                    offset_mode,
+                    open_flags.offset_mode,
                     optional_checking_mech,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 )),
                 // EACCES
-                -13 => match offset_mode {
+                -13 => match open_flags.offset_mode {
                     OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
-                        offset_mode,
+                        open_flags.offset_mode,
                         optional_checking_mech,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
                     _ => Some(SyscallEvent::Open(
-                        offset_mode,
+                        open_flags.offset_mode,
                         optional_checking_mech,
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),

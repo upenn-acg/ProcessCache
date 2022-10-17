@@ -139,6 +139,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     let mut loader = seccomp::RuleLoader::new()?;
     // TODO: Alphabatize
     loader.intercept(libc::SYS_access)?;
+    loader.intercept(libc::SYS_chdir)?;
     loader.intercept(libc::SYS_creat)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
@@ -171,7 +172,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
 
     loader.let_pass(libc::SYS_arch_prctl)?;
     loader.let_pass(libc::SYS_brk)?;
-    loader.let_pass(libc::SYS_chdir)?;
     loader.let_pass(libc::SYS_chmod)?;
     loader.let_pass(libc::SYS_chown)?;
     loader.let_pass(libc::SYS_fadvise64)?;
