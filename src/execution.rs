@@ -291,11 +291,14 @@ pub async fn trace_process(
                                     .with_context(|| context!("Failed to readlink (cwd)"))?;
                                 let cwd = cwd_path.to_str().unwrap().to_owned();
                                 let starting_cwd = PathBuf::from(cwd);
+                                debug!("Starting cwd: {:?}", starting_cwd);
 
                                 let exec_path_buf = PathBuf::from(executable.clone());
                                 debug!("Raw executable: {:?}", exec_path_buf);
                                 let exec_path_buf = if exec_path_buf.is_relative() {
-                                    fs::canonicalize(exec_path_buf).unwrap()
+                                    // fs::canonicalize(exec_path_buf).unwrap()
+                                    let file_name = exec_path_buf.file_name().unwrap();
+                                    starting_cwd.join(file_name)
                                 } else {
                                     exec_path_buf
                                 };
@@ -761,6 +764,7 @@ fn handle_chdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     // the cwd. But, if they fail to, we'd have to do something else. I will leave that
     // to future Kelly.
     if ret_val == 0 {
+        debug!("Successful chdir!!");
         let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
         let cwd_path =
             readlink(cwd_link.as_str()).with_context(|| context!("Failed to readlink (cwd)"))?;
@@ -848,10 +852,10 @@ fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -
     let dir_fd = regs.arg1::<i32>();
     // TODO: not fully correct for mkdir...
     let root_dir = if syscall_name == "mkdir" {
-        execution.starting_cwd()
+        execution.cwd()
     } else {
         if dir_fd == AT_FDCWD {
-            execution.starting_cwd()
+            execution.cwd()
         } else {
             let dir_fd = regs.arg1::<i32>();
             path_from_fd(tracer.curr_proc, dir_fd)?

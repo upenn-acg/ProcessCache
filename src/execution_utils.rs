@@ -292,7 +292,7 @@ pub fn get_full_path(
         if file_name_arg.starts_with("/") && syscall_name != "mkdir" && syscall_name != "mkdirat" {
             file_name_arg
         } else {
-            let cwd = curr_execution.starting_cwd();
+            let cwd = curr_execution.cwd();
             match syscall_name {
                 "access" | "creat" | "lstat" | "mkdir" | "open" | "stat" | "unlink" => {
                     cwd.join(file_name_arg)
@@ -314,7 +314,7 @@ pub fn get_full_path(
                     } else {
                         let dir_fd = regs.arg1::<i32>();
                         let dir_path = if dir_fd == AT_FDCWD {
-                            curr_execution.starting_cwd()
+                            curr_execution.cwd()
                         } else {
                             path_from_fd(tracer.curr_proc, dir_fd)?
                         };
