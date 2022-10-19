@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     condition_generator::Accessor,
-    syscalls::{Stat, SyscallEvent, SyscallFailure, SyscallOutcome},
+    syscalls::{MyStatFs, Stat, SyscallEvent, SyscallFailure, SyscallOutcome},
 };
 
 pub type Preconditions = HashMap<PathBuf, HashSet<Fact>>;
@@ -80,6 +80,7 @@ pub enum Fact {
     NoPermission(c_int),
     Or(Box<Fact>, Box<Fact>),
     StartingContents(Vec<u8>),
+    StatFsStructMatches(MyStatFs),
     StatStructMatches(Stat),
 }
 
@@ -168,6 +169,15 @@ impl FirstState {
                     self.0 = State::Exists;
                 }
                 SyscallEvent::Delete(SyscallOutcome::Fail(_)) => (),
+                SyscallEvent::DirectoryCreate(_, outcome) => match outcome {
+                    SyscallOutcome::Success => {
+                        self.0 = State::DoesntExist;
+                    }
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                        self.0 = State::Exists;
+                    }
+                    _ => (),
+                },
                 SyscallEvent::DirectoryRead(
                     _,
                     _,
@@ -179,6 +189,7 @@ impl FirstState {
                     self.0 = State::Exists;
                 }
                 SyscallEvent::DirectoryRead(_, _, _) => (),
+                SyscallEvent::FailedExec(_) => (),
                 SyscallEvent::Open(
                     OFlag::O_APPEND | OFlag::O_RDONLY,
                     _,
@@ -219,16 +230,6 @@ impl FirstState {
                     panic!("Open for {:?} failed because file already exists??", mode)
                 }
                 SyscallEvent::Open(f, _, _) => panic!("Unexpected open flag: {:?}", f),
-                SyscallEvent::Stat(_, SyscallOutcome::Success) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
-                    panic!("Failed to state because file already exists??");
-                }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-                    self.0 = State::DoesntExist;
-                }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
                 SyscallEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;
@@ -246,16 +247,17 @@ impl FirstState {
                     }
                 }
                 SyscallEvent::Rename(_, _, _) => (),
-                SyscallEvent::FailedExec(_) => (),
-                SyscallEvent::DirectoryCreate(_, outcome) => match outcome {
-                    SyscallOutcome::Success => {
-                        self.0 = State::DoesntExist;
-                    }
-                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                        self.0 = State::Exists;
-                    }
-                    _ => (),
-                },
+                SyscallEvent::Stat(_, SyscallOutcome::Success) => {
+                    self.0 = State::Exists;
+                }
+                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
+                    panic!("Failed to state because file already exists??");
+                }
+                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
+                    self.0 = State::DoesntExist;
+                }
+                SyscallEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
+                SyscallEvent::Statfs(_, _) => (),
             }
         }
     }

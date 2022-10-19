@@ -21,6 +21,20 @@ pub struct MyStat {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct MyStatFs {
+    // pub filesystem_type: FsType,
+    pub optimal_transfer_size: i64,
+    pub block_size: i64,
+    pub maximum_name_length: i64,
+    pub blocks: u64,
+    pub blocks_free: u64,
+    pub blocks_available: u64,
+    pub files: u64,
+    pub files_free: u64,
+    // pub filesystem_id: fsid_t,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // We need to differentiate between when we need to call
 // lstat to check or stat to check the precondition.
 pub enum Stat {
@@ -42,6 +56,7 @@ pub enum SyscallEvent {
     Open(OFlag, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
+    Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or dir doesn't exist.
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

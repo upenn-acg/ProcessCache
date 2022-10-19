@@ -165,6 +165,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_renameat2)?;
     loader.intercept(libc::SYS_socket)?;
     loader.intercept(libc::SYS_stat)?;
+    loader.intercept(libc::SYS_statfs)?;
     loader.intercept(libc::SYS_vfork)?;
     loader.intercept(libc::SYS_umask)?;
     loader.intercept(libc::SYS_unlink)?;
@@ -197,7 +198,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_set_tid_address)?;
     loader.let_pass(libc::SYS_set_robust_list)?;
     loader.let_pass(libc::SYS_sigaltstack)?;
-    loader.let_pass(libc::SYS_statfs)?;
 
     // TODO: Either unsure if/how to handle or
     // might need to be handled later.

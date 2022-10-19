@@ -6,7 +6,7 @@ use libc::{
 use nix::{
     dir,
     fcntl::{readlink, OFlag},
-    sys::stat::FileStat,
+    sys::{stat::FileStat, statfs::Statfs},
     unistd::Pid,
 };
 use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
@@ -16,6 +16,7 @@ use crate::{
     condition_utils::FileType,
     execution_utils::{background_thread_copying_outputs, OpenFlags},
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
+    syscalls::MyStatFs,
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -267,8 +268,7 @@ pub async fn trace_process(
 
                     if !caching_off {
                         match name {
-                            // "chdir" => panic!("Program called chdir!!!"),
-                            // "chmod" => panic!("Program called chmod!!!"),
+                            "connect" | "pipe" | "pipe2" | "socket" => (),
                             "creat" | "open" | "openat" => {
                                 // Get the full path and check if the file exists.
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -510,9 +510,9 @@ pub async fn trace_process(
 
                     match name {
                         "access" => handle_access(&curr_execution, &tracer)?,
-                        // "chown" => panic!("Program called chown!!!"),
-                        // "connect" => panic!("Program called connect!!"),
                         "chdir" => handle_chdir(&curr_execution, &tracer)?,
+                        // TODO?
+                        "connect" | "pipe" | "pipe2" | "socket" => (),
                         "creat" | "openat" | "open" => {
                             handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
                         }
@@ -525,14 +525,10 @@ pub async fn trace_process(
                             handle_get_dents64(&curr_execution, &regs, &tracer)?
                         }
                         "mkdir" | "mkdirat" => handle_mkdir(&curr_execution, name, &tracer)?,
-                        // "pipe" => {
-                        //     curr_execution.set_to_ignored();
-                        // }
-                        // "pipe2" => handle_pipe2(&curr_execution, &tracer)?,
                         "rename" | "renameat" | "renameat2" => {
                             handle_rename(&curr_execution, name, &tracer)?
                         }
-                        "socket" => panic!("Program called socket!!"),
+                        "statfs" => handle_statfs(&curr_execution, &tracer)?,
                         "unlink" | "unlinkat" => {
                             if nlinks_before == 1 {
                                 // before facts? (success)
@@ -1057,7 +1053,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     Ok(())
 }
 
-// Handling the stat system call.
+// Handling the stat system calls.
 fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
@@ -1085,6 +1081,8 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
             0 => {
                 let stat_ptr = regs.arg2::<u64>();
                 let stat_struct = tracer.read_value(stat_ptr as *const FileStat)?;
+                // let st = tracer.read_value(stat_ptr as *const Statfs)?;
+                // let whatever = st.filesystem_id();
                 let my_stat = MyStat {
                     st_dev: stat_struct.st_dev,
                     st_ino: stat_struct.st_ino,
@@ -1097,8 +1095,6 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
                     st_blksize: stat_struct.st_blksize,
                     st_blocks: stat_struct.st_blocks,
                 };
-                // TODO: actually do something with this fucking struct.
-                // Some(SyscallEvent::Stat(StatStruct::Struct(stat_struct), SyscallOutcome::Success(0)))
                 if syscall_name == "lstat" {
                     SyscallEvent::Stat(Some(Stat::Lstat(my_stat)), SyscallOutcome::Success)
                 } else {
@@ -1122,6 +1118,57 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
         {
             execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, path);
         }
+    }
+    Ok(())
+}
+
+fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_statfs", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_statfs()"))?;
+    let ret_val = regs.retval::<i32>();
+    let name = String::from("statfs");
+    // retval = 0 is success for this syscall.
+    let full_path = get_full_path(execution, &name, tracer)?;
+
+    let stat_syscall_event = {
+        match ret_val {
+            0 => {
+                let statfs_ptr = regs.arg2::<u64>();
+                let statfs_struct = tracer.read_value(statfs_ptr as *const Statfs)?;
+                // let st = tracer.read_value(stat_ptr as *const Statfs)?;
+                // let whatever = st.filesystem_id();
+                let my_statfs = MyStatFs {
+                    optimal_transfer_size: statfs_struct.optimal_transfer_size(),
+                    block_size: statfs_struct.block_size(),
+                    maximum_name_length: statfs_struct.maximum_name_length(),
+                    blocks: statfs_struct.blocks(),
+                    blocks_free: statfs_struct.blocks_free(),
+                    blocks_available: statfs_struct.blocks_available(),
+                    files: statfs_struct.files(),
+                    files_free: statfs_struct.files_free(),
+                };
+
+                SyscallEvent::Statfs(Some(my_statfs), SyscallOutcome::Success)
+            }
+            -2 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            -13 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+            e => panic!("Unexpected error returned by stat syscall!: {}", e),
+        }
+    };
+
+    if !full_path.starts_with("/tmp")
+        && !full_path.starts_with("/temp")
+        && !full_path.starts_with("/proc")
+        && !full_path.starts_with("/usr")
+        && !full_path.starts_with("/etc")
+        && !full_path.starts_with("/dev/null")
+        && !full_path.ends_with(".")
+    {
+        execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, full_path);
     }
     Ok(())
 }
