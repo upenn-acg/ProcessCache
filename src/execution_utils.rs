@@ -263,6 +263,7 @@ fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathB
     }
 }
 
+// TODO: clean this up
 // Currently: stat, fstat, newfstat64
 // We consider these syscalls to be inputs.
 // Well the files they are acting upon anyway!
@@ -276,7 +277,7 @@ pub fn get_full_path(
         .with_context(|| context!("Failed to get regs in exec event"))?;
 
     let path_arg_bytes = match syscall_name {
-        "access" | "creat" | "lstat" | "mkdir" | "open" | "stat" | "unlink" => {
+        "access" | "creat" | "lstat" | "mkdir" | "open" | "stat" | "statfs" | "unlink" => {
             regs.arg1::<*const c_char>()
         }
         "mkdirat" | "openat" | "unlinkat" => regs.arg2::<*const c_char>(),
@@ -294,9 +295,11 @@ pub fn get_full_path(
         } else {
             let cwd = curr_execution.cwd();
             match syscall_name {
-                "access" | "creat" | "lstat" | "mkdir" | "open" | "stat" | "unlink" => {
+                "access" | "creat" | "lstat" | "mkdir" | "open" | "stat" | "statfs" | "unlink" => {
                     cwd.join(file_name_arg)
                 }
+                // TODO: what the heck is this?
+                // TODO: is ../ handled? no?
                 "mkdirat" | "openat" | "unlinkat" => {
                     let file_name_arg_string = file_name_arg
                         .clone()
