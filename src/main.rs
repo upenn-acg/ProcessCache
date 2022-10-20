@@ -155,7 +155,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_lstat)?;
     loader.intercept(libc::SYS_mkdir)?;
     loader.intercept(libc::SYS_mkdirat)?;
-    loader.intercept(libc::SYS_newfstatat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
     loader.intercept(libc::SYS_pipe)?;
@@ -189,6 +188,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_mprotect)?;
     loader.let_pass(libc::SYS_mremap)?;
     loader.let_pass(libc::SYS_munmap)?;
+    loader.let_pass(libc::SYS_newfstatat)?;
     loader.let_pass(libc::SYS_prlimit64)?;
     loader.let_pass(libc::SYS_rseq)?;
     loader.let_pass(libc::SYS_rt_sigaction)?;
