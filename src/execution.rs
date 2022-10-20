@@ -199,6 +199,8 @@ pub async fn trace_process(
     let mut iostream_redirected = false;
     let caching_off = false;
     let mut skip_execution = false;
+    let mut stdout_duped_fd: Option<i32> = None;
+    let mut close_stdout_fd = false;
     // TODO: Deal with PID recycling?
     let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
 
@@ -254,6 +256,15 @@ pub async fn trace_process(
                     let sys_span = span!(Level::INFO, "Syscall", name);
                     let ee = sys_span.enter();
 
+                    // If close_stdout_fd == true, then we need to close our "stdout" fd.
+                    // Whatever stdout is duped to.
+                    if close_stdout_fd {
+                        if let Some(stdout_fd) = stdout_duped_fd {
+                        } else {
+                            panic!("Trying to close stdout fd, but stdout hasn't been duped!");
+                        }
+                    }
+
                     // For file creation type events (creat, open, openat), we want to know if the file already existed
                     // before the syscall happens (i.e. in the prehook).
                     let mut file_existed_at_start = false;
@@ -268,7 +279,7 @@ pub async fn trace_process(
 
                     if !caching_off {
                         match name {
-                            "connect" | "pipe" | "pipe2" | "socket" => (),
+                            "close" | "connect" | "pipe" | "pipe2" | "socket" => (),
                             "creat" | "open" | "openat" => {
                                 // Get the full path and check if the file exists.
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
@@ -504,13 +515,24 @@ pub async fn trace_process(
                     // In posthook.
                     let _ = s.enter();
                     let _ = sys_span.enter();
-                    let retval = regs.retval::<i32>();
+                    let ret_val = regs.retval::<i32>();
 
-                    span!(Level::INFO, "Posthook", retval).in_scope(|| info!(name));
+                    span!(Level::INFO, "Posthook", ret_val).in_scope(|| info!(name));
 
                     match name {
                         "access" => handle_access(&curr_execution, &tracer)?,
                         "chdir" => handle_chdir(&curr_execution, &tracer)?,
+                        "close" => {
+                            // The call was successful.
+                            if ret_val == 0 {
+                                let fd = regs.arg1::<i32>();
+                                // They are closing stdout.
+                                // Weirdos.
+                                if fd == 1 {
+                                    close_stdout_fd = true;
+                                }
+                            }
+                        }
                         // TODO?
                         "connect" | "pipe" | "pipe2" | "socket" => (),
                         "creat" | "openat" | "open" => {
@@ -770,6 +792,10 @@ fn handle_chdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_close(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    todo!();
 }
 
 /// Read directories returned by an intercepted system call to get_dents64. Return the d_name and

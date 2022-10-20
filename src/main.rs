@@ -143,6 +143,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_creat)?;
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
+    loader.intercept(libc::SYS_close)?;
     loader.intercept(libc::SYS_connect)?;
     loader.intercept(libc::SYS_execve)?;
     loader.intercept(libc::SYS_execveat)?;
@@ -202,7 +203,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     // TODO: Either unsure if/how to handle or
     // might need to be handled later.
     loader.let_pass(libc::SYS_clock_gettime)?;
-    loader.let_pass(libc::SYS_close)?;
     loader.let_pass(libc::SYS_dup)?;
     loader.let_pass(libc::SYS_dup2)?;
     loader.let_pass(libc::SYS_faccessat)?;
