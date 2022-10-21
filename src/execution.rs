@@ -16,6 +16,7 @@ use crate::{
     condition_utils::FileType,
     execution_utils::{background_thread_copying_outputs, OpenFlags},
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
+    redirection::{close_stdout_duped_fd, redirect_io_stream},
     syscalls::MyStatFs,
 };
 use crate::{
@@ -190,7 +191,6 @@ pub async fn trace_process(
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
-    // send_end: Option<Sender<Vec<(PathBuf, PathBuf)>>>,
     send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
@@ -199,7 +199,6 @@ pub async fn trace_process(
     let mut iostream_redirected = false;
     let caching_off = false;
     let mut skip_execution = false;
-    let mut stdout_duped_fd: Option<i32> = None;
     let mut close_stdout_fd = false;
     // TODO: Deal with PID recycling?
     let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
@@ -259,10 +258,12 @@ pub async fn trace_process(
                     // If close_stdout_fd == true, then we need to close our "stdout" fd.
                     // Whatever stdout is duped to.
                     if close_stdout_fd {
-                        if let Some(stdout_fd) = stdout_duped_fd {
-                        } else {
-                            panic!("Trying to close stdout fd, but stdout hasn't been duped!");
-                        }
+                        close_stdout_duped_fd(&curr_execution, &mut tracer)
+                            .await
+                            .with_context(|| context!("Unable to close stdout duped fd."))?;
+                        close_stdout_fd = false;
+                        // Continue to let original system call run.
+                        continue;
                     }
 
                     // For file creation type events (creat, open, openat), we want to know if the file already existed
@@ -484,10 +485,11 @@ pub async fn trace_process(
 
                                     // This is the first real system call this program is doing after exec-ing.
                                     // We will redirect their stdout and stderr output here by writing them to files.
-                                    redirection::redirect_io_stream(
+                                    redirect_io_stream(
                                         &stdout_file,
                                         STDOUT_FD,
                                         &mut tracer,
+                                        &curr_execution,
                                     )
                                     .await
                                     .with_context(|| context!("Unable to redirect stdout."))?;
@@ -792,10 +794,6 @@ fn handle_chdir(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn handle_close(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
-    todo!();
 }
 
 /// Read directories returned by an intercepted system call to get_dents64. Return the d_name and
