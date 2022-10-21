@@ -112,6 +112,7 @@ pub struct Execution {
     is_ignored: bool,
     is_root: bool,
     postconditions: Option<Postconditions>,
+    stdout_duped_fd: Option<i32>,
     successful_exec: ExecMetadata,
 }
 
@@ -124,6 +125,7 @@ impl Execution {
             is_ignored: false,
             is_root: false,
             postconditions: None,
+            stdout_duped_fd: None,
             successful_exec: ExecMetadata::new(calling_pid),
         }
     }
@@ -242,6 +244,10 @@ impl Execution {
         self.successful_exec.starting_cwd()
     }
 
+    fn stdout_duped_fd(&self) -> Option<i32> {
+        self.stdout_duped_fd
+    }
+
     fn set_to_ignored(&mut self, exec_metadata: ExecMetadata) {
         self.is_ignored = true;
         self.exit_code = None;
@@ -267,6 +273,16 @@ impl Execution {
 
     fn update_postconditions(&mut self, postconditions: Postconditions) {
         self.postconditions = Some(postconditions);
+    }
+
+    fn update_stdout_duped_fd(&mut self, duped_fd: i32) {
+        if self.stdout_duped_fd.is_none() {
+            self.stdout_duped_fd = Some(duped_fd);
+        } else {
+            panic!(
+                "Trying to update stdout duped fd but this has already been done for this exec!!"
+            );
+        }
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
@@ -384,6 +400,10 @@ impl RcExecution {
         self.0.borrow().starting_cwd()
     }
 
+    pub fn stdout_duped_fd(&self) -> Option<i32> {
+        self.0.borrow().stdout_duped_fd()
+    }
+
     pub fn update_cwd(&self, new_cwd: PathBuf) {
         self.0.borrow_mut().update_cwd(new_cwd);
     }
@@ -394,6 +414,10 @@ impl RcExecution {
 
     pub fn update_postconditions(&self, postconditions: Postconditions) {
         self.0.borrow_mut().update_postconditions(postconditions)
+    }
+
+    pub fn update_stdout_duped_fd(&self, duped_fd: i32) {
+        self.0.borrow_mut().update_stdout_duped_fd(duped_fd);
     }
 
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
