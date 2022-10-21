@@ -424,7 +424,7 @@ pub async fn trace_process(
                                                     SyscallFailure::PermissionDenied,
                                                 ),
                                                 e => panic!(
-                                                    "Unexpected error returned by stat syscall!: {}",
+                                                    "Unexpected error returned by execve syscall!: {}",
                                                     e
                                                 ),
                                             }
