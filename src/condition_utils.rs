@@ -136,6 +136,12 @@ impl FirstState {
                     OFlag::O_CREAT,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => (),
+                SyscallEvent::Create(
+                    OFlag::O_CREAT,
+                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
+                ) => {
+                    self.0 = State::Exists;
+                }
                 SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(failure)) => {
                     panic!("Failed to create for strange reason: {:?}", failure);
                 }

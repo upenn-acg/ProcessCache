@@ -471,6 +471,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
                         }
+                        SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                            curr_set.insert(Fact::Exists);
+                        }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
