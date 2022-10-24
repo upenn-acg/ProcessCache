@@ -403,6 +403,10 @@ pub async fn trace_process(
                                                     .update_successful_exec(new_exec_metadata);
                                             }
                                         } else if curr_execution.pid() != tracer.curr_proc {
+                                            // Get the stdout fd from the current exec if it exists.
+                                            let childs_stdout_fd = curr_execution
+                                                .get_stdout_duped_fd(tracer.curr_proc);
+
                                             // New rc exec for the child exec.
                                             // Add to parent's struct.
                                             // set curr execution to the new one.
@@ -412,6 +416,15 @@ pub async fn trace_process(
                                                 .update_successful_exec(new_exec_metadata);
                                             let new_rc_child_exec =
                                                 RcExecution::new(new_child_exec);
+
+                                            if let Some(stdout_fd) = childs_stdout_fd {
+                                                new_rc_child_exec.add_stdout_duped_fd(
+                                                    stdout_fd,
+                                                    tracer.curr_proc,
+                                                );
+                                                curr_execution
+                                                    .remove_stdout_duped_fd(tracer.curr_proc)
+                                            }
                                             curr_execution
                                                 .add_child_execution(new_rc_child_exec.clone());
                                             curr_execution = new_rc_child_exec;
@@ -871,15 +884,11 @@ fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -
     let full_path = get_full_path(execution, syscall_name, tracer)?;
     let dir_fd = regs.arg1::<i32>();
     // TODO: not fully correct for mkdir...
-    let root_dir = if syscall_name == "mkdir" {
+    let root_dir = if syscall_name == "mkdir" || dir_fd == AT_FDCWD {
         execution.cwd()
     } else {
-        if dir_fd == AT_FDCWD {
-            execution.cwd()
-        } else {
-            let dir_fd = regs.arg1::<i32>();
-            path_from_fd(tracer.curr_proc, dir_fd)?
-        }
+        let dir_fd = regs.arg1::<i32>();
+        path_from_fd(tracer.curr_proc, dir_fd)?
     };
     let ret_val = regs.retval::<i32>();
     let syscall_outcome = match ret_val {

@@ -112,7 +112,8 @@ pub struct Execution {
     is_ignored: bool,
     is_root: bool,
     postconditions: Option<Postconditions>,
-    stdout_duped_fd: Option<i32>,
+    // stdout_duped_fd: Option<i32>,
+    stdout_fd_map: HashMap<Pid, i32>,
     successful_exec: ExecMetadata,
 }
 
@@ -125,7 +126,7 @@ impl Execution {
             is_ignored: false,
             is_root: false,
             postconditions: None,
-            stdout_duped_fd: None,
+            stdout_fd_map: HashMap::new(),
             successful_exec: ExecMetadata::new(calling_pid),
         }
     }
@@ -212,6 +213,13 @@ impl Execution {
         cache_map.insert(command_key, new_rc_cached_exec);
     }
 
+    fn get_stdout_duped_fd(&self, pid: Pid) -> Option<i32> {
+        match self.stdout_fd_map.get(&pid) {
+            Some(fd) => Some(*fd),
+            _ => None,
+        }
+    }
+
     fn file_events(&self) -> ExecFileEvents {
         self.file_events.clone()
     }
@@ -244,15 +252,20 @@ impl Execution {
         self.successful_exec.starting_cwd()
     }
 
-    fn stdout_duped_fd(&self) -> Option<i32> {
-        self.stdout_duped_fd
-    }
-
     fn set_to_ignored(&mut self, exec_metadata: ExecMetadata) {
         self.is_ignored = true;
         self.exit_code = None;
         self.postconditions = None;
         self.successful_exec = exec_metadata;
+    }
+
+    fn remove_stdout_duped_fd(&mut self, pid: Pid) {
+        if self.stdout_fd_map.remove(&pid).is_none() {
+            panic!(
+                "Tried to remove stdout fd from map but it doesn't exist, pid: {:?}",
+                pid
+            );
+        }
     }
 
     fn set_to_root(&mut self) {
@@ -275,12 +288,12 @@ impl Execution {
         self.postconditions = Some(postconditions);
     }
 
-    fn update_stdout_duped_fd(&mut self, duped_fd: i32) {
-        if self.stdout_duped_fd.is_none() {
-            self.stdout_duped_fd = Some(duped_fd);
+    fn add_stdout_duped_fd(&mut self, duped_fd: i32, pid: Pid) {
+        if !self.stdout_fd_map.contains_key(&pid) {
+            self.stdout_fd_map.insert(pid, duped_fd);
         } else {
             panic!(
-                "Trying to update stdout duped fd but this has already been done for this exec!!"
+                "Trying to add stdout duped fd but this has already been done for this pid (in this exec struct)!!"
             );
         }
     }
@@ -312,6 +325,10 @@ impl RcExecution {
 
     pub fn add_child_execution(&self, child_execution: RcExecution) {
         self.0.borrow_mut().add_child_execution(child_execution);
+    }
+
+    pub fn add_stdout_duped_fd(&self, duped_fd: i32, pid: Pid) {
+        self.0.borrow_mut().add_stdout_duped_fd(duped_fd, pid);
     }
 
     pub fn add_exit_code(&self, code: i32) {
@@ -365,6 +382,9 @@ impl RcExecution {
         self.0.borrow().generate_cached_exec(cache_map)
     }
 
+    pub fn get_stdout_duped_fd(&self, pid: Pid) -> Option<i32> {
+        self.0.borrow().get_stdout_duped_fd(pid)
+    }
     // Tells us that the Execution struct has not been filled
     // in (this is the root proc and it has not execve'd yet).
     pub fn is_empty_root_exec(&self) -> bool {
@@ -388,6 +408,10 @@ impl RcExecution {
         self.0.borrow().populate_cache_map(cache_map)
     }
 
+    pub fn remove_stdout_duped_fd(&self, pid: Pid) {
+        self.0.borrow_mut().remove_stdout_duped_fd(pid)
+    }
+
     pub fn set_to_ignored(&self, new_exec_metadata: ExecMetadata) {
         self.0.borrow_mut().set_to_ignored(new_exec_metadata)
     }
@@ -400,10 +424,6 @@ impl RcExecution {
         self.0.borrow().starting_cwd()
     }
 
-    pub fn stdout_duped_fd(&self) -> Option<i32> {
-        self.0.borrow().stdout_duped_fd()
-    }
-
     pub fn update_cwd(&self, new_cwd: PathBuf) {
         self.0.borrow_mut().update_cwd(new_cwd);
     }
@@ -414,10 +434,6 @@ impl RcExecution {
 
     pub fn update_postconditions(&self, postconditions: Postconditions) {
         self.0.borrow_mut().update_postconditions(postconditions)
-    }
-
-    pub fn update_stdout_duped_fd(&self, duped_fd: i32) {
-        self.0.borrow_mut().update_stdout_duped_fd(duped_fd);
     }
 
     pub fn update_successful_exec(&self, new_exec_metadata: ExecMetadata) {
