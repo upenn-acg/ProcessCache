@@ -144,7 +144,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_clone)?;
     loader.intercept(libc::SYS_clone3)?;
     loader.intercept(libc::SYS_close)?;
-    loader.intercept(libc::SYS_connect)?;
+    // loader.intercept(libc::SYS_connect)?;
     loader.intercept(libc::SYS_execve)?;
     loader.intercept(libc::SYS_execveat)?;
     loader.intercept(libc::SYS_exit)?;
@@ -158,16 +158,16 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_mkdirat)?;
     loader.intercept(libc::SYS_open)?;
     loader.intercept(libc::SYS_openat)?;
-    loader.intercept(libc::SYS_pipe)?;
-    loader.intercept(libc::SYS_pipe2)?;
+    // loader.intercept(libc::SYS_pipe)?;
+    // loader.intercept(libc::SYS_pipe2)?;
     loader.intercept(libc::SYS_rename)?;
     loader.intercept(libc::SYS_renameat)?;
     loader.intercept(libc::SYS_renameat2)?;
-    loader.intercept(libc::SYS_socket)?;
+    // loader.intercept(libc::SYS_socket)?;
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_statfs)?;
     loader.intercept(libc::SYS_vfork)?;
-    loader.intercept(libc::SYS_umask)?;
+    // loader.intercept(libc::SYS_umask)?;
     loader.intercept(libc::SYS_unlink)?;
     loader.intercept(libc::SYS_unlinkat)?;
 
@@ -175,6 +175,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_brk)?;
     loader.let_pass(libc::SYS_chmod)?;
     loader.let_pass(libc::SYS_chown)?;
+    loader.let_pass(libc::SYS_connect)?;
     loader.let_pass(libc::SYS_fadvise64)?;
     loader.let_pass(libc::SYS_fsync)?;
     loader.let_pass(libc::SYS_getegid)?;
@@ -190,6 +191,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_mremap)?;
     loader.let_pass(libc::SYS_munmap)?;
     loader.let_pass(libc::SYS_newfstatat)?;
+    loader.let_pass(libc::SYS_pipe)?;
+    loader.let_pass(libc::SYS_pipe2)?;
     loader.let_pass(libc::SYS_prlimit64)?;
     loader.let_pass(libc::SYS_rseq)?;
     loader.let_pass(libc::SYS_rt_sigaction)?;
@@ -198,6 +201,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_sched_getaffinity)?;
     loader.let_pass(libc::SYS_set_tid_address)?;
     loader.let_pass(libc::SYS_set_robust_list)?;
+    loader.let_pass(libc::SYS_socket)?;
     loader.let_pass(libc::SYS_sigaltstack)?;
 
     // TODO: Either unsure if/how to handle or
@@ -223,6 +227,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_sysinfo)?;
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_times)?;
+    loader.let_pass(libc::SYS_umask)?;
+    loader.let_pass(libc::SYS_utimensat)?;
     loader.let_pass(libc::SYS_wait4)?;
     loader.let_pass(libc::SYS_write)?;
     loader.let_pass(libc::SYS_writev)?;

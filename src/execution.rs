@@ -280,7 +280,7 @@ pub async fn trace_process(
 
                     if !caching_off {
                         match name {
-                            "close" | "connect" | "pipe" | "pipe2" | "socket" => (),
+                            // "close" | "connect" | "pipe" | "pipe2" | "socket" => (),
                             "creat" | "open" | "openat" => {
                                 // Get the full path and check if the file exists.
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
