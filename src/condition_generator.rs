@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir},
+    fs::{self, read_dir, File},
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
-    path::PathBuf,
+    path::PathBuf, hash::Hash,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -61,50 +61,63 @@ impl Accessor {
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecFileEvents(pub HashMap<Accessor, Vec<SyscallEvent>>);
+pub struct ExecFileEvents {
+    dir_events: HashMap<Accessor, Vec<DirEvent>>,
+    file_events: HashMap<Accessor, Vec<FileEvent>>,
+}
 
 impl ExecFileEvents {
-    pub fn new(map: HashMap<Accessor, Vec<SyscallEvent>>) -> ExecFileEvents {
-        ExecFileEvents(map)
+    pub fn dir_events(&self) -> HashMap<Accessor, Vec<DirEvent>> {
+        self.dir_events.clone()
     }
 
-    // Add new access to the struct.
-    pub fn add_new_file_event(
-        &mut self,
-        caller_pid: Pid,
-        file_event: SyscallEvent,
-        full_path: PathBuf,
-    ) {
-        let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
-        let _ = s.enter();
-
-        let fpath = full_path.clone().into_os_string().into_string().unwrap();
-        if fpath.contains("tmp") {
-            return;
-        }
-
-        s.in_scope(|| "in add_new_file_event");
-        // First case, we already saw this file and now we are adding another event to it.
-        if let Some(event_list) = self.0.get_mut(&Accessor::CurrProc(full_path.clone())) {
-            s.in_scope(|| "adding to existing event list");
-            event_list.push(file_event);
-        } else {
-            let event_list = vec![file_event];
-            s.in_scope(|| "adding new event list");
-            self.0.insert(Accessor::CurrProc(full_path), event_list);
-        }
-    }
-
-    pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
-        for (_, list) in self.0.iter_mut() {
-            list.push(SyscallEvent::ChildExec(child_pid));
-        }
-    }
-
-    pub fn events(&self) -> HashMap<Accessor, Vec<SyscallEvent>> {
-        self.0.clone()
+    pub fn file_events(&self) -> HashMap<Accessor, Vec<FileEvent>> {
+        self.file_events.clone()
     }
 }
+
+// impl ExecFileEvents {
+//     pub fn new(map: HashMap<Accessor, Vec<FileEvent>>) -> ExecFileEvents {
+//         ExecFileEvents(map)
+//     }
+
+//     // Add new access to the struct.
+//     pub fn add_new_file_event(
+//         &mut self,
+//         caller_pid: Pid,
+//         file_event: FileEvent,
+//         full_path: PathBuf,
+//     ) {
+//         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
+//         let _ = s.enter();
+
+//         let fpath = full_path.clone().into_os_string().into_string().unwrap();
+//         if fpath.contains("tmp") {
+//             return;
+//         }
+
+//         s.in_scope(|| "in add_new_file_event");
+//         // First case, we already saw this file and now we are adding another event to it.
+//         if let Some(event_list) = self.0.get_mut(&Accessor::CurrProc(full_path.clone())) {
+//             s.in_scope(|| "adding to existing event list");
+//             event_list.push(file_event);
+//         } else {
+//             let event_list = vec![file_event];
+//             s.in_scope(|| "adding new event list");
+//             self.0.insert(Accessor::CurrProc(full_path), event_list);
+//         }
+//     }
+
+//     pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
+//         for (_, list) in self.0.iter_mut() {
+//             list.push(FileEvent::ChildExec(child_pid));
+//         }
+//     }
+
+//     pub fn events(&self) -> HashMap<Accessor, Vec<FileEvent>> {
+//         self.0.clone()
+//     }
+// }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
     debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
@@ -285,10 +298,21 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
 
 // TODO: check env vars and starting cwd
 pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
-    for (path_name, fact_set) in conditions {
+    let dir_preconds = conditions.dir_preconditions();
+    let file_preconds = conditions.file_preconditions();
+
+    for (path_name, fact_set) in dir_preconds {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
-                debug!("Fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
+                debug!("Dir fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
+                return false;
+            }
+        }
+    }
+    for (path_name, fact_set) in file_preconds {
+        for fact in fact_set {
+            if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
+                debug!("File fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
                 return false;
             }
         }
@@ -296,14 +320,31 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     true
 }
 
+pub fn generate_preconditions(events: ExecFileEvents) -> Preconditions {
+    let dir_events = events.dir_events();
+    let file_events = events.file_events();
+
+    let dir_preconds = generate_dir_preconditions(dir_events);
+    let file_preconds = generate_file_preconditions(file_events);
+
+    Preconditions {
+        dir: dir_preconds,
+        file: file_preconds,
+    }
+}
+
+pub fn generate_dir_preconditions(dir_events: HashMap<Accessor, Vec<DirEvent>>) -> HashMap<PathBuf, HashSet<Fact>> {
+    todo!();
+}
+
 // Directory Preconditions (For now, just cwd), File Preconditions
 // Takes in all the events for ONE RESOURCE and generates its preconditions.
 // TODO: when we do the preconditions checking, take the FIRST stat only.
-pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions {
+pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>>,) -> HashMap<PathBuf, HashSet<Fact>> {
     let sys_span = span!(Level::INFO, "generate_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
-    for accessor in exec_file_events.events().keys() {
+    for accessor in file_events.keys() {
         // For preconditions, I am not concerned with with who accessed.
         let path = match accessor {
             Accessor::ChildProc(_, full_path) => full_path,
@@ -312,7 +353,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
         curr_file_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
-    for (accessor, event_list) in exec_file_events.events() {
+    for (accessor, event_list) in file_events {
         let full_path = match accessor {
             Accessor::ChildProc(_, path) => path,
             Accessor::CurrProc(path) => path,
@@ -344,15 +385,15 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     panic!("Last mod was deleted, but was deleted is false??, path: {:?}", full_path);
                 }
 
-                (SyscallEvent::Access(_, _), State::DoesntExist, _, _) => {
+                (FileEvent::Access(_, _), State::DoesntExist, _, _) => {
                     // Didn't exist, was created, this access depends on a file that was created during execution,
                     // does not contribute to preconditions.
                 }
                 // Your access depends on a file I don't know nothing about.
-                (SyscallEvent::Access(_, _), State::Exists, _, true) => (),
+                (FileEvent::Access(_, _), State::Exists, _, true) => (),
                 // It existed, it hasn't been deleted, these priveleges depend on a file from
                 // BEFORE the execution :O
-                (SyscallEvent::Access(flags, outcome), State::Exists, _, false) => {
+                (FileEvent::Access(flags, outcome), State::Exists, _, false) => {
                     // It existed, it hasn't been deleted, these priveleges depend on a file from
                     // BEFORE the execution :O
                     match outcome {
@@ -374,19 +415,19 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         o => panic!("Unexpected access syscall failure: {:?}", o),
                     }
                 }
-                (SyscallEvent::Access(_, _), State::None, Mod::Created, _) => {
+                (FileEvent::Access(_, _), State::None, Mod::Created, _) => {
                     panic!("No first state but last mod was created??");
                 }
-                (SyscallEvent::Access(_, _), State::None, Mod::Deleted, _) => {
+                (FileEvent::Access(_, _), State::None, Mod::Deleted, _) => {
                     panic!("No first state but last mod was deleted??");
                 }
-                (SyscallEvent::Access(_, _), State::None, Mod::Modified, _) => {
+                (FileEvent::Access(_, _), State::None, Mod::Modified, _) => {
                     panic!("No first state but last mod was modified??");
                 }
-                (SyscallEvent::Access(_, _), State::None, Mod::Renamed(_,_), _) => {
+                (FileEvent::Access(_, _), State::None, Mod::Renamed(_,_), _) => {
                     panic!("No first state but last mod was renamed??");
                 }
-                (SyscallEvent::Access(flags, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Access(flags, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -409,14 +450,14 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         o => panic!("Unexpected access syscall failure: {:?}", o),
                     }
                 }
-                (SyscallEvent::ChildExec(_), _, _, _) => (),
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Created, _) => (),
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Deleted, true) => (),
+                (FileEvent::ChildExec(_), _, _, _) => (),
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Created, _) => (),
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Deleted, true) => (),
 
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Modified, true) => (),
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Modified, false) => (),
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
-                (SyscallEvent::Create(mode, outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified, true) => (),
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified, false) => (),
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
+                (FileEvent::Create(mode, outcome), State::DoesntExist, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -439,25 +480,25 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Created, true) => (),
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Deleted, true) => (),
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Modified, true) => (),
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Modified, false) => (),
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Renamed(_, _), _) => (),
-                (SyscallEvent::Create(_, _), State::Exists, Mod::None, false) => (),
-                (SyscallEvent::Create(_, _), State::None, Mod::Created, _) => {
+                (FileEvent::Create(_, _), State::Exists, Mod::Created, true) => (),
+                (FileEvent::Create(_, _), State::Exists, Mod::Deleted, true) => (),
+                (FileEvent::Create(_, _), State::Exists, Mod::Modified, true) => (),
+                (FileEvent::Create(_, _), State::Exists, Mod::Modified, false) => (),
+                (FileEvent::Create(_, _), State::Exists, Mod::Renamed(_, _), _) => (),
+                (FileEvent::Create(_, _), State::Exists, Mod::None, false) => (),
+                (FileEvent::Create(_, _), State::None, Mod::Created, _) => {
                     panic!("First state none but last mod created??");
                 }
-                (SyscallEvent::Create(_, _), State::None, Mod::Deleted, true) => {
+                (FileEvent::Create(_, _), State::None, Mod::Deleted, true) => {
                     panic!("First state none but last mod deleted??");
                 }
-                (SyscallEvent::Create(_, _), State::None, Mod::Modified, _) => {
+                (FileEvent::Create(_, _), State::None, Mod::Modified, _) => {
                     panic!("First state none but last mod modified??");
                 }
-                (SyscallEvent::Create(_, _), State::None, Mod::Renamed(_, _), _) => {
+                (FileEvent::Create(_, _), State::None, Mod::Renamed(_, _), _) => {
                     panic!("First state none but last mod renamed??");
                 }
-                (SyscallEvent::Create(OFlag::O_CREAT, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Create(OFlag::O_CREAT, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -482,7 +523,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Create(OFlag::O_EXCL, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Create(OFlag::O_EXCL, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -504,59 +545,59 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected create file failure, no state yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Create(f, _), _, _, _) => panic!("Unexpected create flag: {:?}", f),
+                (FileEvent::Create(f, _), _, _, _) => panic!("Unexpected create flag: {:?}", f),
                 // If this has been deleted already, this action won't add anything to the preconditions.
-                (SyscallEvent::DirectoryCreate(_, _), _, _, true) => (),
-                (SyscallEvent::DirectoryCreate(root_dir, outcome), State::None, curr_state, false) => {
-                    if *curr_state == Mod::None {
-                        let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-                        match outcome {
-                            SyscallOutcome::Success => {
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                // We have write perm to root dir and the created dir didn't already exist.
-                                curr_set.insert(Fact::HasDirPermission((flags).bits(), Some(root_dir)));
-                                curr_set.insert(Fact::DoesntExist);
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                                curr_set.insert(Fact::Exists);
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                // Right now just taking into account write permission to the root dir.
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                curr_set.insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
-                            }
-                            f => panic!("Unexpected failure mkdir: {:?}", f),
-                        }
-                    } else {
-                        panic!("First state none but curr state is not none!!");
-                    }
-                }
-                // We already know it didn't exist at start. Adds nothing.
-                (SyscallEvent::DirectoryCreate(_, _), State::DoesntExist | State::Exists, _, false) => (),
-                (SyscallEvent::DirectoryRead(full_path, entries, outcome), _, _, _) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-                    match outcome {
-                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
-                        }
-                        SyscallOutcome::Success => {
-                            curr_set.insert(Fact::DirEntriesMatch(entries));
-                        }
-                        _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
-                    }
-                }
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::Created, true) => (),
-                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
+                // (FileEvent::DirectoryCreate(_, _), _, _, true) => (),
+                // (FileEvent::DirectoryCreate(root_dir, outcome), State::None, curr_state, false) => {
+                //     if *curr_state == Mod::None {
+                //         let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                //         match outcome {
+                //             SyscallOutcome::Success => {
+                //                 let mut flags = AccessFlags::empty();
+                //                 flags.insert(AccessFlags::W_OK);
+                //                 // We have write perm to root dir and the created dir didn't already exist.
+                //                 curr_set.insert(Fact::HasDirPermission((flags).bits(), Some(root_dir)));
+                //                 curr_set.insert(Fact::DoesntExist);
+                //             }
+                //             SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                //                 curr_set.insert(Fact::Exists);
+                //             }
+                //             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                //                 // Right now just taking into account write permission to the root dir.
+                //                 let mut flags = AccessFlags::empty();
+                //                 flags.insert(AccessFlags::W_OK);
+                //                 curr_set.insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
+                //             }
+                //             f => panic!("Unexpected failure mkdir: {:?}", f),
+                //         }
+                //     } else {
+                //         panic!("First state none but curr state is not none!!");
+                //     }
+                // }
+                // // We already know it didn't exist at start. Adds nothing.
+                // (FileEvent::DirectoryCreate(_, _), State::DoesntExist | State::Exists, _, false) => (),
+                // (FileEvent::DirectoryRead(full_path, entries, outcome), _, _, _) => {
+                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                //     match outcome {
+                //         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                //             curr_set.insert(Fact::DoesntExist);
+                //         }
+                //         SyscallOutcome::Success => {
+                //             curr_set.insert(Fact::DirEntriesMatch(entries));
+                //         }
+                //         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
+                //     }
+                // }
+                (FileEvent::Delete(_), State::DoesntExist, Mod::Created, true) => (),
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
                     if outcome == SyscallOutcome::Success {
                         has_been_deleted = true;
                     }
                 }
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::Deleted, true) => (),
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::Modified, true) => (),
+                (FileEvent::Delete(_), State::DoesntExist, Mod::Deleted, true) => (),
+                (FileEvent::Delete(_), State::DoesntExist, Mod::Modified, true) => (),
                 // It didn't exist, was created, was modified, we might be deleting it now.
-                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Modified, false) => {
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Modified, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
                             has_been_deleted = true;
@@ -564,7 +605,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path), _) => {
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path), _) => {
                     // old path? didnt exist, created, renamed. now trying to delete. won't succeed it doesnt exist anymore.
                     // newpath? didn't exist, rename made it exist, now it might get deleted.
                     match outcome {
@@ -576,7 +617,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
                             has_been_deleted = true;
@@ -584,10 +625,10 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(_), State::Exists, Mod::Created, true) => (),
-                (SyscallEvent::Delete(_), State::Exists, Mod::Deleted, true) => (),
-                (SyscallEvent::Delete(_), State::Exists, Mod::Modified, true) => (),
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::Modified, false) => {
+                (FileEvent::Delete(_), State::Exists, Mod::Created, true) => (),
+                (FileEvent::Delete(_), State::Exists, Mod::Deleted, true) => (),
+                (FileEvent::Delete(_), State::Exists, Mod::Modified, true) => (),
+                (FileEvent::Delete(outcome), State::Exists, Mod::Modified, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
                             has_been_deleted = true;
@@ -595,8 +636,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, exists, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(_), State::Exists, Mod::Renamed(_,_), true) => (),
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _), false) => {
+                (FileEvent::Delete(_), State::Exists, Mod::Renamed(_,_), true) => (),
+                (FileEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _), false) => {
                     match outcome {
                         SyscallOutcome::Success => {
                             has_been_deleted = true;
@@ -604,7 +645,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, exists, last mod renamed, no delete yet: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Delete(outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -624,23 +665,23 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Delete failed for unexpected reason, exists, no mods: {:?}", f),
                     }
                 }
-                (SyscallEvent::Delete(_), State::None, Mod::Created, _) => {
+                (FileEvent::Delete(_), State::None, Mod::Created, _) => {
                     panic!("First state was none but last mod was created??");
                 }
-                (SyscallEvent::Delete(_), State::None, Mod::Deleted, _) => {
+                (FileEvent::Delete(_), State::None, Mod::Deleted, _) => {
                     panic!("First state was none but last mod was deleted??");
                 }
                 // None state can be because TRUNC
-                (SyscallEvent::Delete(_), State::None, Mod::Modified, true) => (),
-                (SyscallEvent::Delete(outcome), State::None, Mod::Modified, false) => {
+                (FileEvent::Delete(_), State::None, Mod::Modified, true) => (),
+                (FileEvent::Delete(outcome), State::None, Mod::Modified, false) => {
                     if outcome == SyscallOutcome::Success {
                         has_been_deleted = true;
                     }
                 }
-                (SyscallEvent::Delete(_), State::None, Mod::Renamed(_,_), _) => {
+                (FileEvent::Delete(_), State::None, Mod::Renamed(_,_), _) => {
                     panic!("First state was none but last mod was renamed??");
                 }
-                (SyscallEvent::Delete(outcome), State::None, Mod::None, false) => {
+                (FileEvent::Delete(outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -663,7 +704,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected failure from delete event: {:?}", f),
                     }
                 }
-                (SyscallEvent::FailedExec(failure), _, _, _) => {
+                (FileEvent::FailedExec(failure), _, _, _) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match failure {
                         SyscallFailure::FileDoesntExist => {
@@ -996,28 +1037,28 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 }
                 //TODO: Something similar for AccessMode?
                 (
-                    SyscallEvent::Rename(_, _, _),
+                    FileEvent::Rename(_, _, _),
                     State::DoesntExist,
                     Mod::Created,
                     _,
                 ) => (),
-                (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted, true) => {
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted, true) => {
                     // Created. Deleted. Won't succeed because old path is deleted.
                     // Already exists no, doesn't exist, yes makes sense as an error.
                     // But doesn't contribute to the preconditions.
                     // Permission denied doesn't make sense either.
                 }
-                (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Modified, _) => {
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Modified, _) => {
                     // Created, deleted, created, modified. Oof.
                     // Already existe no, doesn't exist no, permissions no.
                     // Success tells us nothing new too.
                 }
-                (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_,_), _) => {
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_,_), _) => {
                     // Created, deleted, created, renamed. Or Created, renamed.
                     // Already exists no, doesn't exist no, permissions no.
                     // Success tells us nothing for preconds.
                 }
-                (SyscallEvent::Rename(_, _, outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Rename(_, _, outcome), State::DoesntExist, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     // So, it doesn't exist. We can't rename it.
@@ -1032,31 +1073,31 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
                     }
                 }
-                (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Created, _) => {
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Created, _) => {
                     // Existed. Deleted. Created! Or Existed. Created. Now renamin'.
                     // Already exists? no.
                     // Doesn't exist, no.
                     // Permissions denied, how?
                     // Success, cool.
                 }
-                (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Deleted, true) => {
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Deleted, true) => {
                     // Existed. Then was deleted.
                     // This will fail because the file doesn't exist.
                     // Success and already exist don't make sense. Same with permissions.
                     // Nothing contributes.
                 }
-                (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Modified, _) => {
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Modified, _) => {
                     // Existed, Deleted, Created, Modified or Existed, Modified
                     // We should be able to rename this.
                     // Permissions no, doesn't exist no, already exists no.
                 }
-                (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_,_), _) => {
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_,_), _) => {
                     // Existed. Deleted. Created. Renamed. Or Existed, Renamed.
                     // Don't think this affects preconditions.
                     // Eventually we will handle rename flags where they don't wanna replace
                     // an existing file, and that will be a precondition.
                 }
-                (SyscallEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     // It exists, we haven't modified it.
@@ -1077,19 +1118,19 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         }
                     }
                 }
-                (SyscallEvent::Rename(_, _, _), State::None, Mod::Created, _) => {
+                (FileEvent::Rename(_, _, _), State::None, Mod::Created, _) => {
                     panic!("No first state but last mod was created??");
                 }
-                (SyscallEvent::Rename(_, _, _), State::None, Mod::Deleted, _) => {
+                (FileEvent::Rename(_, _, _), State::None, Mod::Deleted, _) => {
                     panic!("No first state but last mod was deleted??");
                 }
-                (SyscallEvent::Rename(_, _, _), State::None, Mod::Modified, _) => {
+                (FileEvent::Rename(_, _, _), State::None, Mod::Modified, _) => {
                     panic!("No first state but last mod was modified??");
                 }
-                (SyscallEvent::Rename(_, _, _), State::None, Mod::Renamed(_,_), _) => {
+                (FileEvent::Rename(_, _, _), State::None, Mod::Renamed(_,_), _) => {
                     panic!("No first state but last mod was renamed??");
                 }
-                (SyscallEvent::Rename(old_path, _, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Rename(old_path, _, outcome), State::None, Mod::None, false) => {
                     // No first state, no mods, haven't deleted. This is the first thing we are doing to this
                     // resource probably.
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
@@ -1123,16 +1164,16 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Stat(_, _), State::DoesntExist, Mod::Created, _) => {
+                (FileEvent::Stat(_, _), State::DoesntExist, Mod::Created, _) => {
                     // Didn't exist, created, deleted, created, this stat doesn't depend on
                     // a file that existed at the start. and obviously we have exec access to the dir.
                 }
-                (SyscallEvent::Stat(_, _), State::DoesntExist, Mod::Deleted, true) => {
+                (FileEvent::Stat(_, _), State::DoesntExist, Mod::Deleted, true) => {
                     // The file didn't exist. Then the file was created and deleted. Adds nothing.
                 }
-                (SyscallEvent::Stat(_, _), State::DoesntExist, Mod::Modified, _) => (),
-                (SyscallEvent::Stat(_, _), State::DoesntExist, Mod::Renamed(_,_), _) => (),
-                (SyscallEvent::Stat(_, outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Stat(_, _), State::DoesntExist, Mod::Modified, _) => (),
+                (FileEvent::Stat(_, _), State::DoesntExist, Mod::Renamed(_,_), _) => (),
+                (FileEvent::Stat(_, outcome), State::DoesntExist, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
@@ -1145,13 +1186,13 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 }
                 // It existed at the start, but we have modified it, so this stat doesn't depend on
                 // the file at the beginning of the computation.
-                (SyscallEvent::Stat(_,_), State::Exists, Mod::Created, true) => (),
-                (SyscallEvent::Stat(_,_), State::Exists, Mod::Deleted, true) => (),
-                (SyscallEvent::Stat(_,_), State::Exists, Mod::Modified, true) => (),
-                (SyscallEvent::Stat(_,_), State::Exists, Mod::Modified, false) => (),
+                (FileEvent::Stat(_,_), State::Exists, Mod::Created, true) => (),
+                (FileEvent::Stat(_,_), State::Exists, Mod::Deleted, true) => (),
+                (FileEvent::Stat(_,_), State::Exists, Mod::Modified, true) => (),
+                (FileEvent::Stat(_,_), State::Exists, Mod::Modified, false) => (),
                 // This file has been deleted, no way the stat struct is gonna be the same.
-                (SyscallEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), true) => (),
-                (SyscallEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
+                (FileEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), true) => (),
+                (FileEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
                     if *new_path == full_path {
                         // We actually have to add the stat struct matching to the old path's
                         if let Some(list) = exec_file_events.events().get(&Accessor::CurrProc(old_path.clone())) {
@@ -1169,7 +1210,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
 
                     }
                 }
-                (SyscallEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
                             let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
@@ -1187,19 +1228,19 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Stat(_, _), State::None, Mod::Created, _) => {
+                (FileEvent::Stat(_, _), State::None, Mod::Created, _) => {
                     panic!("First state was none but last mod was created??");
                 }
-                (SyscallEvent::Stat(_, _), State::None, Mod::Deleted, _) => {
+                (FileEvent::Stat(_, _), State::None, Mod::Deleted, _) => {
                     panic!("First state was none but last mod was deleted??");
                 }
-                (SyscallEvent::Stat(_, _), State::None, Mod::Modified, _) => {
+                (FileEvent::Stat(_, _), State::None, Mod::Modified, _) => {
                     panic!("First state was none but last mod was modified??");
                 }
-                (SyscallEvent::Stat(_, _), State::None, Mod::Renamed(_,_), _) => {
+                (FileEvent::Stat(_, _), State::None, Mod::Renamed(_,_), _) => {
                     panic!("First state was none but last mod was renamed??");
                 }
-                (SyscallEvent::Stat(option_stat, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Stat(option_stat, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -1224,14 +1265,14 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                // (SyscallEvent::Statfs(option_statfs, outcome), first_state, last_mod, has_been_deleted)
+                // (FileEvent::Statfs(option_statfs, outcome), first_state, last_mod, has_been_deleted)
                 // If it was deleted already, this statfs doesn't contribute to the preconditions.
-                (SyscallEvent::Statfs(_, _), _, _, true) => (),
+                (FileEvent::Statfs(_, _), _, _, true) => (),
                 // If it doesn't exist at the start, I don't care what happened to it, it doesn't
                 // add to the preconditions.
-                (SyscallEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
+                (FileEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
                 // It existed at start, hasn't been modified. Stat should be the same?
-                (SyscallEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -1248,8 +1289,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         }
                     }
                 }
-                (SyscallEvent::Statfs(_, _), State::Exists, _, false) => (),
-                (SyscallEvent::Statfs(option_statfs, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Statfs(_, _), State::Exists, _, false) => (),
+                (FileEvent::Statfs(option_statfs, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -1272,7 +1313,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         }
                     }
                 }
-                (SyscallEvent::Statfs(_, _), State::None, last_mod, false) => {
+                (FileEvent::Statfs(_, _), State::None, last_mod, false) => {
                     panic!("Starting state is none, but last mod was: {:?}", last_mod);
                 }
             }
@@ -1316,17 +1357,17 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                 (_, State::None, Mod::Deleted) => {
                     panic!("First state is none but last mod is deleted!!");
                 }
-                (SyscallEvent::ChildExec(_), State::None, Mod::Modified) => (),
+                (FileEvent::ChildExec(_), State::None, Mod::Modified) => (),
                 (_, State::None, Mod::Modified) => {
                     // panic!("First state is none but last mod is modified!!");
                 }
                 (_, State::None, Mod::Renamed(_, _)) => {
                     panic!("First state is none but last mod is rename!!");
                 }
-                (SyscallEvent::Access(_, _), _, _) => (),
-                (SyscallEvent::ChildExec(_), _, _) => (),
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Created) => (),
-                (SyscallEvent::Create(_, outcome), State::DoesntExist, Mod::Deleted) => {
+                (FileEvent::Access(_, _), _, _) => (),
+                (FileEvent::ChildExec(_), _, _) => (),
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Created) => (),
+                (FileEvent::Create(_, outcome), State::DoesntExist, Mod::Deleted) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.remove(&Fact::DoesntExist);
@@ -1334,30 +1375,30 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     }
                 }
 
-                (SyscallEvent::Create(_, _), State::DoesntExist, Mod::Modified) => (),
-                (SyscallEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(_, _)) => {
+                (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified) => (),
+                (FileEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.remove(&Fact::DoesntExist);
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (SyscallEvent::Create(_, outcome), State::DoesntExist, Mod::None) => {
+                (FileEvent::Create(_, outcome), State::DoesntExist, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Created) => (),
-                (SyscallEvent::Create(_, outcome), State::Exists, Mod::Deleted) => {
+                (FileEvent::Create(_, _), State::Exists, Mod::Created) => (),
+                (FileEvent::Create(_, outcome), State::Exists, Mod::Deleted) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.remove(&Fact::DoesntExist);
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (SyscallEvent::Create(_, _), State::Exists, Mod::Modified) => (),
-                (SyscallEvent::Create(_, outcome), State::Exists, Mod::Renamed(_, _)) => {
+                (FileEvent::Create(_, _), State::Exists, Mod::Modified) => (),
+                (FileEvent::Create(_, outcome), State::Exists, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.remove(&Fact::Exists);
@@ -1365,15 +1406,15 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (SyscallEvent::Create(_, _), State::Exists, Mod::None) => (),
-                (SyscallEvent::Create(_, outcome), State::None, Mod::None) => {
+                (FileEvent::Create(_, _), State::Exists, Mod::None) => (),
+                (FileEvent::Create(_, outcome), State::None, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
                 (
-                    SyscallEvent::Delete(outcome),
+                    FileEvent::Delete(outcome),
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {
@@ -1383,38 +1424,38 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path)) => {
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path)) => {
                     if outcome == SyscallOutcome::Success && full_path == *new_path {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
-                (SyscallEvent::Delete(_), State::DoesntExist, Mod::None) => (),
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::Created | Mod::Modified) => {
+                (FileEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
+                (FileEvent::Delete(_), State::DoesntExist, Mod::None) => (),
+                (FileEvent::Delete(outcome), State::Exists, Mod::Created | Mod::Modified) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _)) => {
+                (FileEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (SyscallEvent::Delete(_), State::Exists, Mod::Deleted) => (),
-                (SyscallEvent::Delete(outcome), State::Exists, Mod::None) => {
+                (FileEvent::Delete(_), State::Exists, Mod::Deleted) => (),
+                (FileEvent::Delete(outcome), State::Exists, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (SyscallEvent::Delete(outcome), State::None, Mod::None) => {
+                (FileEvent::Delete(outcome), State::None, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
@@ -1425,12 +1466,12 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                 // It was created, we can't create it again. Modified doesn't even
                 // make sense for a directory for us.
                 (
-                    SyscallEvent::DirectoryCreate(_, _),
+                    FileEvent::DirectoryCreate(_, _),
                     State::DoesntExist | State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => (),
                 // It was deleted, we can create a new one with the same name potentially.
-                (SyscallEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::Deleted) => {
+                (FileEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::Deleted) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::Exists]);
@@ -1439,17 +1480,17 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         panic!("Unexpected result from mkdir: last mod deleted, failing to create dir!!");
                     }
                 }
-                (SyscallEvent::DirectoryCreate(_, _), State::DoesntExist, Mod::Renamed(_, _)) => {
+                (FileEvent::DirectoryCreate(_, _), State::DoesntExist, Mod::Renamed(_, _)) => {
                     todo!()
                 }
-                (SyscallEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::None) => {
+                (FileEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         let facts = HashSet::from([Fact::Exists]);
                         curr_file_postconditions.insert(accessor.clone(), facts);
                     }
                 }
                 // It existed at start, was deleted. We can totally create it.
-                (SyscallEvent::DirectoryCreate(_, outcome), State::Exists, Mod::Deleted) => {
+                (FileEvent::DirectoryCreate(_, outcome), State::Exists, Mod::Deleted) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::Exists]);
@@ -1458,13 +1499,13 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         panic!("Unexpected result from mkdir: last mod was deleted, failed to create dir!!");
                     }
                 }
-                (SyscallEvent::DirectoryCreate(_, _), State::Exists, Mod::Renamed(_, _)) => todo!(),
-                (SyscallEvent::DirectoryCreate(_, outcome), State::Exists, Mod::None) => {
+                (FileEvent::DirectoryCreate(_, _), State::Exists, Mod::Renamed(_, _)) => todo!(),
+                (FileEvent::DirectoryCreate(_, outcome), State::Exists, Mod::None) => {
                     if outcome == SyscallOutcome::Success {
                         panic!("Unexpected result from mkdir: last mod was none, first state exists, but successfully created??");
                     }
                 }
-                (SyscallEvent::DirectoryCreate(_, outcome), State::None, Mod::None) => {
+                (FileEvent::DirectoryCreate(_, outcome), State::None, Mod::None) => {
                     // Error cases don't contribute to the postconditions.
                     if outcome == SyscallOutcome::Success {
                         let facts = HashSet::from([Fact::Exists]);
@@ -1574,7 +1615,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     }
                 }
                 (
-                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FileEvent::Rename(old_path, new_path, outcome),
                     State::DoesntExist,
                     Mod::Renamed(_, last_new_path),
                 ) => {
@@ -1593,10 +1634,10 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                             .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
-                (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
-                (SyscallEvent::Rename(_, _, _), State::DoesntExist, Mod::None) => (),
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::None) => (),
                 (
-                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FileEvent::Rename(old_path, new_path, outcome),
                     State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => {
@@ -1623,7 +1664,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     }
                 }
                 (
-                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FileEvent::Rename(old_path, new_path, outcome),
                     State::Exists,
                     Mod::Renamed(_, _),
                 ) => {
@@ -1651,8 +1692,8 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         }
                     }
                 }
-                (SyscallEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
-                (SyscallEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None) => {
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
+                (FileEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None) => {
                     let new_accessor = if let Some(cmd) = option_cmd.clone() {
                         Accessor::ChildProc(cmd, new_path)
                     } else {
@@ -1677,7 +1718,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                 }
 
                 // We haven't seen old path before.
-                (SyscallEvent::Rename(old_path, new_path, outcome), State::None, Mod::None) => {
+                (FileEvent::Rename(old_path, new_path, outcome), State::None, Mod::None) => {
                     let new_accessor = if let Some(cmd) = option_cmd.clone() {
                         Accessor::ChildProc(cmd, new_path)
                     } else {
@@ -1700,8 +1741,8 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         }
                     }
                 }
-                (SyscallEvent::Stat(_, _), _, _) => (),
-                (SyscallEvent::Statfs(_, _), _, _) => (),
+                (FileEvent::Stat(_, _), _, _) => (),
+                (FileEvent::Statfs(_, _), _, _) => (),
             }
             first_state_struct.update_based_on_syscall(&full_path, event.clone());
             last_mod_struct.update_based_on_syscall(event);
@@ -1722,7 +1763,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Access(
+//             FileEvent::Access(
 //                 (AccessFlags::W_OK).bits(),
 //                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
 //             ),
@@ -1730,7 +1771,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
+//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 
@@ -1755,12 +1796,12 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+//             FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
 //             PathBuf::from("test.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Open(
+//             FileEvent::Open(
 //                 OFlag::O_RDONLY,
 //                 Some(Vec::new()), // TODO
 //                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
@@ -1769,7 +1810,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
+//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 //         let preconditions = generate_preconditions(exec_file_events.clone());
@@ -1794,17 +1835,17 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
 //             // TODO
-//             SyscallEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
+//             FileEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Open(OFlag::O_TRUNC, Some(Vec::new()), SyscallOutcome::Success),
+//             FileEvent::Open(OFlag::O_TRUNC, Some(Vec::new()), SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Access((AccessFlags::R_OK).bits(), SyscallOutcome::Success),
+//             FileEvent::Access((AccessFlags::R_OK).bits(), SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 
@@ -1832,17 +1873,17 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
+//             FileEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Delete(SyscallOutcome::Success),
+//             FileEvent::Delete(SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
+//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
 //             PathBuf::from("test.txt"),
 //         );
 
@@ -1866,7 +1907,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Rename(
+//             FileEvent::Rename(
 //                 PathBuf::from("foo.txt"),
 //                 PathBuf::from("bar.txt"),
 //                 SyscallOutcome::Success,
@@ -1875,7 +1916,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Rename(
+//             FileEvent::Rename(
 //                 PathBuf::from("foo.txt"),
 //                 PathBuf::from("bar.txt"),
 //                 SyscallOutcome::Success,
@@ -1884,12 +1925,12 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
+//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
 //             PathBuf::from("foo.txt"),
 //         );
 //         exec_file_events.add_new_file_event(
 //             Pid::from_raw(0),
-//             SyscallEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
+//             FileEvent::Open(OFlag::O_APPEND, Some(Vec::new()), SyscallOutcome::Success),
 //             PathBuf::from("bar.txt"),
 //         );
 
