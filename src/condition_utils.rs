@@ -10,16 +10,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     condition_generator::Accessor,
-    syscalls::{
-        AccessMode, MyStatFs, OffsetMode, Stat, SyscallEvent, SyscallFailure, SyscallOutcome,
-    },
+    syscalls::{DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome},
 };
 
-pub type Preconditions = HashMap<PathBuf, HashSet<Fact>>;
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Preconditions {
+    dir: HashMap<PathBuf, HashSet<Fact>>,
+    file: HashMap<PathBuf, HashSet<Fact>>,
+}
+
+impl Preconditions {
+    pub fn dir_preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.dir.clone()
+    }
+
+    pub fn file_preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
+        self.file.clone()
+    }
+}
 // Postconditions are a little different. We need to know
 // if the accessor was the child, so we can just link
 // that file baby. No copyin' required.
-pub type Postconditions = HashMap<Accessor, HashSet<Fact>>;
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Postconditions {
+    dir: HashMap<Accessor, HashSet<Fact>>,
+    file: HashMap<Accessor, HashSet<Fact>>,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum FileType {
@@ -44,23 +60,36 @@ impl LastMod {
         &self.0
     }
 
-    pub fn update_based_on_syscall(&mut self, syscall_event: SyscallEvent) {
-        match syscall_event {
-            SyscallEvent::Create(_, SyscallOutcome::Success) => {
+    pub fn update_based_on_dir_event(&mut self, dir_event: DirEvent) {
+        match dir_event {
+            DirEvent::Create(_, SyscallOutcome::Success) => {
                 self.0 = Mod::Created;
             }
-            SyscallEvent::Delete(SyscallOutcome::Success) => {
+            DirEvent::Delete(SyscallOutcome::Success) => {
                 self.0 = Mod::Deleted;
             }
-            SyscallEvent::Open(
-                AccessMode::Both | AccessMode::Write,
-                _,
-                _,
-                SyscallOutcome::Success,
-            ) => {
+            DirEvent::Rename(old_path, new_path, outcome) => {
+                if outcome == SyscallOutcome::Success {
+                    self.0 = Mod::Renamed(old_path, new_path);
+                }
+            }
+            // No change
+            _ => (),
+        }
+    }
+
+    pub fn update_based_on_file_event(&mut self, file_event: FileEvent) {
+        match file_event {
+            FileEvent::Create(_, SyscallOutcome::Success) => {
+                self.0 = Mod::Created;
+            }
+            FileEvent::Delete(SyscallOutcome::Success) => {
+                self.0 = Mod::Deleted;
+            }
+            FileEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, SyscallOutcome::Success) => {
                 self.0 = Mod::Modified;
             }
-            SyscallEvent::Rename(old_path, new_path, outcome) => {
+            FileEvent::Rename(old_path, new_path, outcome) => {
                 if outcome == SyscallOutcome::Success {
                     self.0 = Mod::Renamed(old_path, new_path);
                 }
@@ -106,83 +135,11 @@ impl FirstState {
         self.0.clone()
     }
 
-    pub fn update_based_on_syscall(&mut self, curr_file_path: &Path, syscall_event: SyscallEvent) {
+    pub fn update_based_on_dir_event(&mut self, curr_file_path: &Path, dir_event: DirEvent) {
         if self.0 == State::None {
-            match syscall_event {
-                SyscallEvent::Access(_, SyscallOutcome::Success) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)) => {
-                    // If you call access(R_OK) and the file doesn't exist, you will get ENOENT,
-                    // and that will be a different kind of access event.
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-                    self.0 = State::DoesntExist;
-                }
-                SyscallEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
-                    panic!(
-                        "updating first state struct, access failed because file already exists??"
-                    );
-                }
-                SyscallEvent::Access(_, _) => (),
-                SyscallEvent::ChildExec(_) => (),
-                SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success) => {
-                    self.0 = State::DoesntExist;
-                }
-                // Failed to create a file. Doesn't mean we know anything about whether it exists.
-                SyscallEvent::Create(
-                    OFlag::O_CREAT,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => (),
-                // This probably means some path component doesn't exist.
-                // But we don't know and the user doesn't know which one.
-                // And linux won't tell us.
-                // So it gives us zero info about the first state of this resource.
-                SyscallEvent::Create(
-                    OFlag::O_CREAT,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                ) => (),
-                SyscallEvent::Create(
-                    OFlag::O_CREAT,
-                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(failure)) => {
-                    panic!("Failed to create for strange reason: {:?}", failure);
-                }
-                SyscallEvent::Create(OFlag::O_EXCL, SyscallOutcome::Success) => {
-                    self.0 = State::DoesntExist;
-                }
-                SyscallEvent::Create(
-                    OFlag::O_EXCL,
-                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Create(
-                    OFlag::O_EXCL,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                ) => {
-                    panic!("Failed to create a file excl because file doesn't exist??");
-                }
-                SyscallEvent::Create(
-                    OFlag::O_EXCL,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => (),
-                SyscallEvent::Create(f, _) => panic!("Unexpected create flag: {:?}", f),
-                SyscallEvent::Delete(SyscallOutcome::Success) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
-                    panic!("Failed to delete a file because it already exists??");
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Delete(SyscallOutcome::Fail(_)) => (),
-                SyscallEvent::DirectoryCreate(_, outcome) => match outcome {
+            match dir_event {
+                DirEvent::ChildExec(_) => (),
+                DirEvent::Create(_, outcome) => match outcome {
                     SyscallOutcome::Success => {
                         self.0 = State::DoesntExist;
                     }
@@ -190,15 +147,49 @@ impl FirstState {
                         self.0 = State::Exists;
                     }
                     _ => (),
-                },
-                SyscallEvent::DirectoryRead(
-                    _,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                ) => {
-                    self.0 = State::DoesntExist;
                 }
-                SyscallEvent::DirectoryRead(_, _, SyscallOutcome::Success) => {
+                DirEvent::Delete(_) => todo!(),
+                DirEvent::Read(_, _, outcome) => match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                        self.0 = State::DoesntExist;
+                    }
+                    SyscallOutcome::Success =>  {
+                        self.0 = State::Exists;
+                    }
+                    _ => (),
+                }
+                DirEvent::Rename(old_path, new_path, outcome) => match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                        if *curr_file_path == old_path {
+                            self.0 = State::DoesntExist;
+                        }
+                    }
+                    SyscallOutcome::Success => {
+                        if *curr_file_path == old_path {
+                            self.0 = State::Exists;
+                        } else if *curr_file_path == new_path {
+                            self.0 = State::DoesntExist;
+                        }
+                    }
+                    _ => ()
+                }
+                DirEvent::Statfs(_, outcome) => match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                        self.0 = State::DoesntExist;
+                    }
+                    SyscallOutcome::Success => {
+                        self.0 = State::Exists;
+                    }
+                    _ => ()
+                }
+            }
+        }
+    }
+
+    pub fn update_based_on_file_event(&mut self, curr_file_path: &Path, file_event: FileEvent) {
+        if self.0 == State::None {
+            match file_event {
+                FileEvent::Access(_, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
                 SyscallEvent::DirectoryRead(_, _, _) => (),
@@ -222,7 +213,7 @@ impl FirstState {
                         self.0 = State::DoesntExist;
                     }
                 }
-                SyscallEvent::Rename(
+                FileEvent::Rename(
                     old_path,
                     _,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
@@ -231,18 +222,17 @@ impl FirstState {
                         self.0 = State::DoesntExist;
                     }
                 }
-                SyscallEvent::Rename(_, _, _) => (),
-                SyscallEvent::Stat(_, SyscallOutcome::Success) => {
+                FileEvent::Rename(_, _, _) => (),
+                FileEvent::Stat(_, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
+                FileEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
                     panic!("Failed to state because file already exists??");
                 }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
+                FileEvent::Stat(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
                     self.0 = State::DoesntExist;
                 }
-                SyscallEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
-                SyscallEvent::Statfs(_, _) => (),
+                FileEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
             }
         }
     }

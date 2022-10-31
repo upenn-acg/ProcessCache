@@ -41,23 +41,24 @@ pub struct OpenFlags {
     pub access_mode: AccessMode,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-// We need to differentiate between when we need to call
-// lstat to check or stat to check the precondition.
-pub enum Stat {
-    Lstat(MyStat),
-    Stat(MyStat),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DirEvent {
+    ChildExec(Pid), // We want to know when our child processes have successfully called execve.
+    Create(PathBuf, SyscallOutcome),
+    Delete(SyscallOutcome),
+    Read(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
+    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
+    Statfs(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
+
 // Successful and failing events.
 // "Open" meaning not using O_CREAT
 // "Create" meaning using O_CREAT
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SyscallEvent {
+pub enum FileEvent {
     Access(c_int, SyscallOutcome),
     Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
     Delete(SyscallOutcome),
-    DirectoryCreate(PathBuf, SyscallOutcome),
-    DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
     Open(
@@ -66,9 +67,16 @@ pub enum SyscallEvent {
         Option<CheckMechanism>,
         SyscallOutcome,
     ), // Can fail because the file didn't exist or permission denied
-    Rename(PathBuf, PathBuf, SyscallOutcome), // Old, new, outcome
+    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
-    Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or dir doesn't exist.
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+// We need to differentiate between when we need to call
+// lstat to check or stat to check the precondition.
+pub enum Stat {
+    Lstat(MyStat),
+    Stat(MyStat),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
