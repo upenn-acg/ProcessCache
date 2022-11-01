@@ -4,7 +4,7 @@ use libc::c_int;
 use nix::{fcntl::OFlag, unistd::Pid};
 use serde::{Deserialize, Serialize};
 
-use crate::condition_utils::FileType;
+use crate::{condition_utils::FileType, execution_utils::{AccessMode, OffsetMode}};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStat {
@@ -34,6 +34,14 @@ pub struct MyStatFs {
     // pub filesystem_id: fsid_t,
 }
 
+pub struct OpenFlags {
+    pub creat_flag: bool,
+    pub excl_flag: bool,
+    pub file_existed_at_start: bool,
+    pub offset_mode: Option<OffsetMode>,
+    pub access_mode: AccessMode,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // We need to differentiate between when we need to call
 // lstat to check or stat to check the precondition.
@@ -53,7 +61,7 @@ pub enum SyscallEvent {
     DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
-    Open(OFlag, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
+    Open(AccessMode, Option<OffsetMode>, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
     Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
     Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or dir doesn't exist.
@@ -65,6 +73,22 @@ pub enum CheckMechanism {
     DiffFiles,
     Mtime(i64),
     Hash(Vec<u8>),
+}
+
+// PRANOTI: I moved these here because I think they belong here.
+// They fall more under syscallsrs I think than something related to
+// execution_utils.rs (which is just a place for functions used in execution.rs)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccessMode {
+    Read,
+    Write,
+    Both,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OffsetMode {
+    Append,
+    Trunc,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
