@@ -17,7 +17,7 @@ use crate::{
     execution_utils::{background_thread_copying_outputs, OpenFlags},
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::MyStatFs,
+    syscalls::{MyStatFs, AccessMode, OffsetMode},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -926,11 +926,11 @@ fn handle_open(
         Err(ret_val)
     };
 
-    let (creat_flag, excl_flag, offset_mode, open_mode) = if syscall_name == "creat" {
+    let (creat_flag, excl_flag, offset_mode, access_mode) = if syscall_name == "creat" {
         let creat_flag = true;
         let excl_flag = false;
         // creat() uses write only as the mode
-        (creat_flag, excl_flag, OFlag::O_TRUNC, OFlag::O_WRONLY)
+        (creat_flag, excl_flag, Some(OffsetMode::Trunc), AccessMode::Write)
     } else {
         let flag_arg = if syscall_name == "open" {
             regs.arg2::<i32>()
@@ -939,30 +939,33 @@ fn handle_open(
         };
 
         let option_flags = OFlag::from_bits(flag_arg);
-        let (creat_flag, excl_flag, offset_mode, open_mode) = if let Some(flags) = option_flags {
-            let open_mode = match flag_arg & O_ACCMODE {
-                O_RDONLY => OFlag::O_RDONLY,
-                O_RDWR => OFlag::O_RDWR,
-                O_WRONLY => OFlag::O_WRONLY,
+        let (creat_flag, excl_flag, offset_mode, access_mode) = if let Some(flags) = option_flags {
+            let access_mode = match flag_arg & O_ACCMODE {
+                // PRANOTI: Why not skip a step and just not use these dumb OFlag things at all?
+                // flag_arg & O_ACCMODE gives us read, write, or both. We can just map that
+                // to our AccessMode enum.
+                O_RDONLY => AccessMode::Read,
+                O_RDWR => AccessMode::Both,
+                O_WRONLY => AccessMode::Write,
                 _ => panic!("open flags do not match any mode!"),
             };
 
             let creat_flag = flags.contains(OFlag::O_CREAT);
             let excl_flag = flags.contains(OFlag::O_EXCL);
             let offset_mode = if flags.contains(OFlag::O_APPEND) {
-                OFlag::O_APPEND
+                Some(OffsetMode::Append)
             } else if flags.contains(OFlag::O_TRUNC) {
-                OFlag::O_TRUNC
+                Some(OffsetMode::Trunc)
             } else {
-                OFlag::O_RDONLY
+                None
             };
 
-            (creat_flag, excl_flag, offset_mode, open_mode)
+            (creat_flag, excl_flag, offset_mode, access_mode)
         } else {
             panic!("Unexpected open flags value!!");
         };
 
-        (creat_flag, excl_flag, offset_mode, open_mode)
+        (creat_flag, excl_flag, offset_mode, access_mode)
     };
 
     let path_arg_bytes = match syscall_name {
@@ -991,7 +994,7 @@ fn handle_open(
         excl_flag,
         file_existed_at_start,
         offset_mode,
-        open_mode,
+        access_mode,
     };
 
     let open_syscall_event =

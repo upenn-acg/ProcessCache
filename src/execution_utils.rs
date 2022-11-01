@@ -19,7 +19,7 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome},
+    syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome, OpenFlags, OffsetMode, AccessMode},
     Ptracer,
 };
 
@@ -48,14 +48,6 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
             fs::hard_link(source.clone(), dest).unwrap();
         }
     }
-}
-
-pub struct OpenFlags {
-    pub creat_flag: bool,
-    pub excl_flag: bool,
-    pub file_existed_at_start: bool,
-    pub offset_mode: OFlag,
-    pub open_mode: OFlag,
 }
 
 // "Create" designates that O_CREAT was used.
@@ -91,7 +83,7 @@ pub fn generate_open_syscall_file_event(
     let optional_checking_mech = if DONT_HASH_FILES {
         None
     } else if syscall_outcome.is_ok()
-        && (open_flags.offset_mode == OFlag::O_APPEND || open_flags.offset_mode == OFlag::O_RDONLY)
+        && (open_flags.offset_mode == Some(OffsetMode::Append) || open_flags.access_mode == AccessMode::Read)
     {
         // DIFF FILES
         // Some(CheckMechanism::DiffFiles)
@@ -165,78 +157,46 @@ pub fn generate_open_syscall_file_event(
     } else {
         // Only opens file, no need to worry about it creating a file.
         match syscall_outcome {
-            Ok(_) => match (open_flags.offset_mode, open_flags.open_mode) {
+            Ok(_) => {
                 // TODO: Hmm. There should be a case for
                 // (None, OpenOFlag::O_RDONLY)
                 // Successfully opened a file for reading (NO O_CREAT FLAG), this means the
                 // file existed.
                 // Retval is pretty useless here but whatever.
-                (OFlag::O_RDONLY, OFlag::O_RDONLY) => {
-                    if let Some(mech) = optional_checking_mech.clone() {
-                        if mech == CheckMechanism::DiffFiles {
-                            copy_input_file_to_cache(curr_execution, full_path);
-                        }
+
+                // If access mode is read OR offset mode is append,
+                // and if precondition checking mechanism is DiffFiles,
+                // copy input file to the cache.
+                if let Some(mech) = optional_checking_mech.clone() {
+                    if (open_flags.offset_mode == Some(OffsetMode::Append) || open_flags.access_mode == AccessMode::Read)
+                        && mech == CheckMechanism::DiffFiles {
+                        copy_input_file_to_cache(curr_execution, full_path);
                     }
-                    Some(SyscallEvent::Open(
-                        OFlag::O_RDONLY,
-                        optional_checking_mech,
-                        SyscallOutcome::Success,
-                    ))
                 }
-                (OFlag::O_TRUNC | OFlag::O_APPEND, OFlag::O_RDONLY) => {
-                    panic!("Undefined by POSIX/LINUX.")
-                }
-                (_, OFlag::O_RDWR) => panic!("Do not support RW for now..."),
-                // "ReadOnly" is like my "None" offset flag. and it kinda makes sense
-                (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
-                    panic!("Do not support O_WRONLY without offset flag!")
-                }
-                (OFlag::O_APPEND, OFlag::O_WRONLY) => {
-                    if let Some(mech) = optional_checking_mech.clone() {
-                        if mech == CheckMechanism::DiffFiles {
-                            copy_input_file_to_cache(curr_execution, full_path);
-                        }
-                    }
-                    Some(SyscallEvent::Open(
-                        OFlag::O_APPEND,
-                        optional_checking_mech,
-                        SyscallOutcome::Success,
-                    ))
-                }
-                (OFlag::O_TRUNC, OFlag::O_WRONLY) => Some(SyscallEvent::Open(
-                    OFlag::O_TRUNC,
-                    optional_checking_mech,
-                    SyscallOutcome::Success,
-                )),
-                (offset_flag, mode_flag) => panic!(
-                    "Unexpected offset flag: {:?} and mode flag: {:?}",
-                    offset_flag, mode_flag
-                ),
-            },
-            Err(ret_val) => match ret_val {
-                // ENOENT
-                -2 => Some(SyscallEvent::Open(
+                Some(SyscallEvent::Open(
+                    open_flags.access_mode,
                     open_flags.offset_mode,
                     optional_checking_mech,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                )),
-                // EACCES
-                -13 => match open_flags.offset_mode {
-                    OFlag::O_APPEND | OFlag::O_TRUNC => Some(SyscallEvent::Open(
-                        open_flags.offset_mode,
-                        optional_checking_mech,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                    )),
-                    _ => Some(SyscallEvent::Open(
-                        open_flags.offset_mode,
-                        optional_checking_mech,
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                    )),
-                },
-                _ => panic!(
-                    "Failed to open file NOT because ENOENT or EACCES, err num: {}",
-                    ret_val
-                ),
+                    SyscallOutcome::Success,
+                ))
+            },
+            Err(ret_val) => {
+                let syscall_failure = match ret_val {
+                    // ENOENT
+                    -2 => SyscallFailure::FileDoesntExist,
+                    // EACCES
+                    -13 => SyscallFailure::PermissionDenied,
+                    _ => panic!(
+                        "Failed to open file NOT because ENOENT or EACCES, err num: {}",
+                        ret_val
+                    ),
+                };
+                Some(SyscallEvent::Open(
+                    open_flags.access_mode,
+                    open_flags.offset_mode,
+                    optional_checking_mech,
+                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied)
+                ))
             },
         }
     }
