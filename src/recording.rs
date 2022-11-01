@@ -112,7 +112,7 @@ impl ExecMetadata {
 pub struct Execution {
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
-    file_events: ExecFileEvents,
+    syscall_events: ExecSyscallEvents,
     is_ignored: bool,
     is_root: bool,
     postconditions: Option<Postconditions>,
