@@ -17,7 +17,7 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use crate::{cache_utils::generate_hash, condition_utils::FileType, syscalls::MyStatFs};
 use crate::{
-    condition_utils::{no_mods_before_rename, Fact, FirstState, LastMod, Mod, State},
+    condition_utils::{no_mods_before_file_rename, Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
 };
 use crate::{
@@ -61,12 +61,12 @@ impl Accessor {
 // Full path mapped to
 // TODO: Handle stderr and stdout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecFileEvents {
+pub struct ExecSyscallEvents {
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 }
 
-impl ExecFileEvents {
+impl ExecSyscallEvents {
     pub fn dir_events(&self) -> HashMap<Accessor, Vec<DirEvent>> {
         self.dir_events.clone()
     }
@@ -320,7 +320,7 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     true
 }
 
-pub fn generate_preconditions(events: ExecFileEvents) -> Preconditions {
+pub fn generate_preconditions(events: ExecSyscallEvents) -> Preconditions {
     let dir_events = events.dir_events();
     let file_events = events.file_events();
 
@@ -1195,9 +1195,9 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 (FileEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
                     if *new_path == full_path {
                         // We actually have to add the stat struct matching to the old path's
-                        if let Some(list) = exec_file_events.events().get(&Accessor::CurrProc(old_path.clone())) {
+                        if let Some(list) = file_events.get(&Accessor::CurrProc(old_path.clone())) {
                             // &old_path.clone()
-                            let no_mods_before_rename = no_mods_before_rename(list.to_vec());
+                            let no_mods_before_rename = no_mods_before_file_rename(list.to_vec());
                             if no_mods_before_rename {
                                 let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();
                                 if let Some(stat_str) = stat_struct {
@@ -1267,68 +1267,80 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 }
                 // (FileEvent::Statfs(option_statfs, outcome), first_state, last_mod, has_been_deleted)
                 // If it was deleted already, this statfs doesn't contribute to the preconditions.
-                (FileEvent::Statfs(_, _), _, _, true) => (),
-                // If it doesn't exist at the start, I don't care what happened to it, it doesn't
-                // add to the preconditions.
-                (FileEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
-                // It existed at start, hasn't been modified. Stat should be the same?
-                (FileEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                // (FileEvent::Statfs(_, _), _, _, true) => (),
+                // // If it doesn't exist at the start, I don't care what happened to it, it doesn't
+                // // add to the preconditions.
+                // (FileEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
+                // // It existed at start, hasn't been modified. Stat should be the same?
+                // (FileEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
+                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            if let Some(statfs) = option_statfs {
-                                curr_set.insert(Fact::StatFsStructMatches(statfs));
-                                curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            } else {
-                                panic!("No statfs struct found for successful statfs syscall!");
-                            }
-                        }
-                        SyscallOutcome::Fail(f) => {
-                            panic!("Unexpected syscall failure for statfs, file existed at start, no mods: {:?}", f);
-                        }
-                    }
-                }
-                (FileEvent::Statfs(_, _), State::Exists, _, false) => (),
-                (FileEvent::Statfs(option_statfs, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                //     match outcome {
+                //         SyscallOutcome::Success => {
+                //             if let Some(statfs) = option_statfs {
+                //                 curr_set.insert(Fact::StatFsStructMatches(statfs));
+                //                 curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                //             } else {
+                //                 panic!("No statfs struct found for successful statfs syscall!");
+                //             }
+                //         }
+                //         SyscallOutcome::Fail(f) => {
+                //             panic!("Unexpected syscall failure for statfs, file existed at start, no mods: {:?}", f);
+                //         }
+                //     }
+                // }
+                // (FileEvent::Statfs(_, _), State::Exists, _, false) => (),
+                // (FileEvent::Statfs(option_statfs, outcome), State::None, Mod::None, false) => {
+                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            if let Some(statfs) = option_statfs {
-                                curr_set.insert(Fact::StatFsStructMatches(statfs));
-                                curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            } else {
-                                panic!("No statfs struct found for successful statfs syscall!");
-                            }
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
-                        }
-                        SyscallOutcome::Fail(f) => {
-                            panic!("Unexpected syscall failure for statfs: {:?}", f);
-                        }
-                    }
-                }
-                (FileEvent::Statfs(_, _), State::None, last_mod, false) => {
-                    panic!("Starting state is none, but last mod was: {:?}", last_mod);
-                }
+                //     match outcome {
+                //         SyscallOutcome::Success => {
+                //             if let Some(statfs) = option_statfs {
+                //                 curr_set.insert(Fact::StatFsStructMatches(statfs));
+                //                 curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                //             } else {
+                //                 panic!("No statfs struct found for successful statfs syscall!");
+                //             }
+                //         }
+                //         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                //             curr_set.insert(Fact::DoesntExist);
+                //         }
+                //         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                //             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                //         }
+                //         SyscallOutcome::Fail(f) => {
+                //             panic!("Unexpected syscall failure for statfs: {:?}", f);
+                //         }
+                //     }
+                // }
+                // (FileEvent::Statfs(_, _), State::None, last_mod, false) => {
+                //     panic!("Starting state is none, but last mod was: {:?}", last_mod);
+                // }
             }
 
             // This function will only change the first_state if it is None.
-            first_state_struct.update_based_on_syscall(&full_path, event.clone());
-            curr_state_struct.update_based_on_syscall(event);
+            first_state_struct.update_based_on_file_event(&full_path, event.clone());
+            curr_state_struct.update_based_on_file_event(event);
         }
     }
     curr_file_preconditions
 }
 
+pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
+    let dir_events = events.dir_events();
+    let file_events = events.file_events();
+
+    let dir_postconds = generate_dir_postconditions(dir_events);
+    let file_postconds = generate_file_postconditions(file_events);
+
+    Postconditions {
+        dir: dir_postconds,
+        file: file_postconds,
+    }
+}
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditions {
+pub fn generate_file_postconditions(exec_file_events: ExecSyscallEvents) -> Postconditions {
     let sys_span = span!(Level::INFO, "generate_file_postconditions");
     let _ = sys_span.enter();
 

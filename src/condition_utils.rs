@@ -238,7 +238,7 @@ impl FirstState {
     }
 }
 
-pub fn no_mods_before_rename(file_name_list: Vec<SyscallEvent>) -> bool {
+pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
     let mut no_mods = true;
     for event in file_name_list {
         match event {
@@ -263,4 +263,8 @@ pub fn no_mods_before_rename(file_name_list: Vec<SyscallEvent>) -> bool {
         }
     }
     no_mods
+}
+
+pub fn no_mods_before_dir_rename(dir_list: Vec<DirEvent>) -> bool {
+    todo!();
 }
