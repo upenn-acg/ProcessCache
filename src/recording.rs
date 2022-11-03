@@ -1,10 +1,8 @@
 use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
-    condition_generator::{generate_preconditions, Accessor, ExecFileEvents},
-    condition_utils::{Fact, Postconditions},
-    execution_utils::get_umask,
-    syscalls::SyscallEvent,
+    condition_generator::{generate_preconditions, Accessor, ExecSyscallEvents},
+    condition_utils::{Fact, Postconditions}, syscalls::{FileEvent, DirEvent},
 };
 use nix::unistd::Pid;
 use std::{
@@ -126,7 +124,7 @@ impl Execution {
         Execution {
             child_execs: Vec::new(),
             exit_code: None,
-            file_events: ExecFileEvents::new(HashMap::new()),
+            syscall_events: ExecSyscallEvents::new(),
             is_ignored: false,
             is_root: false,
             postconditions: None,
@@ -157,6 +155,16 @@ impl Execution {
     ) {
         self.file_events
             .add_new_file_event(caller_pid, file_access, full_path);
+    }
+
+    fn add_stdout_duped_fd(&mut self, duped_fd: i32, pid: Pid) {
+        if !self.stdout_fd_map.contains_key(&pid) {
+            self.stdout_fd_map.insert(pid, duped_fd);
+        } else {
+            panic!(
+                "Trying to add stdout duped fd but this has already been done for this pid (in this exec struct)!!"
+            );
+        }
     }
 
     fn args(&self) -> Vec<String> {
@@ -285,27 +293,18 @@ impl Execution {
         }
     }
 
-    fn update_file_events(&mut self, file_events: ExecFileEvents) {
-        self.file_events = file_events;
-    }
-
     fn update_postconditions(&mut self, postconditions: Postconditions) {
         self.postconditions = Some(postconditions);
-    }
-
-    fn add_stdout_duped_fd(&mut self, duped_fd: i32, pid: Pid) {
-        if !self.stdout_fd_map.contains_key(&pid) {
-            self.stdout_fd_map.insert(pid, duped_fd);
-        } else {
-            panic!(
-                "Trying to add stdout duped fd but this has already been done for this pid (in this exec struct)!!"
-            );
-        }
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
         self.successful_exec = exec_metadata;
     }
+
+    fn update_syscall_events(&mut self, syscall_events: ExecSyscallEvents) {
+        self.syscall_events = syscall_events;
+    }
+
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -340,10 +339,19 @@ impl RcExecution {
         self.0.borrow_mut().add_exit_code(code);
     }
 
+    pub fn add_new_dir_event(
+        &self,
+        caller_pid: Pid,
+        dir_event: DirEvent,
+        full_path: PathBuf
+    ) {
+        todo!();
+    }
+
     pub fn add_new_file_event(
         &self,
         caller_pid: Pid,
-        file_event: SyscallEvent,
+        file_event: FileEvent,
         full_path: PathBuf,
     ) {
         self.0
@@ -373,10 +381,6 @@ impl RcExecution {
 
     pub fn executable(&self) -> String {
         self.0.borrow().executable()
-    }
-
-    pub fn file_events(&self) -> ExecFileEvents {
-        self.0.borrow().file_events()
     }
 
     // pub fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
@@ -424,12 +428,16 @@ impl RcExecution {
         self.0.borrow().starting_cwd()
     }
 
+    pub fn syscall_events(&self) -> ExecSyscallEvents {
+        todo!();
+    }
+
     pub fn update_cwd(&self, new_cwd: PathBuf) {
         self.0.borrow_mut().update_cwd(new_cwd);
     }
 
-    pub fn update_file_events(&mut self, file_events: ExecFileEvents) {
-        self.0.borrow_mut().update_file_events(file_events)
+    pub fn update_syscall_events(&mut self, file_events: ExecSyscallEvents) {
+        self.0.borrow_mut().update_syscall_events(file_events)
     }
 
     pub fn update_postconditions(&self, postconditions: Postconditions) {
@@ -443,13 +451,23 @@ impl RcExecution {
     }
 }
 
-pub fn append_file_events(
-    parent_events: &mut HashMap<Accessor, Vec<SyscallEvent>>,
+pub fn append_dir_events(
+    parent_events: &mut HashMap<Accessor, Vec<DirEvent>>,
     child_command: Command,
-    child_events: ExecFileEvents,
+    child_events: HashMap<Accessor, Vec<DirEvent>>,
+    child_pid: Pid
+) {
+    todo!();
+}
+
+pub fn append_file_events(
+    parent_events: &mut HashMap<Accessor, Vec<FileEvent>>,
+    child_command: Command,
+    child_events: HashMap<Accessor, Vec<FileEvent>>,
     child_pid: Pid,
 ) {
-    let child_events = child_events.events();
+    // TODO: files AND dirs
+    let child_file_event = child_events.file_events();
     let hashed_child_command = hash_command(child_command);
 
     // For each child resource and its event list...
