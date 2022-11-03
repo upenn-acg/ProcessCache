@@ -14,10 +14,10 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 use crate::{
     async_runtime::AsyncRuntime,
     condition_utils::FileType,
-    execution_utils::background_thread_copying_outputs,
-    recording::{generate_list_of_files_to_copy_to_cache, LinkType},
+    execution_utils::{background_thread_copying_outputs, OpenFlags},
+    recording::{generate_list_of_files_to_copy_to_cache, LinkType, append_dir_events},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{AccessMode, MyStatFs, OffsetMode, OpenFlags},
+    syscalls::{MyStatFs, FileEvent, DirEvent}, condition_generator::ExecSyscallEvents,
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -25,7 +25,7 @@ use crate::{
 };
 use crate::{
     cache_utils::{hash_command, Command},
-    condition_generator::{generate_postconditions, ExecFileEvents},
+    condition_generator::{generate_postconditions},
     recording::{append_file_events, copy_output_files_to_cache},
 };
 
@@ -33,7 +33,7 @@ use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
 use crate::recording::{ExecMetadata, Execution, Proc, RcExecution};
 use crate::regs::{Regs, Unmodified};
-use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
+use crate::syscalls::{MyStat, SyscallFailure, SyscallOutcome};
 use crate::system_call_names::get_syscall_name;
 use crate::tracer::TraceEvent;
 use crate::Ptracer;
@@ -443,10 +443,10 @@ pub async fn trace_process(
                                         let ret_val = regs.retval::<i32>();
                                         let failed_exec = {
                                             match ret_val {
-                                                -2 => SyscallEvent::FailedExec(
+                                                -2 => FileEvent::FailedExec(
                                                     SyscallFailure::FileDoesntExist,
                                                 ),
-                                                -13 => SyscallEvent::FailedExec(
+                                                -13 => FileEvent::FailedExec(
                                                     SyscallFailure::PermissionDenied,
                                                 ),
                                                 e => panic!(
@@ -694,20 +694,30 @@ pub async fn trace_process(
                 }
                 let children = curr_execution.children();
                 let new_events = if children.is_empty() {
-                    curr_execution.file_events()
+                    // If we have no children, we don't have to append
+                    // any events.
+                    curr_execution.syscall_events()
                 } else {
-                    let new_events = curr_execution.file_events();
-                    let ExecFileEvents(new_map) = new_events;
-                    let mut new_map = new_map;
+                    let syscall_events = curr_execution.syscall_events();
+                    let dir_events = syscall_events.dir_events();
+                    let file_events = syscall_events.file_events();
+
+                    // We will append to the original events.
+                    let mut new_dir_events = dir_events;
+                    let mut new_file_events = file_events;
 
                     for child in children {
                         let command = child.command();
-                        append_file_events(&mut new_map, command, child.file_events(), child.pid());
+                        append_file_events(&mut new_file_events, command.clone(), child.syscall_events().file_events(), child.pid());
+                        append_dir_events(&mut new_dir_events, command, child.syscall_events().dir_events(), child.pid());
                     }
-                    ExecFileEvents(new_map)
+                    ExecSyscallEvents {
+                        dir_events: new_dir_events,
+                        file_events: new_file_events,
+                    }
                 };
 
-                curr_execution.update_file_events(new_events.clone());
+                curr_execution.update_syscall_events(new_events.clone());
 
                 // If the execution was set to "ignored", we don't want to
                 // generate + add postconditions.
@@ -865,10 +875,10 @@ fn handle_get_dents64(
         panic!("Unexpected return value from getdents! {:?}", ret_val)
     };
 
-    let getdents_event = SyscallEvent::DirectoryRead(full_path.clone(), entries, outcome);
+    let getdents_event = DirEvent::Read(full_path.clone(), entries, outcome);
     // We only cared if you actually read values.
     if ret_val > 0 {
-        execution.add_new_file_event(tracer.curr_proc, getdents_event, full_path);
+        execution.add_new_dir_event(tracer.curr_proc, getdents_event, full_path);
     }
 
     Ok(())
@@ -901,8 +911,8 @@ fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -
         e => panic!("Unrecognized failure for mkdir: {:?}", e),
     };
 
-    let mkdir_event = SyscallEvent::DirectoryCreate(root_dir, syscall_outcome);
-    execution.add_new_file_event(tracer.curr_proc, mkdir_event, full_path);
+    let mkdir_event = DirEvent::Create(root_dir, syscall_outcome);
+    execution.add_new_dir_event(tracer.curr_proc, mkdir_event, full_path);
     Ok(())
 }
 
@@ -1065,33 +1075,31 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 
     debug!("full old path: {:?}", full_old_path);
     debug!("full new path: {:?}", full_new_path);
-    let rename_event = match ret_val {
-        0 => SyscallEvent::Rename(
-            full_old_path.clone(),
-            full_new_path,
-            SyscallOutcome::Success,
-        ),
-        // Probably the old file doesn't exist. Empty new path is also possible.
-        -2 => SyscallEvent::Rename(
-            full_old_path.clone(),
-            full_new_path,
-            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-        ),
-        -13 => SyscallEvent::Rename(
-            full_old_path.clone(),
-            full_new_path,
-            SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-        ),
-        -22 => SyscallEvent::Rename(
-            full_old_path.clone(),
-            full_new_path,
-            SyscallOutcome::Fail(SyscallFailure::InvalArg),
-        ),
-        e => panic!("Unexpected error returned by rename syscall!: {}", e),
-    };
+        let outcome = match ret_val {
+            0 => SyscallOutcome::Success,
+            // Probably the old file doesn't exist. Empty new path is also possible.
+            -2 => SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+            -13 => SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+            -22 => SyscallOutcome::Fail(SyscallFailure::InvalArg),
+            e => panic!("Unexpected error returned by rename syscall!: {}", e),
+        };
 
-    execution.add_new_file_event(tracer.curr_proc, rename_event, full_old_path);
-    // execution.add_new_file_event(tracer.curr_proc, rename_event, full_new_path);
+        if full_old_path.is_dir() {
+            let event = DirEvent::Rename(
+                full_old_path,
+                full_new_path, 
+                outcome
+            );
+            execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
+        } else {
+            let event = FileEvent::Rename(
+                full_old_path,
+                full_new_path,
+                outcome
+            );
+            execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
+        }
+
     Ok(())
 }
 
@@ -1138,13 +1146,13 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
                     st_blocks: stat_struct.st_blocks,
                 };
                 if syscall_name == "lstat" {
-                    SyscallEvent::Stat(Some(Stat::Lstat(my_stat)), SyscallOutcome::Success)
+                    FileEvent::Stat(Some(Stat::Lstat(my_stat)), SyscallOutcome::Success)
                 } else {
-                    SyscallEvent::Stat(Some(Stat::Stat(my_stat)), SyscallOutcome::Success)
+                    FileEvent::Stat(Some(Stat::Stat(my_stat)), SyscallOutcome::Success)
                 }
             }
-            -2 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
-            -13 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+            -2 => FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            -13 => FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
             e => panic!("Unexpected error returned by stat syscall!: {}", e),
         }
     };
@@ -1194,10 +1202,10 @@ fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
                     files_free: statfs_struct.files_free(),
                 };
 
-                SyscallEvent::Statfs(Some(my_statfs), SyscallOutcome::Success)
+                DirEvent::Statfs(Some(my_statfs), SyscallOutcome::Success)
             }
-            -2 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
-            -13 => SyscallEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+            -2 => DirEvent::Statfs(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            -13 => DirEvent::Statfs(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
             e => panic!("Unexpected error returned by stat syscall!: {}", e),
         }
     };
@@ -1210,7 +1218,7 @@ fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
         && !full_path.starts_with("/dev/null")
         && !full_path.ends_with(".")
     {
-        execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, full_path);
+        execution.add_new_dir_event(tracer.curr_proc, stat_syscall_event, full_path);
     }
     Ok(())
 }
@@ -1226,6 +1234,7 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
     // retval = 0 is success for this syscall. lots of them it would seem.
     let full_path = get_full_path(execution, name, tracer)?;
 
+    // TODO: dirs!
     let delete_syscall_event = match ret_val {
         0 => SyscallEvent::Delete(SyscallOutcome::Success),
         -2 => SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),

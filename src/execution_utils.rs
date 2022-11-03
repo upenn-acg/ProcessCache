@@ -19,10 +19,7 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{
-        AccessMode, CheckMechanism, OffsetMode, OpenFlags, SyscallEvent, SyscallFailure,
-        SyscallOutcome,
-    },
+    syscalls::{CheckMechanism, SyscallFailure, SyscallOutcome, FileEvent},
     Ptracer,
 };
 
@@ -61,7 +58,7 @@ pub fn generate_open_syscall_file_event(
     full_path: PathBuf,
     open_flags: OpenFlags,
     syscall_outcome: Result<i32, i32>,
-) -> Option<SyscallEvent> {
+) -> Option<FileEvent> {
     if open_flags.excl_flag && !open_flags.creat_flag {
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
@@ -103,17 +100,17 @@ pub fn generate_open_syscall_file_event(
     if open_flags.creat_flag {
         if open_flags.excl_flag {
             match syscall_outcome {
-                Ok(_) => Some(SyscallEvent::Create(
+                Ok(_) => Some(FileEvent::Create(
                     OFlag::O_CREAT,
                     SyscallOutcome::Success,
                 )),
                 Err(ret_val) => match ret_val {
-                    -13 => Some(SyscallEvent::Create(
+                    -13 => Some(FileEvent::Create(
                         OFlag::O_CREAT,
                         // I know it's either WRITE or EXEC access denied.
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
                     )),
-                    -17 => Some(SyscallEvent::Create(
+                    -17 => Some(FileEvent::Create(
                         OFlag::O_CREAT,
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
                     )),
@@ -132,7 +129,7 @@ pub fn generate_open_syscall_file_event(
                             (offset_mode, access_mode) => Some(SyscallEvent::Open(access_mode, offset_mode, optional_checking_mech, SyscallOutcome::Success))
                         }
                     } else {
-                        Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success))
+                        Some(FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success))
                     }
                 }
                 Err(ret_val) => match ret_val {
@@ -140,8 +137,8 @@ pub fn generate_open_syscall_file_event(
                     // and so we don't, and so y'all get a generic error. 
                     // Linux is NOT a generous god.
                     // And neither am I.
-                    -2 => Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
-                    -13 => Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::PermissionDenied))),
+                    -2 => Some(FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist))),
+                    -13 => Some(FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Fail(SyscallFailure::PermissionDenied))),
                     _ => panic!("O_CREAT and failed but not because access denied or path component doesn't exist?"),
                 }
             }

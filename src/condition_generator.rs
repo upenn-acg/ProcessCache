@@ -67,6 +67,10 @@ pub struct ExecSyscallEvents {
 }
 
 impl ExecSyscallEvents {
+    pub fn new() -> ExecSyscallEvents {
+        ExecSyscallEvents { dir_events: HashMap::new(), file_events: HashMap::new() }
+    }
+
     pub fn dir_events(&self) -> HashMap<Accessor, Vec<DirEvent>> {
         self.dir_events.clone()
     }
@@ -1337,6 +1341,10 @@ pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
         dir: dir_postconds,
         file: file_postconds,
     }
+}
+
+pub fn generate_dir_postconditions(exec_file_events: ExecSyscallEvents) -> HashMap<Accessor, HashSet<Fact>> {
+    todo!();
 }
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
