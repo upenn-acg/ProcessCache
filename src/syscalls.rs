@@ -57,6 +57,7 @@ pub enum SyscallEvent {
     Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
     Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or dir doesn't exist.
+    Umask(u32), // original umask
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

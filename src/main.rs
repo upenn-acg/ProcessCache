@@ -167,7 +167,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_statfs)?;
     loader.intercept(libc::SYS_vfork)?;
-    // loader.intercept(libc::SYS_umask)?;
+    loader.intercept(libc::SYS_umask)?;
     loader.intercept(libc::SYS_unlink)?;
     loader.intercept(libc::SYS_unlinkat)?;
 
@@ -227,7 +227,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_sysinfo)?;
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_times)?;
-    loader.let_pass(libc::SYS_umask)?;
+    //loader.let_pass(libc::SYS_umask)?;
     loader.let_pass(libc::SYS_utimensat)?;
     loader.let_pass(libc::SYS_wait4)?;
     loader.let_pass(libc::SYS_write)?;

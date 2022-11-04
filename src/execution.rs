@@ -566,6 +566,7 @@ pub async fn trace_process(
                             handle_rename(&curr_execution, name, &tracer)?
                         }
                         "statfs" => handle_statfs(&curr_execution, &tracer)?,
+                        "umask" => handle_umask(&curr_execution, &tracer)?,
                         "unlink" | "unlinkat" => {
                             if nlinks_before == 1 {
                                 // before facts? (success)
@@ -1203,6 +1204,20 @@ fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     {
         execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, full_path);
     }
+    Ok(())
+}
+
+fn handle_umask(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+    let sys_span = span!(Level::INFO, "handle_umask", pid=?tracer.curr_proc);
+    let _ = sys_span.enter();
+
+    let regs = tracer
+        .get_registers()
+        .with_context(|| context!("Failed to get regs in handle_umask()"))?;
+    let ret_val = regs.retval::<u32>();
+
+    // TODO: this PathBuf is totally unused
+    execution.add_new_file_event(tracer.curr_proc, SyscallEvent::Umask(ret_val), PathBuf::from(""));
     Ok(())
 }
 

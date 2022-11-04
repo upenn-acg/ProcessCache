@@ -62,6 +62,7 @@ macro_rules! implement_register_cast {
 implement_register_cast!(u64);
 implement_register_cast!(usize);
 implement_register_cast!(i32);
+implement_register_cast!(u32);
 
 /// Allow a register to be cast to an arbitrary pointer type. Traits + generics are so cool!
 impl<T> RegisterCast for *const T {

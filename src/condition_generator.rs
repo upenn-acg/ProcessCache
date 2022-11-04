@@ -1,5 +1,7 @@
 use nix::{
     fcntl::OFlag,
+    sys::stat::Mode,
+    sys::stat::umask,
     sys::statfs::statfs,
     unistd::{access, AccessFlags, Pid},
 };
@@ -275,6 +277,11 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     panic!("Failed to call statfs in check_fact_holds()!")
                 }
             }
+            Fact::OriginalUmask(original_umask) => {
+                let current_umask = umask(Mode::empty());
+                let _ = umask(current_umask); // restore umask
+                current_umask.bits() == original_umask
+            }
         }
     }
 }
@@ -330,6 +337,18 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
             let curr_state = curr_state_struct.state();
 
             match (event.clone(), first_state, curr_state, has_been_deleted) {
+                (SyscallEvent::Umask(u), _, _, _) => {
+                    // TODO: only insert for the very first umask call
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    if !curr_set.iter().any(|f| {
+                        match f {
+                            Fact::OriginalUmask(_) => true,
+                            _ => false,
+                        }
+                    }) {
+                        curr_set.insert(Fact::OriginalUmask(u));
+                    }
+                }                
                 (_, _, Mod::None, true) => {
                     panic!("Last mod was none but was deleted is true??");
                 }
@@ -1705,6 +1724,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                 }
                 (SyscallEvent::Stat(_, _), _, _) => (),
                 (SyscallEvent::Statfs(_, _), _, _) => (),
+                (SyscallEvent::Umask(_), _, _) => (),
             }
             first_state_struct.update_based_on_syscall(&full_path, event.clone());
             last_mod_struct.update_based_on_syscall(event);

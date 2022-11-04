@@ -82,6 +82,7 @@ pub enum Fact {
     StartingContents(Vec<u8>),
     StatFsStructMatches(MyStatFs),
     StatStructMatches(Stat),
+    OriginalUmask(u32),
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -264,6 +265,7 @@ impl FirstState {
                 }
                 SyscallEvent::Stat(_, SyscallOutcome::Fail(_)) => (),
                 SyscallEvent::Statfs(_, _) => (),
+                SyscallEvent::Umask(_) => (),
             }
         }
     }
