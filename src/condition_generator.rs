@@ -1,7 +1,5 @@
 use nix::{
     fcntl::OFlag,
-    sys::stat::Mode,
-    sys::stat::umask,
     sys::statfs::statfs,
     unistd::{access, AccessFlags, Pid},
 };
@@ -278,9 +276,16 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 }
             }
             Fact::OriginalUmask(original_umask) => {
-                let current_umask = umask(Mode::empty());
-                let _ = umask(current_umask); // restore umask
-                current_umask.bits() == original_umask
+                // read child's umask via /proc
+                let status_file = format!("/proc/{}/status", pid);
+                println!("trying to read {}", &status_file);
+                let current_umask: u32 = fs::read_to_string(&status_file).unwrap()
+                    .split("\n")
+                    .filter(|l| l.starts_with("Umask:"))
+                    .map(|l| l.split_once(":").unwrap().1.parse::<u32>().unwrap())
+                    .collect::<Vec<u32>>()
+                    .pop().unwrap();
+                current_umask == original_umask
             }
         }
     }
@@ -338,7 +343,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
 
             match (event.clone(), first_state, curr_state, has_been_deleted) {
                 (SyscallEvent::Umask(u), _, _, _) => {
-                    // TODO: only insert for the very first umask call
+                    // only record the very first umask call
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     if !curr_set.iter().any(|f| {
                         match f {
