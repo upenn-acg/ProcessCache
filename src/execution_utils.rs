@@ -123,20 +123,28 @@ pub fn generate_open_syscall_file_event(
             match syscall_outcome {
                 Ok(_) => {
                     if open_flags.file_existed_at_start {
-                        match (open_flags.offset_mode, open_flags.open_mode) {
-                            (_, OFlag::O_RDONLY) => {
+                        match (open_flags.offset_mode, open_flags.access_mode) {
+                            (_, AccessMode::Read) => {
                                 panic!("O_CREAT + O_RDONLY AND the system call succeeded????")
                             }
-                            (_, OFlag::O_RDWR) => panic!("Do not support RW for now..."),
-                            (OFlag::O_RDONLY, OFlag::O_WRONLY) => {
+                            //TODO: Haven't yet fully evaluated and added changes
+                            //to support RW access mode
+                            (_, AccessMode::Both) => panic!("Do not support RW for now..."),
+                            //Is it correct to replace None offset mode with "_"?
+                            //Perhaps it should be !(Append | Trunc)?
+                            (_, AccessMode::Write) => {
                                 panic!("Do not support O_WRONLY without offset flag!")
                             }
-                            (OFlag::O_APPEND, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_APPEND, optional_checking_mech, SyscallOutcome::Success))
+                            (Some(OffsetMode::Append), AccessMode::Write) => {
+                                Some(SyscallEvent::Open(AccessMode::Write,
+                                    Some(OffsetMode::Append), optional_checking_mech, SyscallOutcome::Success))
                             }
-                            (OFlag::O_TRUNC, OFlag::O_WRONLY) => {
-                                Some(SyscallEvent::Open(OFlag::O_TRUNC, optional_checking_mech, SyscallOutcome::Success))
+                            (Some(OffsetMode::Trunc), AccessMode::Write) => {
+                                Some(SyscallEvent::Open(AccessMode::Write,
+                                    Some(OffsetMode::Trunc), optional_checking_mech, SyscallOutcome::Success))
                             }
+                            //TODO: Warning: Unreachable pattern below
+                            //What's a mode_flag here? Do we replace it with access_mode?
                             (offset_flag, mode_flag) => panic!("Unexpected offset flag: {:?} and mode flag: {:?}", offset_flag, mode_flag),
                         }
                     } else {
