@@ -14,10 +14,10 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 use crate::{
     async_runtime::AsyncRuntime,
     condition_utils::FileType,
-    execution_utils::{background_thread_copying_outputs, OpenFlags},
+    execution_utils::{background_thread_copying_outputs},
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{MyStatFs, AccessMode, OffsetMode},
+    syscalls::{MyStatFs, OpenFlags, AccessMode, OffsetMode},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},

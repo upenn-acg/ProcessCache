@@ -22,7 +22,7 @@ use crate::{
 };
 use crate::{
     condition_utils::{Postconditions, Preconditions},
-    syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome},
+    syscalls::{CheckMechanism, MyStat, SyscallEvent, SyscallFailure, SyscallOutcome, OffsetMode, AccessMode},
 };
 
 const DONT_HASH_FILES: bool = false;
@@ -672,7 +672,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
                 (
-                    SyscallEvent::Open(_,  _,outcome),
+                    SyscallEvent::Open(_, _, _, outcome),
                     State::DoesntExist,
                     Mod::Created,
                     true,
@@ -688,21 +688,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Open(_,  _,_), State::DoesntExist, Mod::Created, false) => {
+                (SyscallEvent::Open(_, _, _, _), State::DoesntExist, Mod::Created, false) => {
                     // Created, so not contents. not exists. we made the file in the exec so perms depend
                     // on that. and we already know x dir because we created the file at some point.
                     // So this just gives us nothing. (append, read, or trunc)
                 }
 
-                (SyscallEvent::Open(_, _,_), State::DoesntExist, Mod::Deleted, true) => {
+                (SyscallEvent::Open(_, _, _, _), State::DoesntExist, Mod::Deleted, true) => {
                     // We created it. We deleted it. So we already know x dir. The perms depend on making the file during the execution.
                     // Same with contents.(append, read, or trunc)
                 }
-                (SyscallEvent::Open(_,  _,_), State::DoesntExist, Mod::Modified, _) => {
+                (SyscallEvent::Open(_,  _, _, _), State::DoesntExist, Mod::Modified, _) => {
                     // Doesn't exist. Created, modified, maybe deleted and the whole process repeated.
                 }
                 // TODO: fix this case, think about bar in the case of rename(foo, bar). what if we then append to bar?
-                (SyscallEvent::Open(OFlag::O_APPEND, optional_check_mechanism, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), false) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Append), optional_check_mechanism, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), false) => {
                     if full_path == *new_path {
                         let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
 
@@ -738,7 +738,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         }
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_APPEND, optional_check_mech, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), true) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Append), optional_check_mech, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), true) => {
                     if full_path == *new_path {
                         match outcome {
                             SyscallOutcome::Success => {
@@ -773,7 +773,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Open(OFlag::O_TRUNC, _, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), _) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), _) => {
                     if full_path == *new_path {
                         match outcome {
                             SyscallOutcome::Success => {
@@ -788,7 +788,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         }
                     }
                 }
-                (SyscallEvent::Open(_, _, outcome), State::DoesntExist, Mod::None, false) => {
+                (SyscallEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
                     if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
@@ -796,21 +796,23 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     }
                 }
 
-                (SyscallEvent::Open(_, _, _), State::Exists, Mod::Created, true) => {
+                (SyscallEvent::Open(_, _, _, _), State::Exists, Mod::Created, true) => {
                     // It existed, then it was deleted, then created. This open depends on
                     // contents that are created during the execution.
                 }
 
                 // This is just going to say "file doesn't exist".
                 // Or the error won't make sense or it succeeds which also makes no sense.
-                (SyscallEvent::Open(_, _,  _), State::Exists, Mod::Deleted, true) => (),
+                (SyscallEvent::Open(_, _, _,  _), State::Exists, Mod::Deleted, true) => (),
                 // Ditto - ish
-                (SyscallEvent::Open(_,  _,_), State::Exists, Mod::Modified, true) => (),
-                (SyscallEvent::Open(_,  _,_), State::Exists, Mod::Modified, false) => (),
-                (SyscallEvent::Open(_, _, _), State::Exists, Mod::Renamed(_, _), true) => (),
+                (SyscallEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, true) => (),
+                (SyscallEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
+                (SyscallEvent::Open(_, _, _, _), State::Exists, Mod::Renamed(_, _), true) => (),
                 // First state exists means this is the old path, which doesn't exist anymore, so this won't succeed and doesn't change the preconditions.
-                (SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_RDONLY | OFlag::O_TRUNC, _, _), State::Exists, Mod::Renamed(_, _), false) => (),
-                (SyscallEvent::Open(OFlag::O_APPEND, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                //(SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_RDONLY | OFlag::O_TRUNC, _, _), State::Exists, Mod::Renamed(_, _), false) => (),
+                //I guess O_RDONLY was used for offset mode
+                (SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _), State::Exists, Mod::Renamed(_, _), false) => (),
+                (SyscallEvent::Open(_, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -843,7 +845,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_RDONLY, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                //(SyscallEvent::Open(OFlag::O_RDONLY, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
+                (SyscallEvent::Open(AccessMode::Read, _, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -876,7 +880,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_TRUNC,  _,outcome), State::Exists, Mod::None, false) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Trunc),  _,outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -890,19 +894,19 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                (SyscallEvent::Open(_,  _,_), State::None, Mod::Created, _) => {
+                (SyscallEvent::Open(_, _,  _,_), State::None, Mod::Created, _) => {
                     panic!("First state none but last mod created??");
                 }
-                (SyscallEvent::Open(_,  _,_), State::None, Mod::Deleted, true) => {
+                (SyscallEvent::Open(_, _,  _,_), State::None, Mod::Deleted, true) => {
                     panic!("First state none but last mod deleted??");
                 }
-                (SyscallEvent::Open(_,  _,_), State::None, Mod::Modified, _) => {
+                (SyscallEvent::Open(_, _, _,_), State::None, Mod::Modified, _) => {
                     panic!("First state none but last mod modified??");
                 }
-                (SyscallEvent::Open(_,  _,_), State::None, Mod::Renamed(_,_), _) => {
+                (SyscallEvent::Open(_, _, _,_), State::None, Mod::Renamed(_,_), _) => {
                     panic!("First state none but last mod renamed??");
                 }
-                (SyscallEvent::Open(OFlag::O_APPEND,  optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -943,7 +947,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_RDONLY,  optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(AccessMode::Read, _,  optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -985,7 +989,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                (SyscallEvent::Open(OFlag::O_TRUNC, _, outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
@@ -1012,7 +1016,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                (SyscallEvent::Open(f,  _,_), _, _, _) => panic!("Unexpected open flag: {:?}", f),
+                (SyscallEvent::Open(_, f,  _,_), _, _, _) => panic!("Unexpected open flag: {:?}", f),
 
                 (
                     SyscallEvent::Rename(_, _, _),
@@ -1493,14 +1497,15 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
 
                 (SyscallEvent::DirectoryRead(_, _, _), _, _) => (),
                 (SyscallEvent::FailedExec(_), _, _) => (),
-                (SyscallEvent::Open(OFlag::O_RDONLY, _, _), _, _) => (),
+                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
+                (SyscallEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, _),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
                     State::DoesntExist,
                     Mod::Created | Mod::Deleted | Mod::Modified,
                 ) => (),
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, outcome),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, outcome),
                     State::DoesntExist,
                     Mod::Renamed(_, new_path),
                 ) => {
@@ -1511,23 +1516,23 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     }
                 }
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, _),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
                     State::DoesntExist,
                     Mod::None,
                 ) => (),
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, _),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
                     State::Exists,
                     Mod::Created | Mod::Deleted | Mod::Modified,
                 ) => (),
                 // We shouldn't see more events after something is renamed unless it's the new file (and first state wouldn't be exists)
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, _),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
                     State::Exists,
                     Mod::Renamed(_, _),
                 ) => (),
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, outcome),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, outcome),
                     State::Exists,
                     Mod::None,
                 ) => {
@@ -1537,7 +1542,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     }
                 }
                 (
-                    SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, outcome),
+                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, outcome),
                     State::None,
                     Mod::None,
                 ) => {
@@ -1546,7 +1551,8 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (SyscallEvent::Open(flag, _, _), _, _) => {
+                //Not sure if flag was used to specify access mode or offset mode here
+                (SyscallEvent::Open(_, flag, _, _), _, _) => {
                     panic!("Unexpected oflag for open! :{:?}", flag);
                 }
                 (

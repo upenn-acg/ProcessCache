@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use libc::c_int;
 use nix::{fcntl::OFlag, unistd::Pid};
 use serde::{Deserialize, Serialize};
-
-use crate::{condition_utils::FileType, execution_utils::{AccessMode, OffsetMode}};
+use crate::{condition_utils::FileType};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStat {
