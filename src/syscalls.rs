@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
+use crate::condition_utils::FileType;
 use libc::c_int;
 use nix::{fcntl::OFlag, unistd::Pid};
 use serde::{Deserialize, Serialize};
-use crate::{condition_utils::FileType};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStat {
@@ -60,8 +60,13 @@ pub enum SyscallEvent {
     DirectoryRead(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
-    Open(AccessMode, Option<OffsetMode>, Option<CheckMechanism>, SyscallOutcome), // Can fail because the file didn't exist or permission denied
-    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
+    Open(
+        AccessMode,
+        Option<OffsetMode>,
+        Option<CheckMechanism>,
+        SyscallOutcome,
+    ), // Can fail because the file didn't exist or permission denied
+    Rename(PathBuf, PathBuf, SyscallOutcome), // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
     Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or dir doesn't exist.
 }

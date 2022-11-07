@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     condition_generator::Accessor,
-    syscalls::{MyStatFs, Stat, SyscallEvent, SyscallFailure, SyscallOutcome, OffsetMode, AccessMode},
+    syscalls::{
+        AccessMode, MyStatFs, OffsetMode, Stat, SyscallEvent, SyscallFailure, SyscallOutcome,
+    },
 };
 
 pub type Preconditions = HashMap<PathBuf, HashSet<Fact>>;
@@ -50,8 +52,12 @@ impl LastMod {
             SyscallEvent::Delete(SyscallOutcome::Success) => {
                 self.0 = Mod::Deleted;
             }
-            SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), 
-                _, SyscallOutcome::Success) => {
+            SyscallEvent::Open(
+                _,
+                Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
+                _,
+                SyscallOutcome::Success,
+            ) => {
                 self.0 = Mod::Modified;
             }
             SyscallEvent::Rename(old_path, new_path, outcome) => {
@@ -197,12 +203,7 @@ impl FirstState {
                 }
                 SyscallEvent::DirectoryRead(_, _, _) => (),
                 SyscallEvent::FailedExec(_) => (),
-                SyscallEvent::Open(
-                    _,
-                    Some(OffsetMode::Append),
-                    _,
-                    SyscallOutcome::Success,
-                ) => {
+                SyscallEvent::Open(_, Some(OffsetMode::Append), _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
                 SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, SyscallOutcome::Success) => (),
@@ -282,15 +283,18 @@ pub fn no_mods_before_rename(file_name_list: Vec<SyscallEvent>) -> bool {
     for event in file_name_list {
         match event {
             SyscallEvent::Access(_, _) => (),
-            //Not sure if O_RDONLY was used to specify Read access mode or 
+            //Not sure if O_RDONLY was used to specify Read access mode or
             //None offset mode here
             SyscallEvent::Open(AccessMode::Read, _, _, _) => (),
             SyscallEvent::Stat(_, _) => (),
             SyscallEvent::Create(_, SyscallOutcome::Success)
             | SyscallEvent::Delete(SyscallOutcome::Success)
-            | SyscallEvent::Open(_,
-                Some(OffsetMode::Append) | Some(OffsetMode::Trunc), 
-                _, SyscallOutcome::Success)
+            | SyscallEvent::Open(
+                _,
+                Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
+                _,
+                SyscallOutcome::Success,
+            )
             | SyscallEvent::Rename(_, _, SyscallOutcome::Success) => {
                 no_mods = false;
                 break;

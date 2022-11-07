@@ -19,7 +19,10 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{CheckMechanism, SyscallEvent, SyscallFailure, SyscallOutcome, OpenFlags, OffsetMode, AccessMode},
+    syscalls::{
+        AccessMode, CheckMechanism, OffsetMode, OpenFlags, SyscallEvent, SyscallFailure,
+        SyscallOutcome,
+    },
     Ptracer,
 };
 
@@ -83,7 +86,8 @@ pub fn generate_open_syscall_file_event(
     let optional_checking_mech = if DONT_HASH_FILES {
         None
     } else if syscall_outcome.is_ok()
-        && (open_flags.offset_mode == Some(OffsetMode::Append) || open_flags.access_mode == AccessMode::Read)
+        && (open_flags.offset_mode == Some(OffsetMode::Append)
+            || open_flags.access_mode == AccessMode::Read)
     {
         // DIFF FILES
         // Some(CheckMechanism::DiffFiles)
@@ -123,29 +127,11 @@ pub fn generate_open_syscall_file_event(
             match syscall_outcome {
                 Ok(_) => {
                     if open_flags.file_existed_at_start {
-                        match (open_flags.offset_mode, open_flags.access_mode) {
-                            (_, AccessMode::Read) => {
-                                panic!("O_CREAT + O_RDONLY AND the system call succeeded????")
-                            }
-                            //TODO: Haven't yet fully evaluated and added changes
-                            //to support RW access mode
-                            (_, AccessMode::Both) => panic!("Do not support RW for now..."),
-                            //Is it correct to replace None offset mode with "_"?
-                            //Perhaps it should be !(Append | Trunc)?
-                            (_, AccessMode::Write) => {
-                                panic!("Do not support O_WRONLY without offset flag!")
-                            }
-                            (Some(OffsetMode::Append), AccessMode::Write) => {
-                                Some(SyscallEvent::Open(AccessMode::Write,
-                                    Some(OffsetMode::Append), optional_checking_mech, SyscallOutcome::Success))
-                            }
-                            (Some(OffsetMode::Trunc), AccessMode::Write) => {
-                                Some(SyscallEvent::Open(AccessMode::Write,
-                                    Some(OffsetMode::Trunc), optional_checking_mech, SyscallOutcome::Success))
-                            }
-                            //TODO: Warning: Unreachable pattern below
-                            //What's a mode_flag here? Do we replace it with access_mode?
-                            (offset_flag, mode_flag) => panic!("Unexpected offset flag: {:?} and mode flag: {:?}", offset_flag, mode_flag),
+                        match (open_flags.offset_mode.clone(), open_flags.access_mode.clone()) {
+                            (None, AccessMode::Write) => panic!("No offset mode opening for writing!!"),
+                            (None, AccessMode::Both) => panic!("No offset mode opening for both!!"),
+                            (Some(mode), AccessMode::Read) => panic!("Offset mode {:?}, opened for reading!!", mode),
+                            (offset_mode, access_mode) => Some(SyscallEvent::Open(access_mode, offset_mode, optional_checking_mech, SyscallOutcome::Success))
                         }
                     } else {
                         Some(SyscallEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success))
@@ -176,18 +162,31 @@ pub fn generate_open_syscall_file_event(
                 // and if precondition checking mechanism is DiffFiles,
                 // copy input file to the cache.
                 if let Some(mech) = optional_checking_mech.clone() {
-                    if (open_flags.offset_mode == Some(OffsetMode::Append) || open_flags.access_mode == AccessMode::Read)
-                        && mech == CheckMechanism::DiffFiles {
+                    if (open_flags.offset_mode == Some(OffsetMode::Append)
+                        || open_flags.access_mode == AccessMode::Read)
+                        && mech == CheckMechanism::DiffFiles
+                    {
                         copy_input_file_to_cache(curr_execution, full_path);
                     }
                 }
-                Some(SyscallEvent::Open(
-                    open_flags.access_mode,
-                    open_flags.offset_mode,
-                    optional_checking_mech,
-                    SyscallOutcome::Success,
-                ))
-            },
+
+                match (
+                    open_flags.offset_mode.clone(),
+                    open_flags.access_mode.clone(),
+                ) {
+                    (None, AccessMode::Write) => panic!("No offset mode opening for writing!!"),
+                    (None, AccessMode::Both) => panic!("No offset mode opening for both!!"),
+                    (Some(mode), AccessMode::Read) => {
+                        panic!("Offset mode {:?}, opened for reading!!", mode)
+                    }
+                    (offset_mode, access_mode) => Some(SyscallEvent::Open(
+                        access_mode,
+                        offset_mode,
+                        optional_checking_mech,
+                        SyscallOutcome::Success,
+                    )),
+                }
+            }
             Err(ret_val) => {
                 let syscall_failure = match ret_val {
                     // ENOENT
@@ -203,9 +202,9 @@ pub fn generate_open_syscall_file_event(
                     open_flags.access_mode,
                     open_flags.offset_mode,
                     optional_checking_mech,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied)
+                    SyscallOutcome::Fail(syscall_failure),
                 ))
-            },
+            }
         }
     }
 }

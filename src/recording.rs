@@ -232,10 +232,6 @@ impl Execution {
         self.is_ignored
     }
 
-    fn is_root(&self) -> bool {
-        self.is_root
-    }
-
     fn pid(&self) -> Pid {
         self.successful_exec.caller_pid()
     }
@@ -393,11 +389,6 @@ impl RcExecution {
 
     pub fn is_ignored(&self) -> bool {
         self.0.borrow().is_ignored()
-    }
-
-    // Just tells us whether this is the root process.
-    pub fn is_root(&self) -> bool {
-        self.0.borrow().is_root()
     }
 
     pub fn pid(&self) -> Pid {
