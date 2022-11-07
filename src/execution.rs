@@ -14,10 +14,10 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 use crate::{
     async_runtime::AsyncRuntime,
     condition_utils::FileType,
-    execution_utils::{background_thread_copying_outputs},
+    execution_utils::background_thread_copying_outputs,
     recording::{generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{MyStatFs, OpenFlags, AccessMode, OffsetMode},
+    syscalls::{AccessMode, MyStatFs, OffsetMode, OpenFlags},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -32,7 +32,6 @@ use crate::{
 use crate::context;
 use crate::execution_utils::{generate_open_syscall_file_event, get_full_path, path_from_fd};
 use crate::recording::{ExecMetadata, Execution, Proc, RcExecution};
-use crate::redirection;
 use crate::regs::{Regs, Unmodified};
 use crate::syscalls::{MyStat, SyscallEvent, SyscallFailure, SyscallOutcome};
 use crate::system_call_names::get_syscall_name;
@@ -930,7 +929,12 @@ fn handle_open(
         let creat_flag = true;
         let excl_flag = false;
         // creat() uses write only as the mode
-        (creat_flag, excl_flag, Some(OffsetMode::Trunc), AccessMode::Write)
+        (
+            creat_flag,
+            excl_flag,
+            Some(OffsetMode::Trunc),
+            AccessMode::Write,
+        )
     } else {
         let flag_arg = if syscall_name == "open" {
             regs.arg2::<i32>()
@@ -1006,18 +1010,18 @@ fn handle_open(
     Ok(())
 }
 
-fn handle_pipe2(regs: &Regs<Unmodified>) -> Result<()> {
-    let flags = regs.arg2::<i32>();
-    let option_flags = OFlag::from_bits(flags);
-    if let Some(flags) = option_flags {
-        if !flags.contains(OFlag::O_CLOEXEC) {
-            panic!("Creating a pipe without the O_CLOEXEC flag!");
-        } else {
-            debug!("Happy lil O_CLOEXEC pipe :)");
-        }
-    }
-    Ok(())
-}
+// fn handle_pipe2(regs: &Regs<Unmodified>) -> Result<()> {
+//     let flags = regs.arg2::<i32>();
+//     let option_flags = OFlag::from_bits(flags);
+//     if let Some(flags) = option_flags {
+//         if !flags.contains(OFlag::O_CLOEXEC) {
+//             panic!("Creating a pipe without the O_CLOEXEC flag!");
+//         } else {
+//             debug!("Happy lil O_CLOEXEC pipe :)");
+//         }
+//     }
+//     Ok(())
+// }
 
 fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
     debug!("WE ARE IN HANDLE RENAME");
