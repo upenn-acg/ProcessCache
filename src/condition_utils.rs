@@ -46,8 +46,8 @@ pub struct Postconditions {
 
 impl Postconditions {
     pub fn new(
-        dir: HashMap<PathBuf, HashSet<Fact>>,
-        file: HashMap<PathBuf, HashSet<Fact>>,
+        dir: HashMap<Accessor, HashSet<Fact>>,
+        file: HashMap<Accessor, HashSet<Fact>>,
     ) -> Postconditions {
         Postconditions { dir, file }
     }
@@ -172,7 +172,15 @@ impl FirstState {
                     }
                     _ => (),
                 },
-                DirEvent::Delete(_) => todo!(),
+                DirEvent::Delete(outcome) => match outcome {
+                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                        self.0 = State::DoesntExist;
+                    }
+                    SyscallOutcome::Success => {
+                        self.0 = State::Exists;
+                    }
+                    _ => (),
+                },
                 DirEvent::Read(_, _, outcome) => match outcome {
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
                         self.0 = State::DoesntExist;
@@ -379,5 +387,17 @@ pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
 }
 
 pub fn no_mods_before_dir_rename(dir_list: Vec<DirEvent>) -> bool {
-    todo!();
+    let mut no_mods = true;
+    for event in dir_list {
+        match event {
+            DirEvent::Create(_, SyscallOutcome::Success)
+            | DirEvent::Delete(SyscallOutcome::Success)
+            | DirEvent::Rename(_, _, SyscallOutcome::Success) => {
+                no_mods = false;
+                break;
+            }
+            _ => (),
+        }
+    }
+    no_mods
 }
