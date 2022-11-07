@@ -8,7 +8,7 @@ use crate::{
 use nix::unistd::Pid;
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
     fs::{self, File},
     hash::Hash,
     io::{self, Read, Write},
@@ -159,8 +159,8 @@ impl Execution {
     }
 
     fn add_stdout_duped_fd(&mut self, duped_fd: i32, pid: Pid) {
-        if !self.stdout_fd_map.contains_key(&pid) {
-            self.stdout_fd_map.insert(pid, duped_fd);
+        if let Entry::Vacant(e) = self.stdout_fd_map.entry(pid) {
+            e.insert(duped_fd);
         } else {
             panic!(
                 "Trying to add stdout duped fd but this has already been done for this pid (in this exec struct)!!"

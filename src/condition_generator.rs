@@ -1335,7 +1335,7 @@ pub fn generate_file_preconditions(
             }
 
             // This function will only change the first_state if it is None.
-            first_state_struct.update_based_on_file_event(&full_path, event.clone());
+            first_state_struct.update_based_on_file_event(full_path, event.clone());
             curr_state_struct.update_based_on_file_event(event.clone());
         }
     }
