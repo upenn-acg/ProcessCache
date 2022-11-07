@@ -802,15 +802,14 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 }
 
                 (SyscallEvent::Open(_, _, _, _), State::Exists, _, true) => {
-                    // TODO: update comment here
-                    // It existed, then it was deleted, then created. This open depends on
-                    // contents that are created during the execution.
+                    // We know it existed at the start, so we have accessed it in some way.
+                    // It has been deleted. Anything we do to it now is based on
+                    // the file that was created during exec after the OG
+                    // one was deleted. So no more preconditions contributed.
                 }
 
                 (SyscallEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
                 // First state exists means this is the old path, which doesn't exist anymore, so this won't succeed and doesn't change the preconditions.
-                //(SyscallEvent::Open(OFlag::O_APPEND | OFlag::O_RDONLY | OFlag::O_TRUNC, _, _), State::Exists, Mod::Renamed(_, _), false) => (),
-                //I guess O_RDONLY was used for offset mode
                 (SyscallEvent::Open(_, _, _, _), State::Exists, Mod::Renamed(_, _), false) => (),
                 (SyscallEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
@@ -853,8 +852,6 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                //(SyscallEvent::Open(OFlag::O_RDONLY, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
-                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
                 (SyscallEvent::Open(AccessMode::Read, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
