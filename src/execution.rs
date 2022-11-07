@@ -13,11 +13,12 @@ use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
 
 use crate::{
     async_runtime::AsyncRuntime,
+    condition_generator::ExecSyscallEvents,
     condition_utils::FileType,
     execution_utils::{background_thread_copying_outputs, OpenFlags},
-    recording::{generate_list_of_files_to_copy_to_cache, LinkType, append_dir_events},
+    recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{MyStatFs, FileEvent, DirEvent}, condition_generator::ExecSyscallEvents,
+    syscalls::{DirEvent, FileEvent, MyStatFs},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -25,7 +26,7 @@ use crate::{
 };
 use crate::{
     cache_utils::{hash_command, Command},
-    condition_generator::{generate_postconditions},
+    condition_generator::generate_postconditions,
     recording::{append_file_events, copy_output_files_to_cache},
 };
 
@@ -708,13 +709,20 @@ pub async fn trace_process(
 
                     for child in children {
                         let command = child.command();
-                        append_file_events(&mut new_file_events, command.clone(), child.syscall_events().file_events(), child.pid());
-                        append_dir_events(&mut new_dir_events, command, child.syscall_events().dir_events(), child.pid());
+                        append_file_events(
+                            &mut new_file_events,
+                            command.clone(),
+                            child.syscall_events().file_events(),
+                            child.pid(),
+                        );
+                        append_dir_events(
+                            &mut new_dir_events,
+                            command,
+                            child.syscall_events().dir_events(),
+                            child.pid(),
+                        );
                     }
-                    ExecSyscallEvents {
-                        dir_events: new_dir_events,
-                        file_events: new_file_events,
-                    }
+                    ExecSyscallEvents::new(new_dir_events, new_file_events)
                 };
 
                 curr_execution.update_syscall_events(new_events.clone());
@@ -724,13 +732,14 @@ pub async fn trace_process(
                 if !curr_execution.is_ignored() {
                     let postconditions = generate_postconditions(new_events);
                     curr_execution.update_postconditions(postconditions.clone());
+                    let file_postconditions = postconditions.file_postconditions();
 
                     // Here is where we send the files to be copied to the background threads.
                     if let Some(sender) = send_end {
                         // Get the (source, dest) pairs of files to copy.
                         let file_pairs = generate_list_of_files_to_copy_to_cache(
                             &curr_execution,
-                            postconditions,
+                            file_postconditions,
                         );
 
                         // Send each pair to across the channel.
@@ -738,7 +747,7 @@ pub async fn trace_process(
                             sender.send(pair).unwrap();
                         }
                     } else {
-                        copy_output_files_to_cache(&curr_execution, postconditions);
+                        copy_output_files_to_cache(&curr_execution, file_postconditions);
                     }
                 }
             }
@@ -779,12 +788,12 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     let flags = regs.arg2::<i32>();
 
     let event = match ret_val {
-        0 => SyscallEvent::Access(flags, SyscallOutcome::Success),
-        -2 => SyscallEvent::Access(flags, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+        0 => FileEvent::Access(flags, SyscallOutcome::Success),
+        -2 => FileEvent::Access(flags, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
         // It could be that the user doesn't have one of the permissions they specified as a parameter
         // OR it could be that they don't have search permissions on some dir in the path to the resource.
         // And we don't know so permission is gonna have to be unknown.
-        -13 => SyscallEvent::Access(
+        -13 => FileEvent::Access(
             flags,
             SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
         ),
@@ -1075,30 +1084,22 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 
     debug!("full old path: {:?}", full_old_path);
     debug!("full new path: {:?}", full_new_path);
-        let outcome = match ret_val {
-            0 => SyscallOutcome::Success,
-            // Probably the old file doesn't exist. Empty new path is also possible.
-            -2 => SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-            -13 => SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-            -22 => SyscallOutcome::Fail(SyscallFailure::InvalArg),
-            e => panic!("Unexpected error returned by rename syscall!: {}", e),
-        };
+    let outcome = match ret_val {
+        0 => SyscallOutcome::Success,
+        // Probably the old file doesn't exist. Empty new path is also possible.
+        -2 => SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+        -13 => SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
+        -22 => SyscallOutcome::Fail(SyscallFailure::InvalArg),
+        e => panic!("Unexpected error returned by rename syscall!: {}", e),
+    };
 
-        if full_old_path.is_dir() {
-            let event = DirEvent::Rename(
-                full_old_path,
-                full_new_path, 
-                outcome
-            );
-            execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
-        } else {
-            let event = FileEvent::Rename(
-                full_old_path,
-                full_new_path,
-                outcome
-            );
-            execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
-        }
+    if full_old_path.is_dir() {
+        let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
+        execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
+    } else {
+        let event = FileEvent::Rename(full_old_path.clone(), full_new_path, outcome);
+        execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
+    }
 
     Ok(())
 }
@@ -1235,10 +1236,14 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
     let full_path = get_full_path(execution, name, tracer)?;
 
     // TODO: dirs!
+    if full_path.is_dir() {
+        panic!("Deleting dir!!");
+    }
+
     let delete_syscall_event = match ret_val {
-        0 => SyscallEvent::Delete(SyscallOutcome::Success),
-        -2 => SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
-        -13 => SyscallEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+        0 => FileEvent::Delete(SyscallOutcome::Success),
+        -2 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+        -13 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
         e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
     };
 

@@ -91,8 +91,15 @@ impl CachedExecution {
             // If an execution has no postconditions, it may just not have output files.
             // That's not a reason to panic.
             if let Some(posts) = postconditions {
-                for (accessor, fact_set) in posts {
-                    apply_transition_function(accessor, cache_subdir.clone(), fact_set);
+                let file_postconditions = posts.file_postconditions();
+                let dir_postconditions = posts.dir_postconditions();
+
+                for (accessor, fact_set) in file_postconditions {
+                    apply_file_transition_function(accessor, cache_subdir.clone(), fact_set);
+                }
+
+                for (accessor, fact_set) in dir_postconditions {
+                    apply_dir_transition_function(accessor, fact_set);
                 }
             }
         } else {
@@ -104,6 +111,7 @@ impl CachedExecution {
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
             let my_preconds = self.preconditions.clone();
+            // TODO: actaully handle checking env vars x)
             let vars = std::env::vars();
             let mut vec_vars = Vec::new();
             for (first, second) in vars {
@@ -201,7 +209,11 @@ impl RcCachedExec {
     }
 }
 
-fn apply_transition_function(
+fn apply_dir_transition_function(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {
+    todo!();
+}
+
+fn apply_file_transition_function(
     accessor_and_file: Accessor,
     parents_cache_subdir: PathBuf,
     fact_set: HashSet<Fact>,
