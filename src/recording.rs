@@ -2,12 +2,13 @@ use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{generate_preconditions, Accessor, ExecSyscallEvents},
-    condition_utils::{Fact, Postconditions}, syscalls::{FileEvent, DirEvent},
+    condition_utils::{Fact, Postconditions},
+    syscalls::{DirEvent, FileEvent},
 };
 use nix::unistd::Pid;
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     hash::Hash,
     io::{self, Read, Write},
@@ -124,7 +125,7 @@ impl Execution {
         Execution {
             child_execs: Vec::new(),
             exit_code: None,
-            syscall_events: ExecSyscallEvents::new(),
+            syscall_events: ExecSyscallEvents::new(HashMap::new(), HashMap::new()),
             is_ignored: false,
             is_root: false,
             postconditions: None,
@@ -135,7 +136,7 @@ impl Execution {
 
     pub fn add_child_execution(&mut self, child_execution: RcExecution) {
         self.child_execs.push(child_execution.clone());
-        self.file_events.add_new_fork_exec(child_execution.pid());
+        self.syscall_events.add_new_fork_exec(child_execution.pid());
     }
 
     pub fn add_exit_code(&mut self, code: i32) {
@@ -150,10 +151,10 @@ impl Execution {
         &mut self,
         caller_pid: Pid,
         // OBVIOUSLY, will handle any syscall event eventually.
-        file_access: SyscallEvent,
+        file_access: FileEvent,
         full_path: PathBuf,
     ) {
-        self.file_events
+        self.syscall_events
             .add_new_file_event(caller_pid, file_access, full_path);
     }
 
@@ -210,7 +211,6 @@ impl Execution {
         );
 
         let children = self.child_execs.clone();
-        let file_events = self.file_events.clone();
 
         for child in children {
             child.generate_cached_exec(cache_map);
@@ -218,7 +218,7 @@ impl Execution {
         }
 
         if !self.is_ignored {
-            let preconditions = generate_preconditions(file_events);
+            let preconditions = generate_preconditions(self.syscall_events.clone());
             new_cached_exec.add_preconditions(preconditions);
         }
 
@@ -231,10 +231,6 @@ impl Execution {
             Some(fd) => Some(*fd),
             _ => None,
         }
-    }
-
-    fn file_events(&self) -> ExecFileEvents {
-        self.file_events.clone()
     }
 
     fn is_empty_root_exec(&self) -> bool {
@@ -304,7 +300,6 @@ impl Execution {
     fn update_syscall_events(&mut self, syscall_events: ExecSyscallEvents) {
         self.syscall_events = syscall_events;
     }
-
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -339,21 +334,11 @@ impl RcExecution {
         self.0.borrow_mut().add_exit_code(code);
     }
 
-    pub fn add_new_dir_event(
-        &self,
-        caller_pid: Pid,
-        dir_event: DirEvent,
-        full_path: PathBuf
-    ) {
+    pub fn add_new_dir_event(&self, caller_pid: Pid, dir_event: DirEvent, full_path: PathBuf) {
         todo!();
     }
 
-    pub fn add_new_file_event(
-        &self,
-        caller_pid: Pid,
-        file_event: FileEvent,
-        full_path: PathBuf,
-    ) {
+    pub fn add_new_file_event(&self, caller_pid: Pid, file_event: FileEvent, full_path: PathBuf) {
         self.0
             .borrow_mut()
             .add_new_file_event(caller_pid, file_event, full_path);
@@ -455,7 +440,7 @@ pub fn append_dir_events(
     parent_events: &mut HashMap<Accessor, Vec<DirEvent>>,
     child_command: Command,
     child_events: HashMap<Accessor, Vec<DirEvent>>,
-    child_pid: Pid
+    child_pid: Pid,
 ) {
     todo!();
 }
@@ -467,7 +452,6 @@ pub fn append_file_events(
     child_pid: Pid,
 ) {
     // TODO: files AND dirs
-    let child_file_event = child_events.file_events();
     let hashed_child_command = hash_command(child_command);
 
     // For each child resource and its event list...
@@ -483,7 +467,7 @@ pub fn append_file_events(
             // - replace it with the child's list of events
             if let Some(child_exec_index) = parents_event_list
                 .iter()
-                .position(|x| x == &SyscallEvent::ChildExec(child_pid))
+                .position(|x| x == &FileEvent::ChildExec(child_pid))
             {
                 let mut childs_events = child_file_event_list.clone();
                 let before_events = &parents_event_list[..child_exec_index];
@@ -515,12 +499,14 @@ pub fn append_file_events(
     }
 }
 
+// This shouldn't even be used anymore.
+// This is the synchronous method for copying output files
+// to the cache. But we want to always parallelize this
+// with background threads. I am still keeping this function
+// up to date though.
 pub fn copy_output_files_to_cache(
     curr_execution: &RcExecution,
-    // command: Command,
-    // pid: Pid,
-    postconditions: Postconditions,
-    // starting_cwd: PathBuf,
+    file_postconditions: HashMap<Accessor, HashSet<Fact>>,
 ) {
     // Now copy the output files to the appropriate places.
     const CACHE_LOCATION: &str = "./cache";
@@ -533,7 +519,7 @@ pub fn copy_output_files_to_cache(
         fs::create_dir(cache_subdir_hashed_command.clone()).unwrap();
     }
 
-    for (accessor, fact_set) in postconditions {
+    for (accessor, fact_set) in file_postconditions {
         let option_hashed_command = accessor.hashed_command();
         let path = accessor.path();
 
@@ -618,7 +604,7 @@ pub fn copy_output_files_to_cache(
 
 pub fn generate_list_of_files_to_copy_to_cache(
     curr_execution: &RcExecution,
-    postconditions: Postconditions,
+    file_postconditions: HashMap<Accessor, HashSet<Fact>>,
 ) -> Vec<(LinkType, PathBuf, PathBuf)> {
     let mut list_of_files: Vec<(LinkType, PathBuf, PathBuf)> = Vec::new();
 
@@ -633,7 +619,8 @@ pub fn generate_list_of_files_to_copy_to_cache(
     }
 
     // All the current proc's output files.
-    for (accessor, fact_set) in postconditions {
+    // We don't need to "copy" over a directory that was made.
+    for (accessor, fact_set) in file_postconditions {
         let option_hashed_command = accessor.hashed_command();
         let path = accessor.path();
 

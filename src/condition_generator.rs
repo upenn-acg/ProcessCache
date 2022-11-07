@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, read_dir, File},
+    hash::Hash,
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
-    path::PathBuf, hash::Hash,
+    path::PathBuf,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -67,8 +68,55 @@ pub struct ExecSyscallEvents {
 }
 
 impl ExecSyscallEvents {
-    pub fn new() -> ExecSyscallEvents {
-        ExecSyscallEvents { dir_events: HashMap::new(), file_events: HashMap::new() }
+    pub fn new(
+        dir_events: HashMap<Accessor, Vec<DirEvent>>,
+        file_events: HashMap<Accessor, Vec<FileEvent>>,
+    ) -> ExecSyscallEvents {
+        ExecSyscallEvents {
+            dir_events,
+            file_events,
+        }
+    }
+
+    // Add new access to the struct.
+    pub fn add_new_file_event(
+        &mut self,
+        caller_pid: Pid,
+        file_event: FileEvent,
+        full_path: PathBuf,
+    ) {
+        let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
+        let _ = s.enter();
+
+        let fpath = full_path.clone().into_os_string().into_string().unwrap();
+        if fpath.contains("tmp") {
+            return;
+        }
+
+        s.in_scope(|| "in add_new_file_event");
+        // First case, we already saw this file and now we are adding another event to it.
+        if let Some(event_list) = self
+            .file_events
+            .get_mut(&Accessor::CurrProc(full_path.clone()))
+        {
+            s.in_scope(|| "adding to existing event list");
+            event_list.push(file_event);
+        } else {
+            let event_list = vec![file_event];
+            s.in_scope(|| "adding new event list");
+            self.file_events
+                .insert(Accessor::CurrProc(full_path), event_list);
+        }
+    }
+
+    pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
+        for (_, list) in self.dir_events.iter_mut() {
+            list.push(DirEvent::ChildExec(child_pid));
+        }
+
+        for (_, list) in self.file_events.iter_mut() {
+            list.push(FileEvent::ChildExec(child_pid));
+        }
     }
 
     pub fn dir_events(&self) -> HashMap<Accessor, Vec<DirEvent>> {
@@ -79,49 +127,6 @@ impl ExecSyscallEvents {
         self.file_events.clone()
     }
 }
-
-// impl ExecFileEvents {
-//     pub fn new(map: HashMap<Accessor, Vec<FileEvent>>) -> ExecFileEvents {
-//         ExecFileEvents(map)
-//     }
-
-//     // Add new access to the struct.
-//     pub fn add_new_file_event(
-//         &mut self,
-//         caller_pid: Pid,
-//         file_event: FileEvent,
-//         full_path: PathBuf,
-//     ) {
-//         let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
-//         let _ = s.enter();
-
-//         let fpath = full_path.clone().into_os_string().into_string().unwrap();
-//         if fpath.contains("tmp") {
-//             return;
-//         }
-
-//         s.in_scope(|| "in add_new_file_event");
-//         // First case, we already saw this file and now we are adding another event to it.
-//         if let Some(event_list) = self.0.get_mut(&Accessor::CurrProc(full_path.clone())) {
-//             s.in_scope(|| "adding to existing event list");
-//             event_list.push(file_event);
-//         } else {
-//             let event_list = vec![file_event];
-//             s.in_scope(|| "adding new event list");
-//             self.0.insert(Accessor::CurrProc(full_path), event_list);
-//         }
-//     }
-
-//     pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
-//         for (_, list) in self.0.iter_mut() {
-//             list.push(FileEvent::ChildExec(child_pid));
-//         }
-//     }
-
-//     pub fn events(&self) -> HashMap<Accessor, Vec<FileEvent>> {
-//         self.0.clone()
-//     }
-// }
 
 fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
     debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
@@ -308,7 +313,10 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     for (path_name, fact_set) in dir_preconds {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
-                debug!("Dir fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
+                debug!(
+                    "Dir fact that doesn't hold: {:?}, path: {:?}",
+                    fact, path_name
+                );
                 return false;
             }
         }
@@ -316,7 +324,10 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     for (path_name, fact_set) in file_preconds {
         for fact in fact_set {
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
-                debug!("File fact that doesn't hold: {:?}, path: {:?}", fact, path_name);
+                debug!(
+                    "File fact that doesn't hold: {:?}, path: {:?}",
+                    fact, path_name
+                );
                 return false;
             }
         }
@@ -331,20 +342,21 @@ pub fn generate_preconditions(events: ExecSyscallEvents) -> Preconditions {
     let dir_preconds = generate_dir_preconditions(dir_events);
     let file_preconds = generate_file_preconditions(file_events);
 
-    Preconditions {
-        dir: dir_preconds,
-        file: file_preconds,
-    }
+    Preconditions::new(dir_preconds, file_preconds)
 }
 
-pub fn generate_dir_preconditions(dir_events: HashMap<Accessor, Vec<DirEvent>>) -> HashMap<PathBuf, HashSet<Fact>> {
+pub fn generate_dir_preconditions(
+    dir_events: HashMap<Accessor, Vec<DirEvent>>,
+) -> HashMap<PathBuf, HashSet<Fact>> {
     todo!();
 }
 
 // Directory Preconditions (For now, just cwd), File Preconditions
 // Takes in all the events for ONE RESOURCE and generates its preconditions.
 // TODO: when we do the preconditions checking, take the FIRST stat only.
-pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>>,) -> HashMap<PathBuf, HashSet<Fact>> {
+pub fn generate_file_preconditions(
+    file_events: HashMap<Accessor, Vec<FileEvent>>,
+) -> HashMap<PathBuf, HashSet<Fact>> {
     let sys_span = span!(Level::INFO, "generate_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
@@ -357,7 +369,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
         curr_file_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
-    for (accessor, event_list) in file_events {
+    for (accessor, event_list) in &file_events {
         let full_path = match accessor {
             Accessor::ChildProc(_, path) => path,
             Accessor::CurrProc(path) => path,
@@ -402,7 +414,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     // BEFORE the execution :O
                     match outcome {
                         SyscallOutcome::Success => {
-                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             let flag_set = AccessFlags::from_bits(flags).unwrap();
 
@@ -413,7 +425,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                             curr_set.insert(Fact::NoPermission(flags));
                         }
                         o => panic!("Unexpected access syscall failure: {:?}", o),
@@ -432,7 +444,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     panic!("No first state but last mod was renamed??");
                 }
                 (FileEvent::Access(flags, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
@@ -462,7 +474,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified, false) => (),
                 (FileEvent::Create(_, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
                 (FileEvent::Create(mode, outcome), State::DoesntExist, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -503,7 +515,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     panic!("First state none but last mod renamed??");
                 }
                 (FileEvent::Create(OFlag::O_CREAT, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -528,7 +540,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     }
                 }
                 (FileEvent::Create(OFlag::O_EXCL, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -614,7 +626,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     // newpath? didn't exist, rename made it exist, now it might get deleted.
                     match outcome {
                         SyscallOutcome::Success => {
-                            if full_path == *new_path {
+                            if *full_path == *new_path {
                                 has_been_deleted = true;
                             }
                         }
@@ -650,7 +662,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     }
                 }
                 (FileEvent::Delete(outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
@@ -686,7 +698,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     panic!("First state was none but last mod was renamed??");
                 }
                 (FileEvent::Delete(outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
@@ -709,7 +721,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     }
                 }
                 (FileEvent::FailedExec(failure), _, _, _) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match failure {
                         SyscallFailure::FileDoesntExist => {
                             curr_set.insert(Fact::DoesntExist);
@@ -1063,7 +1075,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     // Success tells us nothing for preconds.
                 }
                 (FileEvent::Rename(_, _, outcome), State::DoesntExist, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     // So, it doesn't exist. We can't rename it.
                     // So this can't succeed.
@@ -1102,14 +1114,14 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     // an existing file, and that will be a precondition.
                 }
                 (FileEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     // It exists, we haven't modified it.
                     // It exists so we know that we have x access to the cwd.
                     // So if it succeeds we have to add those preconditions.
                     // oldpath preconds: exists, x w access
                     // newpath preconds: none (not handling flags)
-                    if old_path == full_path {
+                    if old_path == *full_path {
                         match outcome {
                             SyscallOutcome::Success => {
                                 curr_set.insert(Fact::HasDirPermission((AccessFlags::W_OK).bits(), None));
@@ -1137,11 +1149,11 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 (FileEvent::Rename(old_path, _, outcome), State::None, Mod::None, false) => {
                     // No first state, no mods, haven't deleted. This is the first thing we are doing to this
                     // resource probably.
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            if old_path == full_path {
+                            if old_path == *full_path {
                                 // First event is renaming and we see old path, add all the preconds.
                                 curr_set.insert(Fact::Exists);
                                 let mut flags = AccessFlags::empty();
@@ -1181,7 +1193,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     match outcome {
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                         }
@@ -1197,7 +1209,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 // This file has been deleted, no way the stat struct is gonna be the same.
                 (FileEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), true) => (),
                 (FileEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
-                    if *new_path == full_path {
+                    if *new_path == *full_path {
                         // We actually have to add the stat struct matching to the old path's
                         if let Some(list) = file_events.get(&Accessor::CurrProc(old_path.clone())) {
                             // &old_path.clone()
@@ -1217,7 +1229,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                 (FileEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
-                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                             // TODO: don't add if there's already a stat struct, they'll conflict.
                             // Just going to check for duplicates in check_preconditions()?
 
@@ -1245,7 +1257,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
                     panic!("First state was none but last mod was renamed??");
                 }
                 (FileEvent::Stat(option_stat, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1324,7 +1336,7 @@ pub fn generate_file_preconditions(file_events: HashMap<Accessor, Vec<FileEvent>
 
             // This function will only change the first_state if it is None.
             first_state_struct.update_based_on_file_event(&full_path, event.clone());
-            curr_state_struct.update_based_on_file_event(event);
+            curr_state_struct.update_based_on_file_event(event.clone());
         }
     }
     curr_file_preconditions
@@ -1337,28 +1349,29 @@ pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
     let dir_postconds = generate_dir_postconditions(dir_events);
     let file_postconds = generate_file_postconditions(file_events);
 
-    Postconditions {
-        dir: dir_postconds,
-        file: file_postconds,
-    }
+    Postconditions::new(dir_postconds, file_postconds)
 }
 
-pub fn generate_dir_postconditions(exec_file_events: ExecSyscallEvents) -> HashMap<Accessor, HashSet<Fact>> {
+pub fn generate_dir_postconditions(
+    dir_events: HashMap<Accessor, Vec<DirEvent>>,
+) -> HashMap<Accessor, HashSet<Fact>> {
     todo!();
 }
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
-pub fn generate_file_postconditions(exec_file_events: ExecSyscallEvents) -> Postconditions {
+pub fn generate_file_postconditions(
+    file_events: HashMap<Accessor, Vec<FileEvent>>,
+) -> HashMap<Accessor, HashSet<Fact>> {
     let sys_span = span!(Level::INFO, "generate_file_postconditions");
     let _ = sys_span.enter();
 
-    let mut curr_file_postconditions: Postconditions = HashMap::new();
+    let mut curr_file_postconditions = HashMap::new();
 
     // Just be sure the map is set up ahead of time.
-    for accessor in exec_file_events.events().keys() {
+    for accessor in file_events.keys() {
         curr_file_postconditions.insert(accessor.clone(), HashSet::new());
     }
-    for (accessor, event_list) in exec_file_events.events() {
+    for (accessor, event_list) in file_events {
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);
         let (full_path, option_cmd) = match accessor.clone() {
@@ -1433,11 +1446,7 @@ pub fn generate_file_postconditions(exec_file_events: ExecSyscallEvents) -> Post
                         curr_set.insert(Fact::FinalContents);
                     }
                 }
-                (
-                    FileEvent::Delete(outcome),
-                    State::DoesntExist,
-                    Mod::Created | Mod::Modified,
-                ) => {
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Created | Mod::Modified) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
@@ -1762,10 +1771,9 @@ pub fn generate_file_postconditions(exec_file_events: ExecSyscallEvents) -> Post
                     }
                 }
                 (FileEvent::Stat(_, _), _, _) => (),
-                (FileEvent::Statfs(_, _), _, _) => (),
             }
-            first_state_struct.update_based_on_syscall(&full_path, event.clone());
-            last_mod_struct.update_based_on_syscall(event);
+            first_state_struct.update_based_on_file_event(&full_path, event.clone());
+            last_mod_struct.update_based_on_file_event(event);
         }
     }
     curr_file_postconditions

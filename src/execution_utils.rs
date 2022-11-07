@@ -19,7 +19,7 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{CheckMechanism, SyscallFailure, SyscallOutcome, FileEvent},
+    syscalls::{CheckMechanism, FileEvent, SyscallFailure, SyscallOutcome},
     Ptracer,
 };
 
@@ -100,10 +100,7 @@ pub fn generate_open_syscall_file_event(
     if open_flags.creat_flag {
         if open_flags.excl_flag {
             match syscall_outcome {
-                Ok(_) => Some(FileEvent::Create(
-                    OFlag::O_CREAT,
-                    SyscallOutcome::Success,
-                )),
+                Ok(_) => Some(FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success)),
                 Err(ret_val) => match ret_val {
                     -13 => Some(FileEvent::Create(
                         OFlag::O_CREAT,

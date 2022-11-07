@@ -47,8 +47,8 @@ pub enum DirEvent {
     Create(PathBuf, SyscallOutcome),
     Delete(SyscallOutcome),
     Read(PathBuf, Vec<(String, FileType)>, SyscallOutcome), // Root dir
-    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
-    Statfs(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
+    Rename(PathBuf, PathBuf, SyscallOutcome),               // Old, new, outcome
+    Statfs(Option<MyStatFs>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
 
 // Successful and failing events.
