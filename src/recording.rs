@@ -227,10 +227,7 @@ impl Execution {
     }
 
     fn get_stdout_duped_fd(&self, pid: Pid) -> Option<i32> {
-        match self.stdout_fd_map.get(&pid) {
-            Some(fd) => Some(*fd),
-            _ => None,
-        }
+        self.stdout_fd_map.get(&pid).copied()
     }
 
     fn is_empty_root_exec(&self) -> bool {

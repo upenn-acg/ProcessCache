@@ -4,10 +4,12 @@ use nix::{
     unistd::{access, AccessFlags, Pid},
 };
 use serde::{Deserialize, Serialize};
+use sha2::digest::Output;
 
+use core::panic;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir, File},
+    fs::{self, read_dir},
     hash::Hash,
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
@@ -16,7 +18,11 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::{cache_utils::generate_hash, condition_utils::FileType, syscalls::MyStatFs};
+use crate::{
+    cache_utils::generate_hash,
+    condition_utils::{no_mods_before_dir_rename, FileType},
+    syscalls::MyStatFs,
+};
 use crate::{
     condition_utils::{no_mods_before_file_rename, Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
@@ -348,16 +354,555 @@ pub fn generate_preconditions(events: ExecSyscallEvents) -> Preconditions {
 pub fn generate_dir_preconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> HashMap<PathBuf, HashSet<Fact>> {
-    todo!();
+    let sys_span = span!(Level::INFO, "generate_dir_preconditions");
+    let _ = sys_span.enter();
+    let mut curr_dir_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
+
+    for accessor in dir_events.keys() {
+        // For preconditions, I am not concerned with with who accessed.
+        let path = match accessor {
+            Accessor::ChildProc(_, full_path) => full_path,
+            Accessor::CurrProc(full_path) => full_path,
+        };
+        curr_dir_preconditions.insert(path.to_path_buf(), HashSet::new());
+    }
+
+    for (accessor, event_list) in &dir_events {
+        let full_path = match accessor {
+            Accessor::ChildProc(_, path) => path,
+            Accessor::CurrProc(path) => path,
+        };
+
+        let mut first_state_struct = FirstState(State::None);
+        let mut curr_state_struct = LastMod(Mod::None);
+        let mut has_been_deleted = false;
+
+        // println!("Full path: {:?}", full_path);
+        // println!("Events:");
+        // for event in event_list.clone() {
+        //     println!("{:?}", event);
+        // }
+        // let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+
+        for event in event_list {
+            let first_state = first_state_struct.state();
+            let curr_state = curr_state_struct.state();
+
+            match (event.clone(), first_state, curr_state, has_been_deleted) {
+                (_, _, Mod::Modified, _) => {
+                    panic!("Dirs don't use last mod: modified!!");
+                }
+                (DirEvent::ChildExec(_), _, _, _) => (),
+                (DirEvent::Create(_, _), _, _, true) => (),
+                (DirEvent::Create(root_dir, outcome), State::None, last_mod, false) => {
+                    if *last_mod == Mod::None {
+                        let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                        match outcome {
+                            SyscallOutcome::Success => {
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                // We have write perm to root dir and the created dir didn't already exist.
+                                curr_set
+                                    .insert(Fact::HasDirPermission((flags).bits(), Some(root_dir)));
+                                curr_set.insert(Fact::DoesntExist);
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                                curr_set.insert(Fact::Exists);
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                // Right now just taking into account write permission to the root dir.
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                curr_set
+                                    .insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
+                            }
+                            f => panic!("Unexpected failure mkdir: {:?}", f),
+                        }
+                    } else {
+                        panic!("First state is none but last mod was: {:?}!!", last_mod);
+                    }
+                }
+                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Created, false) => {
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod created, has not been deleted, but successful create??");
+                    }
+                }
+                (DirEvent::Create(_, _), State::DoesntExist, Mod::Deleted, false) => {
+                    panic!("Last mod deleted but has_been_deleted = false??");
+                }
+                // It didn't exist. It was created. Then it was renamed.
+                // This wouldn't give us any info about new path...
+                // no old path
+                // old path created
+                // old path renamed to new path
+                // if this is the new path... it can't be created because it already exists.
+                // if this is the old path, it can be created. jesus christ. but! doesn't give us new info.
+                (
+                    DirEvent::Create(_, outcome),
+                    State::DoesntExist,
+                    Mod::Renamed(_, new_path),
+                    false,
+                ) => {
+                    if full_path == new_path && outcome == SyscallOutcome::Success {
+                        panic!(
+                            "Dir was created by rename last, but now a dir create is succeeding??"
+                        );
+                    }
+                }
+                (DirEvent::Create(root_dir, outcome), State::DoesntExist, Mod::None, false) => {
+                    // We know it doesn't exist. We might be able to create it!
+                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            // We have write perm and x perm to root dir and the created dir didn't already exist.
+                            curr_set.insert(Fact::HasDirPermission((flags).bits(), Some(root_dir)));
+                        }
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
+                        }
+                        f => panic!("Unexpected failure mkdir: {:?}", f),
+                    }
+                }
+                (DirEvent::Create(_, _), State::Exists, Mod::Created, false) => {
+                    panic!("First state exists, last mod created, but not deleted??");
+                }
+                (DirEvent::Create(_, _), State::Exists, Mod::Deleted, false) => {
+                    panic!("Last mod deleted but has_been_deleted is false!!");
+                }
+                // It existed at start. It was renamed.
+                // If this is old path... it could be created but this doesn't give us new info.
+                // If this is new path... it should fail.
+                (DirEvent::Create(_, outcome), State::Exists, Mod::Renamed(_, new_path), false) => {
+                    if full_path == new_path && outcome == SyscallOutcome::Success {
+                        panic!(
+                            "Dir was created by rename last, but now a dir create is succeeding??"
+                        );
+                    }
+                }
+                (DirEvent::Create(_, outcome), State::Exists, Mod::None, false) => {
+                    match outcome {
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            // Need W and X perm to parent dir.
+                            let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                        }
+                        SyscallOutcome::Fail(_) => (),
+                        SyscallOutcome::Success => {
+                            panic!("First state exists, hasn't been deleted, but we are successfully creating??");
+                        }
+                    }
+                }
+                (DirEvent::Delete(_), _, Mod::None, true) => {
+                    panic!("Last mod none, but has_been_deleted = true??");
+                }
+                (DirEvent::Delete(_), _, Mod::Deleted, false) => {
+                    panic!("Last mod deleted but has_been_deleted = false??");
+                }
+                // Was created, deleted, created, now: should be able to delete it.
+                // Panic if it doesn't succeed.
+                (DirEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
+                    if outcome != SyscallOutcome::Success {
+                        panic!("Last mod was created, but failed to delete: {:?}", outcome);
+                    } else {
+                        has_been_deleted = true;
+                    }
+                }
+                (DirEvent::Delete(outcome), State::DoesntExist, Mod::Created, true) => {
+                    if outcome != SyscallOutcome::Success {
+                        panic!("Last mod was created, but failed to delete: {:?}", outcome);
+                    }
+                }
+                (DirEvent::Delete(outcome), State::DoesntExist, Mod::Deleted, true) => {
+                    if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
+                        panic!("Last mod was deleted, unexpected outcome from trying to delete now: {:?}", outcome);
+                    }
+                }
+                // It didn't exist. It had to be created. Then it was renamed.
+                // If this is new_path, we should be able to delete it.
+                (
+                    DirEvent::Delete(outcome),
+                    State::DoesntExist,
+                    Mod::Renamed(_, new_path),
+                    deleted_previously,
+                ) => {
+                    if full_path == new_path {
+                        if outcome == SyscallOutcome::Success {
+                            if !deleted_previously {
+                                has_been_deleted = true;
+                            }
+                        } else {
+                            panic!(
+                                "Last mod renamed, but failed to rmdir for unexpected reason: {:?}",
+                                outcome
+                            );
+                        }
+                    }
+                }
+                // This should fail, we know it doesn't exist, we know no mods have happened.
+                (DirEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
+                    match outcome {
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            // Need W and X perm to parent dir.
+                            let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                        }
+                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
+                        o => panic!(
+                            "Doesn't exist, no mods, unexpected outcome from rmdir: {:?}",
+                            o
+                        ),
+                    }
+                }
+                // It existed at the start. Then it was deleted. Last it was created.
+                // This *should* succeed.
+                (DirEvent::Delete(outcome), State::Exists, Mod::Created, true) => {
+                    if outcome != SyscallOutcome::Success {
+                        panic!("Last mod was created, but we are failing to delete??");
+                    }
+                }
+                (DirEvent::Delete(_), State::Exists, Mod::Created, false) => {
+                    panic!("Existed at start, last mod created, but hasn't been deleted??");
+                }
+                (DirEvent::Delete(outcome), State::Exists, Mod::Deleted, true) => {
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod deleted, but delete succeeds??");
+                    }
+                }
+                // It existed at the start. It was renamed. So we know about whether it existed,
+                // and we know we have permissions to the parent dir already. So we don't get any new info
+                // except that we potentially need to change has_been_deleted to true.
+                // If this is new_path, we and !deleted_previously, set has_been_deleted = true.
+                (
+                    DirEvent::Delete(outcome),
+                    State::Exists,
+                    Mod::Renamed(_, new_path),
+                    deleted_previously,
+                ) => {
+                    if full_path == new_path {
+                        if outcome == SyscallOutcome::Success {
+                            if !deleted_previously {
+                                has_been_deleted = true;
+                            }
+                        } else {
+                            panic!(
+                                "Last mod renamed, but failed to rmdir for unexpected reason: {:?}",
+                                outcome
+                            );
+                        }
+                    }
+                }
+                // We know it exists, and it has not been modified.
+                (DirEvent::Delete(outcome), State::Exists, Mod::None, false) => {
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            // W + X access to the parent dir.
+                            // I think that's it.
+                            let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
+                        }
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                        }
+                        SyscallOutcome::Fail(f) => {
+                            panic!("Existed at start, no mods, failed to rmdir for strange reason: {:?}", f);
+                        }
+                    }
+                }
+                (DirEvent::Delete(outcome), State::None, last_mod, deleted_previously) => {
+                    if *last_mod == Mod::None {
+                        let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                        match outcome {
+                            SyscallOutcome::Success => {
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                // We have write perm to root dir and the created dir didn't already exist.
+                                curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
+                                if !deleted_previously {
+                                    has_been_deleted = true;
+                                }
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                                curr_set.insert(Fact::Exists);
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                // Right now just taking into account write permission to the root dir.
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                            }
+                            f => panic!("Unexpected failure rmdir: {:?}", f),
+                        }
+                    } else {
+                        panic!("First state is none but last mod was: {:?}!!", last_mod);
+                    }
+                }
+                (DirEvent::Read(full_path, entries, outcome), _, _, _) => {
+                    let curr_set = curr_dir_preconditions.get_mut(&full_path).unwrap();
+                    match outcome {
+                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                            curr_set.insert(Fact::DoesntExist);
+                        }
+                        SyscallOutcome::Success => {
+                            curr_set.insert(Fact::DirEntriesMatch(entries));
+                        }
+                        _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
+                    }
+                }
+                (DirEvent::Rename(_, _, _), _, Mod::None, true) => {
+                    panic!("Last mod none but has_been_deleted = true??");
+                }
+                (DirEvent::Rename(_, _, _), _, Mod::Deleted, false) => {
+                    panic!("Last mod was deleted, but has_been_deleted = false??");
+                }
+                // Okay! Old_path didn't exist. Then it was created. That was its last mod.
+                // Now it's being renamed. If rename was the first thing, we'd learn existence,
+                // and W and X access to the dir. We already know the existence and we know
+                // the dir perms because the last mod was created. Just error if this fails?
+                (DirEvent::Rename(_, _, outcome), State::DoesntExist, Mod::Created, _) => {
+                    if outcome != SyscallOutcome::Success {
+                        panic!(
+                            "Created dir, failed to rename it for unexpected reason: {:?}",
+                            outcome
+                        );
+                    }
+                }
+                // Not handling no replace for now, so no preconds for new path contributed.
+                // We already know starting existence and that we can wx the dir. Nothing to learn.
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted, true) => (),
+                // It didn't exist. It was created. It was renamed. a -> b. Now they are trying to do
+                // b -> c. Do we learn anything? No.
+                // Not handling no replace.
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
+                // It didn't exist, hasn't been created. This should not succeed if full path == old path.
+                (DirEvent::Rename(old_path, _, outcome), State::DoesntExist, Mod::None, false) => {
+                    if *full_path == old_path && outcome == SyscallOutcome::Success {
+                        panic!("Dir didn't exist and hasn't been created, but rename succeeded??");
+                    }
+                }
+                // It existed, was deleted, was created again. Sure it can be renamed don't
+                // see why not. We don't learn anything new though.
+                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::Created, true) => {
+                    if *full_path == old_path {
+                        if let SyscallOutcome::Fail(f) = outcome {
+                            panic!("Last mod created, failed to rename dir for unexpected reason: {:?}", f);
+                        }
+                    }
+                }
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Created, false) => {
+                    panic!("Didn't exist at start, last mod created, but hasn't been deleted??");
+                }
+                // Last thing that happened was it was deleted. If full path == old path,
+                // this should not succeed.
+                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::Deleted, true) => {
+                    if *full_path == old_path && outcome == SyscallOutcome::Success {
+                        panic!("Last mod deleted but rename succeeded??");
+                    }
+                }
+                // It existed at start. It was renamed. We aren't going to learn anything new.
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_, _), _) => (),
+                // It existed at start, has not been modified. We should be able to rename it.
+                // If this succeeds we know we are W+X for the parent dir.
+                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
+                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                    if *full_path == old_path {
+                        match outcome {
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
+                            }
+                            SyscallOutcome::Fail(f) => {
+                                panic!("Existed at start, no mods, failed to rename dir for unexpected reason: {:?}", f);
+                            }
+                            SyscallOutcome::Success => {
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
+                            }
+                        }
+                    }
+                }
+                (DirEvent::Rename(old_path, _, outcome), State::None, last_mod, _) => {
+                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+
+                    if *last_mod == Mod::None {
+                        if *full_path == old_path {
+                            match outcome {
+                                SyscallOutcome::Success => {
+                                    // This is the first time we are seeing this dir! Hello dir!
+                                    // It has been successfully renamed. So we know it existed at
+                                    // the start.
+                                    curr_set.insert(Fact::Exists);
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    flags.insert(AccessFlags::X_OK);
+                                    curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                                    curr_set.insert(Fact::DoesntExist);
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                    // We don't have some necessary permission to the parent dir.
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    flags.insert(AccessFlags::X_OK);
+                                    curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
+                                }
+                                f => panic!("Unexpected failure rename dir: {:?}", f),
+                            }
+                        }
+                    } else {
+                        panic!("First state is none but last mod was: {:?}!!", last_mod);
+                    }
+                }
+                (DirEvent::Statfs(_, _), _, _, true) => (),
+                (DirEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
+                (DirEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
+                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            if let Some(statfs) = option_statfs {
+                                curr_set.insert(Fact::StatFsStructMatches(statfs));
+                                curr_set.insert(Fact::HasDirPermission(
+                                    (AccessFlags::X_OK).bits(),
+                                    None,
+                                ));
+                            } else {
+                                panic!("No statfs struct found for successful statfs syscall!");
+                            }
+                        }
+                        // This really should succeed. We know it exists, so we must also have X permission
+                        // to its parent dir.
+                        SyscallOutcome::Fail(f) => {
+                            panic!("Unexpected syscall failure for statfs, file existed at start, no mods: {:?}", f);
+                        }
+                    }
+                }
+                // Doesn't event make sense.
+                (DirEvent::Statfs(_, _), State::Exists, Mod::Created, false) => {
+                    panic!("Existed at start, last mod created, but hasn't been deleted??");
+                }
+                // Doesn't event make sense.
+                (DirEvent::Statfs(_, _), State::Exists, Mod::Deleted, false) => {
+                    panic!("Existed at start, last mod deleted, but hasn't been marked has_been_deleted??");
+                }
+                (
+                    DirEvent::Statfs(stat_struct, outcome),
+                    State::Exists,
+                    Mod::Renamed(old_path, new_path),
+                    false,
+                ) => {
+                    match outcome {
+                        // This really should succeed. We know it exists, so we must also have X permission
+                        // to its parent dir.
+                        SyscallOutcome::Fail(f) => {
+                            panic!("Unexpected syscall failure for statfs, file existed at start, no mods other than rename: {:?}", f);
+                        }
+                        SyscallOutcome::Success => {
+                            if new_path == full_path {
+                                // We actually have to add the stat struct matching to the old path's preconds.
+                                if let Some(list) =
+                                    dir_events.get(&Accessor::CurrProc(old_path.clone()))
+                                {
+                                    let no_mods_before_rename =
+                                        no_mods_before_dir_rename(list.to_vec());
+                                    if no_mods_before_rename {
+                                        let curr_set =
+                                            curr_dir_preconditions.get_mut(old_path).unwrap();
+                                        if let Some(stat_str) = stat_struct {
+                                            curr_set.insert(Fact::StatFsStructMatches(
+                                                stat_str.clone(),
+                                            ));
+                                            curr_set.insert(Fact::HasDirPermission(
+                                                (AccessFlags::X_OK).bits(),
+                                                None,
+                                            ));
+                                        } else {
+                                            panic!(
+                                                "No stat struct found for successful stat event!"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                (DirEvent::Statfs(option_statfs, outcome), State::None, last_mod, false) => {
+                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                    if *last_mod == Mod::None {
+                        match outcome {
+                            SyscallOutcome::Success => {
+                                if let Some(statfs) = option_statfs {
+                                    curr_set.insert(Fact::StatFsStructMatches(statfs));
+                                    curr_set.insert(Fact::HasDirPermission(
+                                        (AccessFlags::X_OK).bits(),
+                                        None,
+                                    ));
+                                } else {
+                                    panic!("No statfs struct found for successful statfs syscall!");
+                                }
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                                curr_set.insert(Fact::DoesntExist);
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                curr_set.insert(Fact::NoDirPermission(
+                                    (AccessFlags::X_OK).bits(),
+                                    None,
+                                ));
+                            }
+                            SyscallOutcome::Fail(f) => {
+                                panic!("Unexpected syscall failure for statfs: {:?}", f);
+                            }
+                        }
+                    } else {
+                        panic!("Starting state is none, but last mod was: {:?}", last_mod);
+                    }
+                }
+            }
+            // This function will only change the first_state if it is None.
+            first_state_struct.update_based_on_dir_event(full_path, event.clone());
+            curr_state_struct.update_based_on_dir_event(event.clone());
+        }
+    }
+    curr_dir_preconditions
 }
 
-// Directory Preconditions (For now, just cwd), File Preconditions
+// File Preconditions
 // Takes in all the events for ONE RESOURCE and generates its preconditions.
 // TODO: when we do the preconditions checking, take the FIRST stat only.
 pub fn generate_file_preconditions(
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 ) -> HashMap<PathBuf, HashSet<Fact>> {
-    let sys_span = span!(Level::INFO, "generate_preconditions");
+    let sys_span = span!(Level::INFO, "generate_file_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
     for accessor in file_events.keys() {
@@ -562,48 +1107,6 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Create(f, _), _, _, _) => panic!("Unexpected create flag: {:?}", f),
-                // If this has been deleted already, this action won't add anything to the preconditions.
-                // (FileEvent::DirectoryCreate(_, _), _, _, true) => (),
-                // (FileEvent::DirectoryCreate(root_dir, outcome), State::None, curr_state, false) => {
-                //     if *curr_state == Mod::None {
-                //         let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-                //         match outcome {
-                //             SyscallOutcome::Success => {
-                //                 let mut flags = AccessFlags::empty();
-                //                 flags.insert(AccessFlags::W_OK);
-                //                 // We have write perm to root dir and the created dir didn't already exist.
-                //                 curr_set.insert(Fact::HasDirPermission((flags).bits(), Some(root_dir)));
-                //                 curr_set.insert(Fact::DoesntExist);
-                //             }
-                //             SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                //                 curr_set.insert(Fact::Exists);
-                //             }
-                //             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                //                 // Right now just taking into account write permission to the root dir.
-                //                 let mut flags = AccessFlags::empty();
-                //                 flags.insert(AccessFlags::W_OK);
-                //                 curr_set.insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
-                //             }
-                //             f => panic!("Unexpected failure mkdir: {:?}", f),
-                //         }
-                //     } else {
-                //         panic!("First state none but curr state is not none!!");
-                //     }
-                // }
-                // // We already know it didn't exist at start. Adds nothing.
-                // (FileEvent::DirectoryCreate(_, _), State::DoesntExist | State::Exists, _, false) => (),
-                // (FileEvent::DirectoryRead(full_path, entries, outcome), _, _, _) => {
-                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-                //     match outcome {
-                //         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                //             curr_set.insert(Fact::DoesntExist);
-                //         }
-                //         SyscallOutcome::Success => {
-                //             curr_set.insert(Fact::DirEntriesMatch(entries));
-                //         }
-                //         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
-                //     }
-                // }
                 (FileEvent::Delete(_), State::DoesntExist, Mod::Created, true) => (),
                 (FileEvent::Delete(outcome), State::DoesntExist, Mod::Created, false) => {
                     if outcome == SyscallOutcome::Success {
@@ -1208,22 +1711,26 @@ pub fn generate_file_preconditions(
                 (FileEvent::Stat(_,_), State::Exists, Mod::Modified, false) => (),
                 // This file has been deleted, no way the stat struct is gonna be the same.
                 (FileEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), true) => (),
-                (FileEvent::Stat(stat_struct, _), State::Exists, Mod::Renamed(old_path, new_path), false) => {
-                    if *new_path == *full_path {
-                        // We actually have to add the stat struct matching to the old path's
-                        if let Some(list) = file_events.get(&Accessor::CurrProc(old_path.clone())) {
-                            // &old_path.clone()
-                            let no_mods_before_rename = no_mods_before_file_rename(list.to_vec());
-                            if no_mods_before_rename {
-                                let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();
-                                if let Some(stat_str) = stat_struct {
-                                    curr_set.insert(Fact::StatStructMatches(stat_str.clone()));
-                                } else {
-                                    panic!("No stat struct found for successful stat event!");
+                (FileEvent::Stat(stat_struct, outcome), State::Exists, Mod::Renamed(old_path, new_path), false) => {
+                    match outcome {
+                        SyscallOutcome::Success => {
+                            if *new_path == *full_path {
+                                // We actually have to add the stat struct matching to the old path's
+                                if let Some(list) = file_events.get(&Accessor::CurrProc(old_path.clone())) {
+                                    // &old_path.clone()
+                                    let no_mods_before_rename = no_mods_before_file_rename(list.to_vec());
+                                    if no_mods_before_rename {
+                                        let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();
+                                        if let Some(stat_str) = stat_struct {
+                                            curr_set.insert(Fact::StatStructMatches(stat_str.clone()));
+                                        } else {
+                                            panic!("No stat struct found for successful stat event!");
+                                        }
+                                    }
                                 }
                             }
                         }
-
+                        f => panic!("Unexpected failure by stat syscall, first state exists, last mod renamed: {:?}", f),
                     }
                 }
                 (FileEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
@@ -1281,57 +1788,6 @@ pub fn generate_file_preconditions(
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                // (FileEvent::Statfs(option_statfs, outcome), first_state, last_mod, has_been_deleted)
-                // If it was deleted already, this statfs doesn't contribute to the preconditions.
-                // (FileEvent::Statfs(_, _), _, _, true) => (),
-                // // If it doesn't exist at the start, I don't care what happened to it, it doesn't
-                // // add to the preconditions.
-                // (FileEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
-                // // It existed at start, hasn't been modified. Stat should be the same?
-                // (FileEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
-                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
-                //     match outcome {
-                //         SyscallOutcome::Success => {
-                //             if let Some(statfs) = option_statfs {
-                //                 curr_set.insert(Fact::StatFsStructMatches(statfs));
-                //                 curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                //             } else {
-                //                 panic!("No statfs struct found for successful statfs syscall!");
-                //             }
-                //         }
-                //         SyscallOutcome::Fail(f) => {
-                //             panic!("Unexpected syscall failure for statfs, file existed at start, no mods: {:?}", f);
-                //         }
-                //     }
-                // }
-                // (FileEvent::Statfs(_, _), State::Exists, _, false) => (),
-                // (FileEvent::Statfs(option_statfs, outcome), State::None, Mod::None, false) => {
-                //     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
-                //     match outcome {
-                //         SyscallOutcome::Success => {
-                //             if let Some(statfs) = option_statfs {
-                //                 curr_set.insert(Fact::StatFsStructMatches(statfs));
-                //                 curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                //             } else {
-                //                 panic!("No statfs struct found for successful statfs syscall!");
-                //             }
-                //         }
-                //         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                //             curr_set.insert(Fact::DoesntExist);
-                //         }
-                //         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                //             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
-                //         }
-                //         SyscallOutcome::Fail(f) => {
-                //             panic!("Unexpected syscall failure for statfs: {:?}", f);
-                //         }
-                //     }
-                // }
-                // (FileEvent::Statfs(_, _), State::None, last_mod, false) => {
-                //     panic!("Starting state is none, but last mod was: {:?}", last_mod);
-                // }
             }
 
             // This function will only change the first_state if it is None.
