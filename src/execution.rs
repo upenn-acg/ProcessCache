@@ -5,7 +5,7 @@ use libc::{
 };
 use nix::{
     dir,
-    fcntl::{readlink, OFlag},
+    fcntl::{readlink, AtFlags, OFlag},
     sys::{stat::FileStat, statfs::Statfs},
     unistd::Pid,
 };
@@ -1235,19 +1235,30 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
     // retval = 0 is success for this syscall. lots of them it would seem.
     let full_path = get_full_path(execution, name, tracer)?;
 
-    // TODO: dirs!
-    if full_path.is_dir() {
-        panic!("Deleting dir!!");
+    if full_path.is_dir() && name == "unlinkat" {
+        let flag_arg = regs.arg3::<i32>();
+
+        let option_flags = AtFlags::from_bits(flag_arg);
+        if let Some(flags) = option_flags {
+            if flags.contains(AtFlags::AT_REMOVEDIR) {
+                let dir_event = match ret_val {
+                    0 => DirEvent::Delete(SyscallOutcome::Success),
+                    -2 => DirEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+                    -13 => DirEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+                    e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
+                };
+                execution.add_new_dir_event(tracer.curr_proc, dir_event, full_path);
+            }
+        }
+    } else {
+        let file_event = match ret_val {
+            0 => FileEvent::Delete(SyscallOutcome::Success),
+            -2 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            -13 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
+            e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
+        };
+        execution.add_new_file_event(tracer.curr_proc, file_event, full_path);
     }
-
-    let delete_syscall_event = match ret_val {
-        0 => FileEvent::Delete(SyscallOutcome::Success),
-        -2 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
-        -13 => FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
-        e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
-    };
-
-    execution.add_new_file_event(tracer.curr_proc, delete_syscall_event, full_path);
     Ok(())
 }
 
