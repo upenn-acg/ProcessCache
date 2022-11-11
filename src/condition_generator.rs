@@ -4,7 +4,6 @@ use nix::{
     unistd::{access, AccessFlags, Pid},
 };
 use serde::{Deserialize, Serialize};
-use sha2::digest::Output;
 
 use core::panic;
 use std::{
@@ -393,6 +392,8 @@ pub fn generate_dir_preconditions(
                     panic!("Dirs don't use last mod: modified!!");
                 }
                 (DirEvent::ChildExec(_), _, _, _) => (),
+                // For create: if we have MODIFIED the dir in some way,
+                // we aren't going to get more info out of it for the preconditions.
                 (DirEvent::Create(_, _), _, _, true) => (),
                 (DirEvent::Create(root_dir, outcome), State::None, last_mod, false) => {
                     if *last_mod == Mod::None {
@@ -424,11 +425,7 @@ pub fn generate_dir_preconditions(
                         panic!("First state is none but last mod was: {:?}!!", last_mod);
                     }
                 }
-                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Created, false) => {
-                    if outcome == SyscallOutcome::Success {
-                        panic!("Last mod created, has not been deleted, but successful create??");
-                    }
-                }
+                (DirEvent::Create(_, _), State::DoesntExist, Mod::Created, false) => (),
                 (DirEvent::Create(_, _), State::DoesntExist, Mod::Deleted, false) => {
                     panic!("Last mod deleted but has_been_deleted = false??");
                 }
@@ -640,12 +637,12 @@ pub fn generate_dir_preconditions(
                                 flags.insert(AccessFlags::X_OK);
                                 // We have write perm to root dir and the created dir didn't already exist.
                                 curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
+                                // We also know it existed at the start because it has been
+                                // successfully deleted.
+                                curr_set.insert(Fact::Exists);
                                 if !deleted_previously {
                                     has_been_deleted = true;
                                 }
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                                curr_set.insert(Fact::Exists);
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 // Right now just taking into account write permission to the root dir.
@@ -672,6 +669,7 @@ pub fn generate_dir_preconditions(
                         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
                     }
                 }
+                // HERE !!!
                 (DirEvent::Rename(_, _, _), _, Mod::None, true) => {
                     panic!("Last mod none but has_been_deleted = true??");
                 }
@@ -1808,10 +1806,195 @@ pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
     Postconditions::new(dir_postconds, file_postconds)
 }
 
+// The only postconditions are: exists or doesn't exist for dirs.
 pub fn generate_dir_postconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> HashMap<Accessor, HashSet<Fact>> {
-    todo!();
+    let sys_span = span!(Level::INFO, "generate_dir_postconditions");
+    let _ = sys_span.enter();
+
+    let mut curr_dir_postconditions = HashMap::new();
+
+    // Just be sure the map is set up ahead of time.
+    for accessor in dir_events.keys() {
+        curr_dir_postconditions.insert(accessor.clone(), HashSet::new());
+    }
+    for (accessor, event_list) in dir_events {
+        let mut first_state_struct = FirstState(State::None);
+        let mut last_mod_struct = LastMod(Mod::None);
+        // Option cmd is used in rename
+        let (full_path, option_cmd) = match accessor.clone() {
+            Accessor::ChildProc(cmd, path) => (path, Some(cmd)),
+            Accessor::CurrProc(path) => (path, None),
+        };
+
+        for event in event_list {
+            let first_state = first_state_struct.state();
+            let last_mod = last_mod_struct.state();
+
+            match (event.clone(), first_state, last_mod) {
+                (_, _, Mod::Modified) => (),
+                (DirEvent::ChildExec(_), _, _) => (),
+                // Last mod created. We already know it exists.
+                (DirEvent::Create(_, _), State::DoesntExist, Mod::Created) => (),
+                // Last mod deleted, if this succeeds, we need to remove
+                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Deleted) => {
+                    if outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                    }
+                }
+                // If full path = new path, this will fail.
+                // If full path = old path, we can create. Thus we should insert Fact::Exists
+                // as old path's postconds if this succeeds.
+                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(old_path, _)) => {
+                    if full_path == *old_path && outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                    }
+                }
+                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::None) => {
+                    if outcome == SyscallOutcome::Success {
+                        // This succeeded, we created a dir cool.
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                    }
+                }
+                // We just created it. Can't do that again.
+                (DirEvent::Create(_, _), State::Exists, Mod::Created) => (),
+                // We just deleted it. Sick. We can totally create it aGAIN.
+                (DirEvent::Create(_, outcome), State::Exists, Mod::Deleted) => {
+                    if outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                    }
+                }
+                // If full path is old path, then old path was renamed to new path, and
+                // old path can be created again!
+                (DirEvent::Create(_, outcome), State::Exists, Mod::Renamed(old_path, _)) => {
+                    if full_path == *old_path && outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                    }
+                }
+                // It already exists. We can't make it double exist.
+                (DirEvent::Create(_, _), State::Exists, Mod::None) => (),
+                (DirEvent::Create(_, outcome), State::None, last_mod) => {
+                    if *last_mod == Mod::None {
+                        if outcome == SyscallOutcome::Success {
+                            // We successfully created a directory!
+                            curr_dir_postconditions
+                                .insert(accessor.clone(), HashSet::from([Fact::Exists]));
+                        }
+                    } else {
+                        panic!("First state is none but last mod is {:?}", last_mod);
+                    }
+                }
+                (DirEvent::Delete(outcome), State::DoesntExist, Mod::Created) => {
+                    // This should succeed. We should just insert a new fact
+                    // with DoesntExist.
+                    if outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
+                // We just deleted it. What are we gonna do. Delete it again?
+                (DirEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
+                // if full path is old path, then we can't delete this.
+                // No info gained.
+                (DirEvent::Delete(_), State::DoesntExist, Mod::Renamed(_, _)) => (),
+                // It doesn't exist, and we haven't created it. So, yeah, not a
+                // lot to do here.
+                (DirEvent::Delete(_), State::DoesntExist, Mod::None) => (),
+                // Was apparently, ugh: existed, deleted, created, now trying to
+                // delete again. Like, for correctness I know this level of
+                // detail is necessary but if you program like this: I. Hate. You.
+                (DirEvent::Delete(outcome), State::Exists, Mod::Created) => {
+                    if outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
+                // We just deleted it. Can't do that again.
+                (DirEvent::Delete(_), State::Exists, Mod::Deleted) => (),
+                // If full path is old path, we can't delete this. No info gained.
+                (DirEvent::Delete(_), State::Exists, Mod::Renamed(_, _)) => (),
+                // It exists. Maybe we can even delete it.
+                (DirEvent::Delete(outcome), State::Exists, Mod::None) => {
+                    if outcome == SyscallOutcome::Success {
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
+                (DirEvent::Delete(outcome), State::None, last_mod) => {
+                    if *last_mod == Mod::None {
+                        // We have never seen this before. Hello. Nice to meet you dir.
+                        // I have been working on this too much lol.
+                        if outcome == SyscallOutcome::Success {
+                            curr_dir_postconditions
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                        }
+                    } else {
+                        panic!("First state is none, but last mod was: {:?}", last_mod);
+                    }
+                }
+                (DirEvent::Read(_, _, _), _, _) => (),
+                // Last mod was creating old path. It can certainly be renamed.
+                (DirEvent::Rename(_, new_path, outcome), State::DoesntExist, Mod::Created) => {
+                    if outcome == SyscallOutcome::Success {
+                        let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                            Accessor::ChildProc(cmd, new_path)
+                        } else {
+                            Accessor::CurrProc(new_path)
+                        };
+
+                        let old_set = curr_dir_postconditions.remove(&accessor).unwrap();
+                        curr_dir_postconditions.insert(new_accessor, old_set);
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
+                // We just deleted it. We can't rename it.
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_, _)) => todo!(),
+                // It doesn't exist and hasn't been created. I am doubtful this is going to give us
+                // anything. Actually, I am positive it will not give us anything.
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::None) => (),
+                // Last mod created, we can totes rename it.
+                (DirEvent::Rename(_, new_path, outcome), State::Exists, Mod::Created) => {
+                    if outcome == SyscallOutcome::Success {}
+                }
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => todo!(),
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_, _)) => todo!(),
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::None) => todo!(),
+                (DirEvent::Rename(_, new_path, outcome), State::None, last_mod) => {
+                    if *last_mod == Mod::None {
+                        if outcome == SyscallOutcome::Success {
+                            let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                                Accessor::ChildProc(cmd, new_path)
+                            } else {
+                                Accessor::CurrProc(new_path)
+                            };
+
+                            let old_set = curr_dir_postconditions.remove(&accessor).unwrap();
+                            curr_dir_postconditions.insert(new_accessor, old_set);
+                            curr_dir_postconditions
+                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                        }
+                    } else {
+                        panic!("First state none but last mod was: {:?}", last_mod);
+                    }
+                }
+                (DirEvent::Statfs(_, _), _, _) => (),
+            }
+
+            // This function will only change the first_state if it is None.
+            first_state_struct.update_based_on_dir_event(&full_path, event.clone());
+            last_mod_struct.update_based_on_dir_event(event.clone());
+        }
+    }
+
+    curr_dir_postconditions
 }
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
 // Directory Postconditions (for now just cwd), File Postconditions
