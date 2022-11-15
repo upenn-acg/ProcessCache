@@ -212,7 +212,8 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     | Fact::NoPermission(_) => check_fact_holds(*second, path_name, pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
-
+                // TODO: Technically, if both of these failed, it would be valid too.
+                // They just can't both succeed.
                 first_perms_hold || second_perms_hold
             }
             Fact::StartingContents(old_hash) => {
@@ -674,6 +675,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                         _ => panic!("Unexpected failure from execve!: {:?}", failure),
                     }
                 }
+                (SyscallEvent::Open(_, _, _, _), _, Mod::Renamed(_, _), _) => (),
                 (
                     SyscallEvent::Open(_, _, _, outcome),
                     State::DoesntExist,
@@ -704,95 +706,6 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 (SyscallEvent::Open(_,  _, _, _), State::DoesntExist, Mod::Modified, _) => {
                     // Doesn't exist. Created, modified, maybe deleted and the whole process repeated.
                 }
-                // TODO: fix this case, think about bar in the case of rename(foo, bar). what if we then append to bar?
-                // TODO: ahhh rename!
-                (SyscallEvent::Open(_, Some(OffsetMode::Append), optional_check_mechanism, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), false) => {
-                    if full_path == *new_path {
-                        let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-
-                        match outcome {
-                            SyscallOutcome::Success => {
-                                if let Some(check_mechanism) = optional_check_mechanism {
-                                    match check_mechanism {
-                                        CheckMechanism::DiffFiles => {
-                                            old_path_preconds.insert(Fact::InputFilesMatch);
-                                        }
-                                        CheckMechanism::Hash(hash) => {
-                                            let hash = if DONT_HASH_FILES {
-                                                Vec::new()
-                                            } else {
-                                                hash
-                                            };
-                                            // This precondition needs to be added to the old path's preconds.
-                                            old_path_preconds.insert(Fact::StartingContents(hash));
-                                        }
-                                        CheckMechanism::Mtime(mtime) => {
-                                            old_path_preconds.insert(Fact::Mtime(mtime));
-                                        }
-                                    }
-                                }
-
-                                old_path_preconds.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                // This precondition needs to be added to the old path's precodns.
-                                old_path_preconds.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                // TODO: rename
-                (SyscallEvent::Open(_, Some(OffsetMode::Append), optional_check_mech, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), true) => {
-                    if full_path == *new_path {
-                        match outcome {
-                            SyscallOutcome::Success => {
-                                let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                if let Some(check_mech) = optional_check_mech {
-                                    match check_mech {
-                                        CheckMechanism::DiffFiles => {
-                                            old_path_preconds.insert(Fact::InputFilesMatch);
-                                        }
-                                        CheckMechanism::Hash(hash) => {
-                                            let hash = if DONT_HASH_FILES {
-                                                Vec::new()
-                                            } else {
-                                                hash
-                                            };
-                                            old_path_preconds.insert(Fact::StartingContents(hash));
-                                        }
-                                        CheckMechanism::Mtime(mtime) => {
-                                            old_path_preconds.insert(Fact::Mtime(mtime));
-                                        }
-                                    }
-                                }
-
-                                old_path_preconds.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                // TODO: rename
-                (SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, outcome), State::DoesntExist, Mod::Renamed(old_path, new_path), _) => {
-                    if full_path == *new_path {
-                        match outcome {
-                            SyscallOutcome::Success => {
-                                let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
-                            }
-                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                let old_path_preconds = curr_file_preconditions.get_mut(old_path).unwrap();
-                                old_path_preconds.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
-                            }
-                            _ => (),
-                        }
-                    }
-                }
                 (SyscallEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
@@ -807,10 +720,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                     // the file that was created during exec after the OG
                     // one was deleted. So no more preconditions contributed.
                 }
-
                 (SyscallEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
                 // First state exists means this is the old path, which doesn't exist anymore, so this won't succeed and doesn't change the preconditions.
-                (SyscallEvent::Open(_, _, _, _), State::Exists, Mod::Renamed(_, _), false) => (),
                 (SyscallEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     if access_mode == AccessMode::Read {
@@ -844,12 +755,16 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
+                            // Here is a case where we want to use a box.
+                            // Whenever permission is denied, and this could pertain to either
+                            // the dir or the file.
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
                             if access_mode == AccessMode::Both {
-                                curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
+                                flags.insert(AccessFlags::R_OK);
                             }
-                            //TODO: Check with Kelly
                             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                            curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
@@ -895,9 +810,9 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
                                     curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
                                 }
-                            }    
+                            }
                             //TODO: Check with Kelly
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));      
+                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                         }
                         f => panic!("Unexpected open none failure, file existed, {:?}", f),
                     }
@@ -938,9 +853,6 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 (SyscallEvent::Open(_, _, _,_), State::None, Mod::Modified, _) => {
                     panic!("First state none but last mod modified??");
                 }
-                (SyscallEvent::Open(_, _, _,_), State::None, Mod::Renamed(_,_), _) => {
-                    panic!("First state none but last mod renamed??");
-                }
                 (SyscallEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
@@ -966,6 +878,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                             }
                                         }
                                     }
+                                    curr_set.insert(Fact::Exists);
                                     curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                                     curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                                     if mode == AccessMode::Both {
@@ -1009,12 +922,13 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     }
                                     curr_set.insert(Fact::HasPermission((flags).bits()));
                                     curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    curr_set.insert(Fact::Exists);
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                                     panic!("Open trunc, no info yet, failed because file already exists??");
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                                    panic!("Open trunc failed because file doesn't exist? So??");
+                                    curr_set.insert(Fact::DoesntExist);
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                     let mut flags = AccessFlags::empty();
@@ -1052,6 +966,7 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     }
                                 }
                             }
+                            curr_set.insert(Fact::Exists);
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             match access_mode {
                                 AccessMode::Read => {curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
@@ -1076,14 +991,13 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
                                     curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
                                 }
-                            }  
+                            }
                             curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                         }
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
                 //TODO: Something similar for AccessMode?
-                (SyscallEvent::Open(_, f,  _,_), _, _, _) => panic!("Unexpected open offset flag: {:?}", f),
                 (
                     SyscallEvent::Rename(_, _, _),
                     State::DoesntExist,
@@ -1565,76 +1479,72 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                 (SyscallEvent::FailedExec(_), _, _) => (),
                 //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
                 (SyscallEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
+                // Open for write or read/write: doesn't matter either way FinalContents is the fact to add.
+                // And we don't care about the offset mode at all!
+                // I used "last_mod" here so we can just check that it is Mod::None (as it should be if first
+                // state is State::None) and panic otherwise, instead of having to do a separate match case for
+                // each. Efficiency!
                 (
-                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
-                    State::DoesntExist,
-                    Mod::Created | Mod::Deleted | Mod::Modified,
-                ) => (),
-                (
-                    SyscallEvent::Open(
-                        _,
-                        Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-                        _,
-                        outcome,
-                    ),
-                    State::DoesntExist,
-                    Mod::Renamed(_, new_path),
-                ) => {
-                    if outcome == SyscallOutcome::Success && full_path == *new_path {
-                        let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
-                        curr_set.remove(&Fact::Exists);
-                        curr_set.insert(Fact::FinalContents);
-                    }
-                }
-                (
-                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
-                    State::DoesntExist,
-                    Mod::None,
-                ) => (),
-                (
-                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
-                    State::Exists,
-                    Mod::Created | Mod::Deleted | Mod::Modified,
-                ) => (),
-                // We shouldn't see more events after something is renamed unless it's the new file (and first state wouldn't be exists)
-                (
-                    SyscallEvent::Open(_, Some(OffsetMode::Append) | Some(OffsetMode::Trunc), _, _),
-                    State::Exists,
-                    Mod::Renamed(_, _),
-                ) => (),
-                (
-                    SyscallEvent::Open(
-                        _,
-                        Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-                        _,
-                        outcome,
-                    ),
-                    State::Exists,
-                    Mod::None,
-                ) => {
-                    if outcome == SyscallOutcome::Success {
-                        let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
-                        curr_set.insert(Fact::FinalContents);
-                    }
-                }
-                (
-                    SyscallEvent::Open(
-                        _,
-                        Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-                        _,
-                        outcome,
-                    ),
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::None,
-                    Mod::None,
+                    last_mod,
                 ) => {
-                    if outcome == SyscallOutcome::Success {
-                        let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
-                        curr_set.insert(Fact::FinalContents);
+                    if *last_mod == Mod::None {
+                        if outcome == SyscallOutcome::Success {
+                            let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
+                            curr_set.insert(Fact::Exists);
+                            curr_set.insert(Fact::FinalContents);
+                        }
+                    } else {
+                        panic!("First state is none, but last mod was: {:?}!!", last_mod);
                     }
                 }
-                //Not sure if flag was used to specify access mode or offset mode here
-                (SyscallEvent::Open(_, flag, _, _), _, _) => {
-                    panic!("Unexpected oflag for open! :{:?}", flag);
+
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    State::Exists,
+                    Mod::None,
+                ) => {
+                    todo!();
+                }
+                // The last mod gave us FinalContents as a postcondition, so we don't need to do anything.
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, _),
+                    State::DoesntExist | State::Exists,
+                    Mod::Created | Mod::Modified,
+                ) => (),
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    State::Exists,
+                    Mod::Deleted,
+                ) => {
+                    // This should not succeed!
+                    todo!();
+                }
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    State::DoesntExist | State::Exists,
+                    Mod::Renamed(_, _),
+                ) => {
+                    // Okay! It existed. It was last renamed. It cannot be opened.
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod was renamed but succeeded on open??");
+                    }
+                }
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    State::DoesntExist,
+                    Mod::None,
+                ) => {
+                    todo!();
+                }
+                (
+                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    State::DoesntExist,
+                    Mod::Deleted,
+                ) => {
+                    // This should not succeed!
+                    todo!();
                 }
                 (
                     SyscallEvent::Rename(old_path, new_path, outcome),
