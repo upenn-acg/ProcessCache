@@ -848,13 +848,15 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             if access_mode == AccessMode::Both {
                                 curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
                             }
+                            //TODO: Check with Kelly
+                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                (SyscallEvent::Open(AccessMode::Read, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                //TODO: What about reading with RW mode?
+                (SyscallEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
@@ -875,19 +877,33 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     }
                                 }
                             }
-
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                            match access_mode {
+                                AccessMode::Read => {curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
+                                AccessMode::Write => {curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Both => {
+                                    curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                                    curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                                }
+                            }
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
+                            match access_mode {
+                                AccessMode::Read => {curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));}
+                                AccessMode::Write => {curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Both => {
+                                    curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
+                                    curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
+                                }
+                            }    
+                            //TODO: Check with Kelly
+                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));      
                         }
-                        f => panic!("Unexpected open append failure, file existed, {:?}", f),
+                        f => panic!("Unexpected open none failure, file existed, {:?}", f),
                     }
                 }
                 (SyscallEvent::Open(access_mode, Some(OffsetMode::Trunc), _,outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
                         mode => {
@@ -904,6 +920,8 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     if mode == AccessMode::Both {
                                         curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
                                     }
+                                    //TODO: Check with Kelly
+                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                                 }
                                 f => panic!("Unexpected open append failure, file existed, {:?}", f),
                             }
@@ -923,50 +941,97 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                 (SyscallEvent::Open(_, _, _,_), State::None, Mod::Renamed(_,_), _) => {
                     panic!("First state none but last mod renamed??");
                 }
-                (SyscallEvent::Open(_, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            if let Some(check_mech) = optional_check_mech {
-                                match check_mech {
-                                    CheckMechanism::DiffFiles => {
-                                        curr_set.insert(Fact::InputFilesMatch);
+                    match access_mode {
+                        AccessMode::Read => panic!("Access mode is read with offset append!!"),
+                        mode => {
+                            match outcome {
+                                SyscallOutcome::Success => {
+                                    if let Some(check_mech) = optional_check_mech {
+                                        match check_mech {
+                                            CheckMechanism::DiffFiles => {
+                                                curr_set.insert(Fact::InputFilesMatch);
+                                            }
+                                            CheckMechanism::Hash(hash) => {
+                                                let hash = if DONT_HASH_FILES {
+                                                    Vec::new()
+                                                } else {
+                                                    hash
+                                                };
+                                                curr_set.insert(Fact::StartingContents(hash));
+                                            }
+                                            CheckMechanism::Mtime(mtime) => {
+                                                curr_set.insert(Fact::Mtime(mtime));
+                                            }
+                                        }
                                     }
-                                    CheckMechanism::Hash(hash) => {
-                                        let hash = if DONT_HASH_FILES {
-                                            Vec::new()
-                                        } else {
-                                            hash
-                                        };
-                                        curr_set.insert(Fact::StartingContents(hash));
-                                    }
-                                    CheckMechanism::Mtime(mtime) => {
-                                        curr_set.insert(Fact::Mtime(mtime));
+                                    curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                                    if mode == AccessMode::Both {
+                                        curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
                                     }
                                 }
+                                SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                                    panic!("Open append, no info yet, failed because file already exists??");
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                                    curr_set.insert(Fact::DoesntExist);
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                    //TODO: What is a Box::?
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    if mode == AccessMode::Both {
+                                        flags.insert(AccessFlags::R_OK);
+                                    }
+                                    curr_set.insert(Fact::NoPermission((flags).bits()));
+                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                             }
-
-                            curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                         }
-                        SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                            panic!("Open append, no info yet, failed because file already exists??");
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Or(
-                                Box::new(Fact::NoPermission((AccessFlags::W_OK).bits())),
-                                Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)),
-                            ));
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                (SyscallEvent::Open(AccessMode::Read, _,  optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (SyscallEvent::Open(access_mode, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
+                    match access_mode {
+                        AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
+                        mode => {
+                            match outcome {
+                                SyscallOutcome::Success => {
+                                    // TODO also write access to the file? but the program
+                                    // doesn't know whether it exists..
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    if mode == AccessMode::Both {
+                                        flags.insert(AccessFlags::R_OK);
+                                    }
+                                    curr_set.insert(Fact::HasPermission((flags).bits()));
+                                    curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
+                                    panic!("Open trunc, no info yet, failed because file already exists??");
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                                    panic!("Open trunc failed because file doesn't exist? So??");
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    if mode == AccessMode::Both {
+                                        flags.insert(AccessFlags::R_OK);
+                                    }
+                                    curr_set.insert(Fact::NoPermission((flags).bits()));
+                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                                }
+                                SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
+                            }
+                        }
+                    }
+                }
+                (SyscallEvent::Open(access_mode, None, optional_check_mech, outcome), State::None, Mod::None, false) => {
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
@@ -987,9 +1052,15 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     }
                                 }
                             }
-
                             curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                            match access_mode {
+                                AccessMode::Read => {curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
+                                AccessMode::Write => {curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Both => {
+                                    curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                                    curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                                }
+                            }
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open read only, no info yet, failed because file already exists??");
@@ -998,43 +1069,21 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             curr_set.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            curr_set.insert(Fact::Or(
-                                Box::new(Fact::NoPermission((AccessFlags::R_OK).bits())),
-                                Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)),
-                            ));
+                            match access_mode {
+                                AccessMode::Read => {curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));}
+                                AccessMode::Write => {curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Both => {
+                                    curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
+                                    curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
+                                }
+                            }  
+                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                         }
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                (SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
-
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            // TODO also write access to the file? but the program
-                            // doesn't know whether it exists..
-                            let mut flags = AccessFlags::empty();
-                            flags.insert(AccessFlags::W_OK);
-                            flags.insert(AccessFlags::X_OK);
-                            curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
-                            panic!("Open trunc, no info yet, failed because file already exists??");
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            panic!("Open trunc failed because file doesn't exist? So??");
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            let mut flags = AccessFlags::empty();
-                            flags.insert(AccessFlags::W_OK);
-                            flags.insert(AccessFlags::X_OK);
-                            curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
-                        }
-                        SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
-                    }
-                }
-                (SyscallEvent::Open(_, f,  _,_), _, _, _) => panic!("Unexpected open flag: {:?}", f),
-
+                //TODO: Something similar for AccessMode?
+                (SyscallEvent::Open(_, f,  _,_), _, _, _) => panic!("Unexpected open offset flag: {:?}", f),
                 (
                     SyscallEvent::Rename(_, _, _),
                     State::DoesntExist,
