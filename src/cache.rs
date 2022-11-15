@@ -94,13 +94,13 @@ impl CachedExecution {
                 let file_postconditions = posts.file_postconditions();
                 let dir_postconditions = posts.dir_postconditions();
 
+                create_dirs(dir_postconditions);
+
                 for (accessor, fact_set) in file_postconditions {
                     apply_file_transition_function(accessor, cache_subdir.clone(), fact_set);
                 }
 
-                for (accessor, fact_set) in dir_postconditions {
-                    apply_dir_transition_function(accessor, fact_set);
-                }
+                remove_dirs(dir_postconditions);
             }
         } else {
             panic!("Should not be trying to apply all transitions for ignored cached execution!!")
@@ -209,9 +209,42 @@ impl RcCachedExec {
     }
 }
 
-fn apply_dir_transition_function(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {
-    todo!();
+// So for directories. I think this is basically just creating and deleting.
+// Thoughts: Deleting dirs. So, you delete a dir once there are no files in it. I see
+// two cases here.
+// 1) This is an empty dir. We delete it. Doesn't really matter when, just so long
+// as we delete them LONGEST path to SHORTEST. Think: rm /hello/hi then rm /hello
+// 2) This dir has stuff in it. A bunch of files must be deleted in it first. Then it
+// is NECESSARY for us to delete the files first (apply file transition function first)
+// before deleting the dirs.
+// -----------------------------------------------------------------------------------
+// Thoughts: rename. Rename is weird. It is not obvious the order to things.
+// If we rename a directory, and the execution is accessing files in that directory,
+// we need to know to update the paths.
+// We also need to ... I guess make sure we rename the dir before applying the
+// transition function for files.
+// write /foo/file.txt
+// rename /foo /bar
+// vs.
+// rename /foo /bar
+// write /bar/file.txt
+// fn apply_dir_transition_function(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {
+//     todo!();
+// }
+
+fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+    // We need to create dirs in order: shortest path to longest path.
+    // Make a vector of paths to create. Then sort it by # of chars.
+    // Then create the dir, if it does not exist already.
+
+    let mut vec_of_paths: Vec<PathBuf> = Vec::new();
+
+    for (accessor, fact_set) in dir_postconditions {
+        let path = accessor.path();
+    }
 }
+
+fn delete_dirs(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {}
 
 fn apply_file_transition_function(
     accessor_and_file: Accessor,

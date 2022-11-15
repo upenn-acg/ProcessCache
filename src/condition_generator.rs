@@ -1844,7 +1844,6 @@ pub fn generate_dir_postconditions(
                             .insert(accessor.clone(), HashSet::from([Fact::Exists]));
                     }
                 }
-                // If full path = new path, this will fail.
                 // If full path = old path, we can create. Thus we should insert Fact::Exists
                 // as old path's postconds if this succeeds.
                 (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(old_path, _)) => {
@@ -1948,25 +1947,87 @@ pub fn generate_dir_postconditions(
                             Accessor::CurrProc(new_path)
                         };
 
-                        let old_set = curr_dir_postconditions.remove(&accessor).unwrap();
-                        curr_dir_postconditions.insert(new_accessor, old_set);
+                        curr_dir_postconditions.remove(&accessor).unwrap();
+                        curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
                         curr_dir_postconditions
                             .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 // We just deleted it. We can't rename it.
                 (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
-                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_, _)) => todo!(),
+                (
+                    DirEvent::Rename(old_path, new_path, outcome),
+                    State::DoesntExist,
+                    Mod::Renamed(_, last_new_path),
+                ) => {
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
+                    };
+
+                    if outcome == SyscallOutcome::Success && old_path == *last_new_path {
+                        curr_dir_postconditions.remove(&accessor).unwrap();
+
+                        curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
                 // It doesn't exist and hasn't been created. I am doubtful this is going to give us
                 // anything. Actually, I am positive it will not give us anything.
                 (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::None) => (),
                 // Last mod created, we can totes rename it.
                 (DirEvent::Rename(_, new_path, outcome), State::Exists, Mod::Created) => {
-                    if outcome == SyscallOutcome::Success {}
+                    if outcome == SyscallOutcome::Success {
+                        let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                            Accessor::ChildProc(cmd, new_path)
+                        } else {
+                            Accessor::CurrProc(new_path)
+                        };
+
+                        curr_dir_postconditions.remove(&accessor).unwrap();
+                        curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
                 }
-                (DirEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => todo!(),
-                (DirEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_, _)) => todo!(),
-                (DirEvent::Rename(_, _, _), State::Exists, Mod::None) => todo!(),
+                // We just deleted it. We cannot rename it.
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
+                (
+                    DirEvent::Rename(old_path, new_path, outcome),
+                    State::Exists,
+                    Mod::Renamed(_, last_new_path),
+                ) => {
+                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                        Accessor::ChildProc(cmd, new_path)
+                    } else {
+                        Accessor::CurrProc(new_path)
+                    };
+
+                    if outcome == SyscallOutcome::Success && old_path == *last_new_path {
+                        curr_dir_postconditions.remove(&accessor).unwrap();
+
+                        curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
+                // We know it exists. We might be able to rename it.
+                (DirEvent::Rename(_, new_path, outcome), State::Exists, Mod::None) => {
+                    if outcome == SyscallOutcome::Success {
+                        let new_accessor = if let Some(cmd) = option_cmd.clone() {
+                            Accessor::ChildProc(cmd, new_path)
+                        } else {
+                            Accessor::CurrProc(new_path)
+                        };
+
+                        curr_dir_postconditions.remove(&accessor).unwrap();
+                        curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
+                        curr_dir_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
+                    }
+                }
                 (DirEvent::Rename(_, new_path, outcome), State::None, last_mod) => {
                     if *last_mod == Mod::None {
                         if outcome == SyscallOutcome::Success {
@@ -1976,8 +2037,9 @@ pub fn generate_dir_postconditions(
                                 Accessor::CurrProc(new_path)
                             };
 
-                            let old_set = curr_dir_postconditions.remove(&accessor).unwrap();
-                            curr_dir_postconditions.insert(new_accessor, old_set);
+                            curr_dir_postconditions.remove(&accessor).unwrap();
+                            curr_dir_postconditions
+                                .insert(new_accessor, HashSet::from([Fact::Exists]));
                             curr_dir_postconditions
                                 .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         }
