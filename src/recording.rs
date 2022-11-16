@@ -143,10 +143,11 @@ impl Execution {
         self.exit_code = Some(code);
     }
 
-    // You can have max 1 successful execve.
-    // [Success] or [Fail,...,Fail,Success]
-    // Can only add file event to the successful one
-    // Successful one should be last.
+    fn add_new_dir_event(&mut self, caller_pid: Pid, dir_access: DirEvent, full_path: PathBuf) {
+        self.syscall_events
+            .add_new_dir_event(caller_pid, dir_access, full_path);
+    }
+
     fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
@@ -265,6 +266,10 @@ impl Execution {
         self.successful_exec = exec_metadata;
     }
 
+    fn syscall_events(&self) -> ExecSyscallEvents {
+        self.syscall_events.clone()
+    }
+
     fn remove_stdout_duped_fd(&mut self, pid: Pid) {
         if self.stdout_fd_map.remove(&pid).is_none() {
             panic!(
@@ -332,7 +337,9 @@ impl RcExecution {
     }
 
     pub fn add_new_dir_event(&self, caller_pid: Pid, dir_event: DirEvent, full_path: PathBuf) {
-        todo!();
+        self.0
+            .borrow_mut()
+            .add_new_dir_event(caller_pid, dir_event, full_path);
     }
 
     pub fn add_new_file_event(&self, caller_pid: Pid, file_event: FileEvent, full_path: PathBuf) {
@@ -411,7 +418,7 @@ impl RcExecution {
     }
 
     pub fn syscall_events(&self) -> ExecSyscallEvents {
-        todo!();
+        self.0.borrow().syscall_events()
     }
 
     pub fn update_cwd(&self, new_cwd: PathBuf) {
@@ -439,7 +446,52 @@ pub fn append_dir_events(
     child_events: HashMap<Accessor, Vec<DirEvent>>,
     child_pid: Pid,
 ) {
-    todo!();
+    // TODO: files AND dirs
+    let hashed_child_command = hash_command(child_command);
+
+    // For each child resource and its event list...
+    for (child_accessor, child_dir_event_list) in child_events {
+        // Check parent_events.get(&Accessor::CurrProc(path)) -> we need to check if the
+        // PARENT touched this resource...
+        let path = child_accessor.path().to_owned();
+        if let Some(parents_event_list) = parent_events.get(&Accessor::CurrProc(path.to_path_buf()))
+        {
+            // If the parent HAS touched this resource, we need to
+            // - get the parent's event list
+            // - remove the ChildExec event from the parent's list
+            // - replace it with the child's list of events
+            if let Some(child_exec_index) = parents_event_list
+                .iter()
+                .position(|x| x == &DirEvent::ChildExec(child_pid))
+            {
+                let mut childs_events = child_dir_event_list.clone();
+                let before_events = &parents_event_list[..child_exec_index];
+                let after_events = &parents_event_list[(child_exec_index + 1)..];
+                let mut new_events = before_events.to_vec();
+                new_events.append(&mut childs_events);
+                new_events.append(&mut after_events.to_vec());
+                // After we have correctly incorporated the child's events into
+                // the parent's event list, we need to update the parent's events
+                // to contain the new events with the parent as the Accessor.
+                parent_events.insert(Accessor::CurrProc(path.to_path_buf()), new_events);
+            }
+        } else {
+            // If the parent has never touched this dir we must copy the child's
+            // events to the parent's map (with the CHILD as the Accessor).
+            // child_accessor is this for the child: CurrProc(Path)
+            // For the parent it needs to be: ChildProc(HashedCommand, Path).
+            let accessor = match child_accessor {
+                Accessor::ChildProc(hash_of_grandchild, path) => {
+                    Accessor::ChildProc(hash_of_grandchild, path)
+                }
+                // The child done it.
+                Accessor::CurrProc(path) => {
+                    Accessor::ChildProc(hashed_child_command.to_string(), path.to_owned())
+                }
+            };
+            parent_events.insert(accessor, child_dir_event_list);
+        }
+    }
 }
 
 pub fn append_file_events(
@@ -448,7 +500,6 @@ pub fn append_file_events(
     child_events: HashMap<Accessor, Vec<FileEvent>>,
     child_pid: Pid,
 ) {
-    // TODO: files AND dirs
     let hashed_child_command = hash_command(child_command);
 
     // For each child resource and its event list...

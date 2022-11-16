@@ -1093,6 +1093,7 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
 
+    // TODO: add an event for old and new path.
     if full_old_path.is_dir() {
         let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
@@ -1218,6 +1219,8 @@ fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
         && !full_path.starts_with("/etc")
         && !full_path.starts_with("/dev/null")
         && !full_path.ends_with(".")
+        && !full_path.starts_with("/selinux")
+        && !full_path.starts_with("/sys")
     {
         execution.add_new_dir_event(tracer.curr_proc, stat_syscall_event, full_path);
     }

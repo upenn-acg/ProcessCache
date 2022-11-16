@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir, File},
+    fs::{self, create_dir, read_dir, remove_dir, File},
     io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
@@ -94,13 +94,16 @@ impl CachedExecution {
                 let file_postconditions = posts.file_postconditions();
                 let dir_postconditions = posts.dir_postconditions();
 
-                create_dirs(dir_postconditions);
+                // First create necessary dirs.
+                create_dirs(dir_postconditions.clone());
 
+                // Put files in the right places.
                 for (accessor, fact_set) in file_postconditions {
                     apply_file_transition_function(accessor, cache_subdir.clone(), fact_set);
                 }
 
-                remove_dirs(dir_postconditions);
+                // Delete appropriate dirs.
+                delete_dirs(dir_postconditions);
             }
         } else {
             panic!("Should not be trying to apply all transitions for ignored cached execution!!")
@@ -237,14 +240,53 @@ fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     // Make a vector of paths to create. Then sort it by # of chars.
     // Then create the dir, if it does not exist already.
 
-    let mut vec_of_paths: Vec<PathBuf> = Vec::new();
+    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
 
     for (accessor, fact_set) in dir_postconditions {
         let path = accessor.path();
+        vec_of_paths.push((path, fact_set));
+    }
+
+    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
+    for (path, fact_set) in vec_of_paths {
+        if !path.exists() {
+            for fact in fact_set {
+                if fact == Fact::Exists {
+                    create_dir(path.clone()).unwrap();
+                    break;
+                }
+            }
+            if let Err(e) = create_dir(path.clone()) {
+                panic!("Failed to create dir: {:?} because error: {:?}", path, e);
+            }
+        }
     }
 }
 
-fn delete_dirs(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {}
+fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+    // We need to delete dirs in order: longest path to shortest.
+    // Same drill as above, but flip a and b in sort_by() basically.
+    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
+
+    for (accessor, fact_set) in dir_postconditions {
+        let path = accessor.path();
+        vec_of_paths.push((path, fact_set));
+    }
+
+    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
+    let v: Vec<(PathBuf, HashSet<Fact>)> = vec_of_paths.into_iter().rev().collect();
+
+    for (path, fact_set) in v {
+        if path.exists() {
+            for fact in fact_set {
+                if fact == Fact::Exists {
+                    remove_dir(path).unwrap();
+                    break;
+                }
+            }
+        }
+    }
+}
 
 fn apply_file_transition_function(
     accessor_and_file: Accessor,

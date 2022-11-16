@@ -17,11 +17,7 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-use crate::{
-    cache_utils::generate_hash,
-    condition_utils::{no_mods_before_dir_rename, FileType},
-    syscalls::MyStatFs,
-};
+use crate::{cache_utils::generate_hash, condition_utils::FileType, syscalls::MyStatFs};
 use crate::{
     condition_utils::{no_mods_before_file_rename, Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
@@ -80,6 +76,26 @@ impl ExecSyscallEvents {
         ExecSyscallEvents {
             dir_events,
             file_events,
+        }
+    }
+
+    pub fn add_new_dir_event(&mut self, caller_pid: Pid, dir_event: DirEvent, full_path: PathBuf) {
+        let s = span!(Level::INFO, stringify!(add_new_dir_event), pid=?caller_pid);
+        let _ = s.enter();
+
+        s.in_scope(|| "in add_new_dir_event");
+        // First case, we already saw this dir and now we are adding another event to it.
+        if let Some(event_list) = self
+            .dir_events
+            .get_mut(&Accessor::CurrProc(full_path.clone()))
+        {
+            s.in_scope(|| "adding to existing event list");
+            event_list.push(dir_event);
+        } else {
+            let event_list = vec![dir_event];
+            s.in_scope(|| "adding new event list");
+            self.dir_events
+                .insert(Accessor::CurrProc(full_path), event_list);
         }
     }
 
@@ -429,25 +445,15 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Create(_, _), State::DoesntExist, Mod::Deleted, false) => {
                     panic!("Last mod deleted but has_been_deleted = false??");
                 }
-                // It didn't exist. It was created. Then it was renamed.
-                // This wouldn't give us any info about new path...
-                // no old path
-                // old path created
-                // old path renamed to new path
-                // if this is the new path... it can't be created because it already exists.
-                // if this is the old path, it can be created. jesus christ. but! doesn't give us new info.
+                // Old path was last renamed. It can be created. But we already know
+                // existence, and we know we have dir permissions because it had
+                // to be created and then renamed.
                 (
-                    DirEvent::Create(_, outcome),
-                    State::DoesntExist,
-                    Mod::Renamed(_, new_path),
+                    DirEvent::Create(_, _),
+                    State::DoesntExist | State::Exists,
+                    Mod::Renamed(_, _),
                     false,
-                ) => {
-                    if full_path == new_path && outcome == SyscallOutcome::Success {
-                        panic!(
-                            "Dir was created by rename last, but now a dir create is succeeding??"
-                        );
-                    }
-                }
+                ) => (),
                 (DirEvent::Create(root_dir, outcome), State::DoesntExist, Mod::None, false) => {
                     // We know it doesn't exist. We might be able to create it!
                     let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
@@ -474,16 +480,6 @@ pub fn generate_dir_preconditions(
                 }
                 (DirEvent::Create(_, _), State::Exists, Mod::Deleted, false) => {
                     panic!("Last mod deleted but has_been_deleted is false!!");
-                }
-                // It existed at start. It was renamed.
-                // If this is old path... it could be created but this doesn't give us new info.
-                // If this is new path... it should fail.
-                (DirEvent::Create(_, outcome), State::Exists, Mod::Renamed(_, new_path), false) => {
-                    if full_path == new_path && outcome == SyscallOutcome::Success {
-                        panic!(
-                            "Dir was created by rename last, but now a dir create is succeeding??"
-                        );
-                    }
                 }
                 (DirEvent::Create(_, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
@@ -526,27 +522,14 @@ pub fn generate_dir_preconditions(
                         panic!("Last mod was deleted, unexpected outcome from trying to delete now: {:?}", outcome);
                     }
                 }
-                // It didn't exist. It had to be created. Then it was renamed.
-                // If this is new_path, we should be able to delete it.
+                // It may have been created, then definitely renamed. This delete won't succeed.
+                // It also won't tell us anything.
                 (
-                    DirEvent::Delete(outcome),
-                    State::DoesntExist,
-                    Mod::Renamed(_, new_path),
-                    deleted_previously,
-                ) => {
-                    if full_path == new_path {
-                        if outcome == SyscallOutcome::Success {
-                            if !deleted_previously {
-                                has_been_deleted = true;
-                            }
-                        } else {
-                            panic!(
-                                "Last mod renamed, but failed to rmdir for unexpected reason: {:?}",
-                                outcome
-                            );
-                        }
-                    }
-                }
+                    DirEvent::Delete(_),
+                    State::DoesntExist | State::Exists,
+                    Mod::Renamed(_, _),
+                    _,
+                ) => (),
                 // This should fail, we know it doesn't exist, we know no mods have happened.
                 (DirEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
                     match outcome {
@@ -578,29 +561,6 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Delete(outcome), State::Exists, Mod::Deleted, true) => {
                     if outcome == SyscallOutcome::Success {
                         panic!("Last mod deleted, but delete succeeds??");
-                    }
-                }
-                // It existed at the start. It was renamed. So we know about whether it existed,
-                // and we know we have permissions to the parent dir already. So we don't get any new info
-                // except that we potentially need to change has_been_deleted to true.
-                // If this is new_path, we and !deleted_previously, set has_been_deleted = true.
-                (
-                    DirEvent::Delete(outcome),
-                    State::Exists,
-                    Mod::Renamed(_, new_path),
-                    deleted_previously,
-                ) => {
-                    if full_path == new_path {
-                        if outcome == SyscallOutcome::Success {
-                            if !deleted_previously {
-                                has_been_deleted = true;
-                            }
-                        } else {
-                            panic!(
-                                "Last mod renamed, but failed to rmdir for unexpected reason: {:?}",
-                                outcome
-                            );
-                        }
                     }
                 }
                 // We know it exists, and it has not been modified.
@@ -669,7 +629,7 @@ pub fn generate_dir_preconditions(
                         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
                     }
                 }
-                // HERE !!!
+                // TODO: Rename handle new path
                 (DirEvent::Rename(_, _, _), _, Mod::None, true) => {
                     panic!("Last mod none but has_been_deleted = true??");
                 }
@@ -679,45 +639,37 @@ pub fn generate_dir_preconditions(
                 // Okay! Old_path didn't exist. Then it was created. That was its last mod.
                 // Now it's being renamed. If rename was the first thing, we'd learn existence,
                 // and W and X access to the dir. We already know the existence and we know
-                // the dir perms because the last mod was created. Just error if this fails?
-                (DirEvent::Rename(_, _, outcome), State::DoesntExist, Mod::Created, _) => {
-                    if outcome != SyscallOutcome::Success {
-                        panic!(
-                            "Created dir, failed to rename it for unexpected reason: {:?}",
-                            outcome
-                        );
-                    }
-                }
+                // the dir perms because the last mod was created.
+                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Created, _) => (),
                 // Not handling no replace for now, so no preconds for new path contributed.
                 // We already know starting existence and that we can wx the dir. Nothing to learn.
-                (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted, true) => (),
+                // Rename just overwrites new path if it's there, so we don't learn preconditions
+                // about it.
+                (DirEvent::Rename(_, _, outcome), State::DoesntExist, Mod::Deleted, true) => {
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod deleted but rename was successful??");
+                    }
+                }
                 // It didn't exist. It was created. It was renamed. a -> b. Now they are trying to do
                 // b -> c. Do we learn anything? No.
                 // Not handling no replace.
                 (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
-                // It didn't exist, hasn't been created. This should not succeed if full path == old path.
-                (DirEvent::Rename(old_path, _, outcome), State::DoesntExist, Mod::None, false) => {
-                    if *full_path == old_path && outcome == SyscallOutcome::Success {
-                        panic!("Dir didn't exist and hasn't been created, but rename succeeded??");
+                // It didn't exist, hasn't been created. This should not succeed.
+                (DirEvent::Rename(_, _, outcome), State::DoesntExist, Mod::None, false) => {
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Doesn't exist, no mods, but rename successful??");
                     }
                 }
                 // It existed, was deleted, was created again. Sure it can be renamed don't
                 // see why not. We don't learn anything new though.
-                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::Created, true) => {
-                    if *full_path == old_path {
-                        if let SyscallOutcome::Fail(f) = outcome {
-                            panic!("Last mod created, failed to rename dir for unexpected reason: {:?}", f);
-                        }
-                    }
-                }
+                (DirEvent::Rename(_, _, _), State::Exists, Mod::Created, true) => (),
                 (DirEvent::Rename(_, _, _), State::Exists, Mod::Created, false) => {
                     panic!("Didn't exist at start, last mod created, but hasn't been deleted??");
                 }
-                // Last thing that happened was it was deleted. If full path == old path,
-                // this should not succeed.
-                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::Deleted, true) => {
-                    if *full_path == old_path && outcome == SyscallOutcome::Success {
-                        panic!("Last mod deleted but rename succeeded??");
+                // It was just deleted. Should not succeed. Gives us nothing.
+                (DirEvent::Rename(_, _, outcome), State::Exists, Mod::Deleted, true) => {
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod deleted but rename was successful??");
                     }
                 }
                 // It existed at start. It was renamed. We aren't going to learn anything new.
@@ -811,47 +763,11 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Statfs(_, _), State::Exists, Mod::Deleted, false) => {
                     panic!("Existed at start, last mod deleted, but hasn't been marked has_been_deleted??");
                 }
-                (
-                    DirEvent::Statfs(stat_struct, outcome),
-                    State::Exists,
-                    Mod::Renamed(old_path, new_path),
-                    false,
-                ) => {
-                    match outcome {
-                        // This really should succeed. We know it exists, so we must also have X permission
-                        // to its parent dir.
-                        SyscallOutcome::Fail(f) => {
-                            panic!("Unexpected syscall failure for statfs, file existed at start, no mods other than rename: {:?}", f);
-                        }
-                        SyscallOutcome::Success => {
-                            if new_path == full_path {
-                                // We actually have to add the stat struct matching to the old path's preconds.
-                                if let Some(list) =
-                                    dir_events.get(&Accessor::CurrProc(old_path.clone()))
-                                {
-                                    let no_mods_before_rename =
-                                        no_mods_before_dir_rename(list.to_vec());
-                                    if no_mods_before_rename {
-                                        let curr_set =
-                                            curr_dir_preconditions.get_mut(old_path).unwrap();
-                                        if let Some(stat_str) = stat_struct {
-                                            curr_set.insert(Fact::StatFsStructMatches(
-                                                stat_str.clone(),
-                                            ));
-                                            curr_set.insert(Fact::HasDirPermission(
-                                                (AccessFlags::X_OK).bits(),
-                                                None,
-                                            ));
-                                        } else {
-                                            panic!(
-                                                "No stat struct found for successful stat event!"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                // We won't see this for new_path because we aren't actually adding 2 events, only adding one for old path.
+                // So, because old_path was just renamed, we cannot stat it.
+                // TODO: 2 events for rename to properly handle old path and new path.
+                (DirEvent::Statfs(_, _), State::Exists, Mod::Renamed(_, _), false) => {
+                    todo!();
                 }
                 (DirEvent::Statfs(option_statfs, outcome), State::None, last_mod, false) => {
                     let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
@@ -1806,6 +1722,7 @@ pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
     Postconditions::new(dir_postconds, file_postconds)
 }
 
+// TODO: rename in the case where we have two events: one for old path and one for new path
 // The only postconditions are: exists or doesn't exist for dirs.
 pub fn generate_dir_postconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
@@ -1901,6 +1818,7 @@ pub fn generate_dir_postconditions(
                 (DirEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
                 // if full path is old path, then we can't delete this.
                 // No info gained.
+                // TODO: handle new_path
                 (DirEvent::Delete(_), State::DoesntExist, Mod::Renamed(_, _)) => (),
                 // It doesn't exist, and we haven't created it. So, yeah, not a
                 // lot to do here.
@@ -1917,6 +1835,7 @@ pub fn generate_dir_postconditions(
                 // We just deleted it. Can't do that again.
                 (DirEvent::Delete(_), State::Exists, Mod::Deleted) => (),
                 // If full path is old path, we can't delete this. No info gained.
+                // TODO: handle new_path
                 (DirEvent::Delete(_), State::Exists, Mod::Renamed(_, _)) => (),
                 // It exists. Maybe we can even delete it.
                 (DirEvent::Delete(outcome), State::Exists, Mod::None) => {
@@ -1954,7 +1873,9 @@ pub fn generate_dir_postconditions(
                     }
                 }
                 // We just deleted it. We can't rename it.
+                // TODO: new path
                 (DirEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
+                // TODO: new path?
                 (
                     DirEvent::Rename(old_path, new_path, outcome),
                     State::DoesntExist,

@@ -72,6 +72,7 @@ pub fn generate_open_syscall_file_event(
         || full_path.starts_with("/proc")
         || full_path.starts_with("/usr")
         || full_path.starts_with("/etc")
+        || full_path == PathBuf::from("/home/kelly/research/ProcessCache")
     {
         return None;
     }
