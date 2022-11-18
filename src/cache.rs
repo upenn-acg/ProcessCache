@@ -256,9 +256,10 @@ fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
                     break;
                 }
             }
-            if let Err(e) = create_dir(path.clone()) {
-                panic!("Failed to create dir: {:?} because error: {:?}", path, e);
-            }
+            // WHAT U DOING KELLY
+            // if let Err(e) = create_dir(path.clone()) {
+            //     panic!("Failed to create dir: {:?} because error: {:?}", path, e);
+            // }
         }
     }
 }
@@ -279,7 +280,9 @@ fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     for (path, fact_set) in v {
         if path.exists() {
             for fact in fact_set {
-                if fact == Fact::Exists {
+                // Whaat
+                // if fact == Fact::Exists {
+                if fact == Fact::DoesntExist {
                     remove_dir(path).unwrap();
                     break;
                 }
