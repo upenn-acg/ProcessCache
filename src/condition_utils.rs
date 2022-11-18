@@ -359,6 +359,17 @@ impl FirstState {
     }
 }
 
+pub fn dir_created_by_exec(
+    dir_path: PathBuf,
+    dir_preconds: HashMap<PathBuf, HashSet<Fact>>,
+) -> bool {
+    if let Some(fact_set) = dir_preconds.get(&dir_path) {
+        fact_set.contains(&Fact::DoesntExist)
+    } else {
+        false
+    }
+}
+
 pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
     let mut no_mods = true;
     for event in file_name_list {
