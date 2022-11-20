@@ -282,7 +282,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 let current_umask: u32 = fs::read_to_string(&status_file).unwrap()
                     .split("\n")
                     .filter(|l| l.starts_with("Umask:"))
-                    .map(|l| l.split_once(":").unwrap().1.parse::<u32>().unwrap())
+                    .map(|l| l.split_once(":").unwrap().1.trim().parse::<u32>().unwrap())
                     .collect::<Vec<u32>>()
                     .pop().unwrap();
                 current_umask == original_umask
