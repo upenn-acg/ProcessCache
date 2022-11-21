@@ -397,6 +397,33 @@ pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
     no_mods
 }
 
+pub fn update_file_posts_with_renamed_dirs(
+    file_posts: HashMap<Accessor, HashSet<Fact>>,
+    renamed_dirs: HashMap<PathBuf, PathBuf>,
+) -> HashMap<Accessor, HashSet<Fact>> {
+    let mut updated_file_postconds: HashMap<Accessor, HashSet<Fact>> = HashMap::new();
+
+    for (accessor, fact_set) in file_posts {
+        let old_path = accessor.path();
+        let parent_dir = old_path.parent().unwrap();
+        let parent_dir = PathBuf::from(parent_dir);
+        if let Some(renamed_to_this_path) = renamed_dirs.get(&parent_dir) {
+            let file_name = old_path.file_name().unwrap();
+            let new_path = renamed_to_this_path.join(file_name);
+            let new_accessor = if let Some(cmd) = accessor.hashed_command() {
+                Accessor::ChildProc(cmd, new_path)
+            } else {
+                Accessor::CurrProc(new_path)
+            };
+            updated_file_postconds.insert(new_accessor, fact_set);
+        } else {
+            updated_file_postconds.insert(accessor, fact_set);
+        }
+    }
+
+    updated_file_postconds
+}
+
 // pub fn no_mods_before_dir_rename(dir_list: Vec<DirEvent>) -> bool {
 //     let mut no_mods = true;
 //     for event in dir_list {
