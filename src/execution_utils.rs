@@ -339,3 +339,15 @@ pub fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
     let proc_path = readlink(proc_path.as_str())?;
     Ok(PathBuf::from(proc_path))
 }
+
+pub fn get_umask(pid: &Pid) -> u32 {
+    let status_file = format!("/proc/{}/status", pid.as_raw());
+    let umask: u32 = fs::read_to_string(&status_file).expect(&format!("error reading {}", status_file))
+        .split("\n")
+        .filter(|l| l.starts_with("Umask:"))
+        .map(|l| u32::from_str_radix(l.split_once(":").unwrap().1.trim(), 8).unwrap())
+        .collect::<Vec<u32>>()
+        .pop().unwrap();
+    debug!("recording umask 0{:o}", umask);
+    umask
+}
