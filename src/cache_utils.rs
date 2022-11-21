@@ -36,7 +36,7 @@ impl CachedExecMetadata {
             command,
             env_vars,
             starting_cwd,
-            starting_umask
+            starting_umask,
         }
     }
 
