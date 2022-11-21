@@ -333,7 +333,7 @@ pub async fn trace_process(
                                             );
                                             if full_tracking_on {
                                                 entry.check_all_preconditions_regardless()
-                                            } else if entry.check_all_preconditions() {
+                                            } else if entry.check_all_preconditions(tracer.curr_proc) {
                                                 // Check if we should skip this execution.
                                                 // If we are gonna skip, we have to change:
                                                 // rax, orig_rax, arg1

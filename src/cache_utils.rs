@@ -20,6 +20,7 @@ pub struct CachedExecMetadata {
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
     starting_cwd: PathBuf,
+    starting_umask: u32,
 }
 
 impl CachedExecMetadata {
@@ -28,12 +29,14 @@ impl CachedExecMetadata {
         command: Command,
         env_vars: Vec<String>,
         starting_cwd: PathBuf,
+        starting_umask: u32,
     ) -> CachedExecMetadata {
         CachedExecMetadata {
             caller_pid,
             command,
             env_vars,
             starting_cwd,
+            starting_umask
         }
     }
 
@@ -47,6 +50,10 @@ impl CachedExecMetadata {
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
+    }
+
+    pub fn starting_umask(&self) -> u32 {
+        self.starting_umask
     }
 }
 

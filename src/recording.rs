@@ -3,6 +3,7 @@ use crate::{
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{generate_preconditions, Accessor, ExecFileEvents},
     condition_utils::{Fact, Postconditions},
+    execution_utils::get_umask,
     syscalls::SyscallEvent,
 };
 use nix::unistd::Pid;
@@ -38,16 +39,19 @@ pub struct ExecMetadata {
     // so I am not making sure it's the abosolute path.
     // May want to do that in the future?
     starting_cwd: PathBuf,
+    starting_umask: u32,
 }
 
 impl ExecMetadata {
     pub fn new(caller_pid: Proc) -> ExecMetadata {
+        let pid = caller_pid.0.clone();
         ExecMetadata {
             caller_pid,
             command: Command(String::new(), Vec::new()),
             cwd: PathBuf::new(),
             env_vars: Vec::new(),
             starting_cwd: PathBuf::new(),
+            starting_umask: get_umask(&pid),
         }
     }
 
@@ -188,6 +192,7 @@ impl Execution {
             command_key.clone(),
             self.env_vars(),
             self.starting_cwd(),
+            self.starting_umask(),
         );
         let mut new_cached_exec = CachedExecution::new(
             cached_metadata,
@@ -246,6 +251,10 @@ impl Execution {
 
     pub fn starting_cwd(&self) -> PathBuf {
         self.successful_exec.starting_cwd()
+    }
+
+    pub fn starting_umask(&self) -> u32 {
+        self.successful_exec.starting_umask
     }
 
     fn set_to_ignored(&mut self, exec_metadata: ExecMetadata) {

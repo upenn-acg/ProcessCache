@@ -2,6 +2,7 @@ use crate::{
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
+    execution_utils::get_umask,
 };
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -100,7 +101,7 @@ impl CachedExecution {
     }
 
     // TODO: this needs to work with the "ignored" stuff.
-    fn check_all_preconditions(&self) -> bool {
+    fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
             let my_preconds = self.preconditions.clone();
             let vars = std::env::vars();
@@ -115,6 +116,14 @@ impl CachedExecution {
                 debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
                 debug!("new cwd: {:?}", curr_cwd);
                 // panic!("cwd");
+                return false;
+            }
+
+            let current_umask = get_umask(&pid);
+            if self.cached_metadata.starting_umask() != current_umask {
+                debug!("umask mismatch");
+                debug!("cached umask: 0{:o}", self.cached_metadata.starting_umask());
+                debug!("current umask: 0{:o}", current_umask);
                 return false;
             }
 
@@ -183,8 +192,8 @@ impl RcCachedExec {
     //     self.0.caller_pid()
     // }
 
-    pub fn check_all_preconditions(&self) -> bool {
-        self.0.check_all_preconditions()
+    pub fn check_all_preconditions(&self, pid: Pid) -> bool {
+        self.0.check_all_preconditions(pid)
     }
 
     pub fn check_all_preconditions_regardless(&self) {
