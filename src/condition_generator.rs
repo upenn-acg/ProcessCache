@@ -763,7 +763,6 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             if access_mode == AccessMode::Both {
                                 flags.insert(AccessFlags::R_OK);
                             }
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                             curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                         }
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
@@ -803,16 +802,16 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            let mut flags = AccessFlags::empty();
                             match access_mode {
-                                AccessMode::Read => {curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));}
-                                AccessMode::Write => {curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Read => {flags.insert(AccessFlags::R_OK);}
+                                AccessMode::Write => {flags.insert(AccessFlags::W_OK);}
                                 AccessMode::Both => {
-                                    curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
-                                    curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
+                                    flags.insert(AccessFlags::R_OK);
+                                    flags.insert(AccessFlags::W_OK);
                                 }
                             }
-                            //TODO: Check with Kelly
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                            curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                         }
                         f => panic!("Unexpected open none failure, file existed, {:?}", f),
                     }
@@ -831,12 +830,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                    curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
-                                    if mode == AccessMode::Both {
-                                        curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
-                                    }
-                                    //TODO: Check with Kelly
-                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                                    let mut flags = AccessFlags::empty();
+                                        flags.insert(AccessFlags::W_OK);
+                                        if mode == AccessMode::Both {
+                                            flags.insert(AccessFlags::R_OK);
+                                        }
+                                    curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                                 }
                                 f => panic!("Unexpected open append failure, file existed, {:?}", f),
                             }
@@ -892,14 +891,12 @@ pub fn generate_preconditions(exec_file_events: ExecFileEvents) -> Preconditions
                                     curr_set.insert(Fact::DoesntExist);
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                    //TODO: What is a Box::?
                                     let mut flags = AccessFlags::empty();
                                     flags.insert(AccessFlags::W_OK);
                                     if mode == AccessMode::Both {
                                         flags.insert(AccessFlags::R_OK);
                                     }
-                                    curr_set.insert(Fact::NoPermission((flags).bits()));
-                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                                    curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                             }
@@ -1505,7 +1502,13 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     State::Exists,
                     Mod::None,
                 ) => {
-                    todo!();
+                    //TODO: How to update the Mod?
+                    if outcome == SyscallOutcome::Success {
+                            let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
+                            //TODO: Do we need to insert Exists fact again?
+                            //curr_set.insert(Fact::Exists);
+                            curr_set.insert(Fact::FinalContents);
+                        }
                 }
                 // The last mod gave us FinalContents as a postcondition, so we don't need to do anything.
                 (
@@ -1514,12 +1517,16 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     Mod::Created | Mod::Modified,
                 ) => (),
                 (
+                    //TODO: Check with Kelly: AccessMode::Both | AccessMode::Write => _
+                    //Shouldn't Read also fail here?
                     SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::Exists,
                     Mod::Deleted,
                 ) => {
                     // This should not succeed!
-                    todo!();
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod was deleted but succeeded on open??");
+                    }
                 }
                 (
                     SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
@@ -1536,6 +1543,7 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     State::DoesntExist,
                     Mod::None,
                 ) => {
+                    //Do we create a file and then write to it?
                     todo!();
                 }
                 (
@@ -1544,7 +1552,9 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     Mod::Deleted,
                 ) => {
                     // This should not succeed!
-                    todo!();
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Last mod was deleted but succeeded on open??");
+                    }
                 }
                 (
                     SyscallEvent::Rename(old_path, new_path, outcome),
