@@ -1,8 +1,9 @@
 use nix::pty::SessionId;
+use tracing::debug;
 
 use std::{
-    collections::hash_map::DefaultHasher,
-    fs::File,
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    fs::{create_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
     io::Read,
     path::PathBuf,
@@ -10,6 +11,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::{condition_generator::Accessor, condition_utils::Fact};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecMetadata {
@@ -63,6 +66,75 @@ pub struct Command(pub String, pub Vec<String>);
 impl Command {
     pub fn new(exe: String, args: Vec<String>) -> Self {
         Command(exe, args)
+    }
+}
+
+pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+    // We need to create dirs in order: shortest path to longest path.
+    // Make a vector of paths to create. Then sort it by # of chars.
+    // Then create the dir, if it does not exist already.
+
+    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
+
+    for (accessor, fact_set) in dir_postconditions {
+        let path = accessor.path();
+        vec_of_paths.push((path, fact_set));
+    }
+
+    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
+    for (path, fact_set) in vec_of_paths {
+        if !path.exists() {
+            for fact in fact_set {
+                if fact == Fact::Exists {
+                    create_dir(path.clone()).unwrap();
+                }
+            }
+        }
+    }
+}
+
+pub fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+    // We need to delete dirs in order: longest path to shortest.
+    // Same drill as above, but flip a and b in sort_by() basically.
+    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
+
+    for (accessor, fact_set) in dir_postconditions {
+        let path = accessor.path();
+        vec_of_paths.push((path, fact_set));
+    }
+
+    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
+    let v: Vec<(PathBuf, HashSet<Fact>)> = vec_of_paths.into_iter().rev().collect();
+
+    for (path, fact_set) in v {
+        if path.exists() {
+            for fact in fact_set {
+                if fact == Fact::DoesntExist {
+                    remove_dir(path).unwrap();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+pub fn renamed_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
+
+    for (accessor, fact_set) in dir_postconditions {
+        let path = accessor.path();
+        vec_of_paths.push((path, fact_set));
+    }
+
+    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
+    for (path, fact_set) in vec_of_paths {
+        for fact in fact_set {
+            if let Fact::Renamed(old_dir_path, new_dir_path) = fact {
+                debug!("Fact is renamed for dir!");
+                rename(old_dir_path, new_dir_path).unwrap();
+                break;
+            }
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 use crate::{
-    cache_utils::{hash_command, CachedExecMetadata, Command},
+    cache_utils::{
+        create_dirs, delete_dirs, hash_command, renamed_dirs, CachedExecMetadata, Command,
+    },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
     execution_utils::get_umask,
@@ -9,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, create_dir, read_dir, remove_dir, File},
+    fs::{self, read_dir, File},
     io::{self, Read, Write},
     path::PathBuf,
     rc::Rc,
@@ -91,11 +93,16 @@ impl CachedExecution {
             // If an execution has no postconditions, it may just not have output files.
             // That's not a reason to panic.
             if let Some(posts) = postconditions {
+                debug!("There are postconditions");
                 let file_postconditions = posts.file_postconditions();
                 let dir_postconditions = posts.dir_postconditions();
-
-                // First create necessary dirs.
+                debug!("Dir posts: {:?}", dir_postconditions);
+                // First create necessary dirs. And rename appropriately.
+                // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
                 create_dirs(dir_postconditions.clone());
+
+                // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
+                renamed_dirs(dir_postconditions.clone());
 
                 // Put files in the right places.
                 for (accessor, fact_set) in file_postconditions {
@@ -231,65 +238,6 @@ impl RcCachedExec {
 // vs.
 // rename /foo /bar
 // write /bar/file.txt
-// fn apply_dir_transition_function(accessor_and_file: Accessor, fact_set: HashSet<Fact>) {
-//     todo!();
-// }
-
-fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
-    // We need to create dirs in order: shortest path to longest path.
-    // Make a vector of paths to create. Then sort it by # of chars.
-    // Then create the dir, if it does not exist already.
-
-    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
-
-    for (accessor, fact_set) in dir_postconditions {
-        let path = accessor.path();
-        vec_of_paths.push((path, fact_set));
-    }
-
-    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
-    for (path, fact_set) in vec_of_paths {
-        if !path.exists() {
-            for fact in fact_set {
-                if fact == Fact::Exists {
-                    create_dir(path.clone()).unwrap();
-                    break;
-                }
-            }
-            // WHAT U DOING KELLY
-            // if let Err(e) = create_dir(path.clone()) {
-            //     panic!("Failed to create dir: {:?} because error: {:?}", path, e);
-            // }
-        }
-    }
-}
-
-fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
-    // We need to delete dirs in order: longest path to shortest.
-    // Same drill as above, but flip a and b in sort_by() basically.
-    let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
-
-    for (accessor, fact_set) in dir_postconditions {
-        let path = accessor.path();
-        vec_of_paths.push((path, fact_set));
-    }
-
-    vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
-    let v: Vec<(PathBuf, HashSet<Fact>)> = vec_of_paths.into_iter().rev().collect();
-
-    for (path, fact_set) in v {
-        if path.exists() {
-            for fact in fact_set {
-                // Whaat
-                // if fact == Fact::Exists {
-                if fact == Fact::DoesntExist {
-                    remove_dir(path).unwrap();
-                    break;
-                }
-            }
-        }
-    }
-}
 
 fn apply_file_transition_function(
     accessor_and_file: Accessor,
@@ -336,13 +284,21 @@ fn apply_file_transition_function(
                     }
                     Accessor::CurrProc(file) => {
                         // Simple case when curr proc was the writer of the file.
-                        let file_name = file.file_name().unwrap();
-                        let cache_file_location = parents_cache_subdir.join(file_name);
-                        debug!("cache file location: {:?}", cache_file_location);
-                        debug!("og file path: {:?}", file);
-                        if cache_file_location.exists() {
-                            fs::copy(cache_file_location, file.clone()).unwrap();
+                        match file.file_name() {
+                            Some(file_name) => {
+                                let cache_file_location = parents_cache_subdir.join(file_name);
+                                debug!("cache file location: {:?}", cache_file_location);
+                                debug!("og file path: {:?}", file);
+                                if cache_file_location.exists() {
+                                    fs::copy(cache_file_location, file.clone()).unwrap();
+                                }
+                            }
+                            None => {
+                                panic!("can't get file name for: {:?}", file);
+                            }
                         }
+
+                        // let file_name = file.file_name().unwrap();
                     }
                 }
             }

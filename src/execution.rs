@@ -1109,8 +1109,8 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
         e => panic!("Unexpected error returned by rename syscall!: {}", e),
     };
 
-    // TODO: add an event for old and new path.
     if full_old_path.extension().is_some() {
+        // TODO: add an event for old and new path.
         debug!("It is a file!: {:?}", full_old_path);
         let event = FileEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
