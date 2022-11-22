@@ -730,7 +730,7 @@ pub fn generate_dir_preconditions(
                                     flags.insert(AccessFlags::X_OK);
                                     curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
                                 }
-                                f => panic!("Unexpected failure rename dir: {:?}", f),
+                                _ => (),
                             }
                         }
                     } else {

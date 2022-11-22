@@ -1110,14 +1110,14 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     };
 
     // TODO: add an event for old and new path.
-    if full_old_path.is_dir() {
-        debug!("It is a dir!: {:?}", full_old_path);
-        let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
-        execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
-    } else {
+    if full_old_path.extension().is_some() {
         debug!("It is a file!: {:?}", full_old_path);
         let event = FileEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
+    } else {
+        debug!("It is a dir!: {:?}", full_old_path);
+        let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
+        execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
     }
 
     Ok(())
