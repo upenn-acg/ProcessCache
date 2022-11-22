@@ -139,6 +139,7 @@ pub enum Fact {
     NoDirPermission(c_int, Option<PathBuf>),
     NoPermission(c_int),
     Or(Box<Fact>, Box<Fact>),
+    Renamed(PathBuf, PathBuf),
     StartingContents(Vec<u8>),
     StatFsStructMatches(MyStatFs),
     StatStructMatches(Stat),
