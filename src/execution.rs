@@ -1058,17 +1058,19 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     let ret_val = regs.retval::<i32>();
     // retval = 0 is success for this syscall.
     let (full_old_path, full_new_path) = match syscall_name {
+        // TODO: Use get_full_path()
         "rename" => {
             let old_path_arg_bytes = regs.arg1::<*const c_char>();
             let old_path_arg = tracer
                 .read_c_string(old_path_arg_bytes)
-                .with_context(|| context!("Cannot read `open` path."))?;
+                .with_context(|| context!("Cannot read `rename` path."))?;
             let new_path_arg_bytes = regs.arg1::<*const c_char>();
             let new_path_arg = tracer
                 .read_c_string(new_path_arg_bytes)
-                .with_context(|| context!("Cannot read `open` path."))?;
+                .with_context(|| context!("Cannot read `rename` path."))?;
             (PathBuf::from(old_path_arg), PathBuf::from(new_path_arg))
         }
+        // TODO: Use get_full_path()
         "renameat" | "renameat2" => {
             debug!("RENAMEAT2");
             let old_path_arg = regs.arg2::<*const c_char>();
@@ -1076,11 +1078,22 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
                 .read_c_string(old_path_arg)
                 .with_context(|| context!("Cannot read `rename` path"))?;
 
+            let dir_fd = regs.arg1::<i32>();
+            let dir_path = if dir_fd == AT_FDCWD {
+                execution.cwd()
+            } else {
+                path_from_fd(tracer.curr_proc, dir_fd)?
+            };
+
+            let old_full_path = dir_path.join(old_file_name);
+
             let new_path_arg = regs.arg4::<*const c_char>();
             let new_file_name = tracer
                 .read_c_string(new_path_arg)
                 .with_context(|| context!("Cannot read `rename` path"))?;
-            (PathBuf::from(old_file_name), PathBuf::from(new_file_name))
+
+            let new_full_path = dir_path.join(new_file_name);
+            (old_full_path, new_full_path)
         }
         _ => panic!("Calling unrecognized syscall in handle_rename()"),
     };
@@ -1098,9 +1111,11 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
 
     // TODO: add an event for old and new path.
     if full_old_path.is_dir() {
+        debug!("It is a dir!: {:?}", full_old_path);
         let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
     } else {
+        debug!("It is a file!: {:?}", full_old_path);
         let event = FileEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
     }

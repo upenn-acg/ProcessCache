@@ -219,9 +219,9 @@ fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathB
 }
 
 // TODO: clean this up
-// Currently: stat, fstat, newfstat64
 // We consider these syscalls to be inputs.
 // Well the files they are acting upon anyway!
+// TODO: handle rename(at) - pass in path arg instead of... syscall_name?
 pub fn get_full_path(
     curr_execution: &RcExecution,
     syscall_name: &str,
