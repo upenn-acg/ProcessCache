@@ -128,8 +128,6 @@ pub fn generate_open_syscall_file_event(
                 Ok(_) => {
                     if open_flags.file_existed_at_start {
                         match (open_flags.offset_mode.clone(), open_flags.access_mode) {
-                            (None, AccessMode::Write) => panic!("No offset mode opening for writing!!"),
-                            (None, AccessMode::Both) => panic!("No offset mode opening for both!!"),
                             (Some(mode), AccessMode::Read) => panic!("Offset mode {:?}, opened for reading!!", mode),
                             (offset_mode, access_mode) => Some(SyscallEvent::Open(access_mode, offset_mode, optional_checking_mech, SyscallOutcome::Success))
                         }
@@ -171,8 +169,6 @@ pub fn generate_open_syscall_file_event(
                 }
 
                 match (open_flags.offset_mode.clone(), open_flags.access_mode) {
-                    (None, AccessMode::Write) => panic!("No offset mode opening for writing!!"),
-                    (None, AccessMode::Both) => panic!("No offset mode opening for both!!"),
                     (Some(mode), AccessMode::Read) => {
                         panic!("Offset mode {:?}, opened for reading!!", mode)
                     }
