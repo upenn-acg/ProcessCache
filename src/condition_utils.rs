@@ -53,8 +53,8 @@ impl LastMod {
                 self.0 = Mod::Deleted;
             }
             SyscallEvent::Open(
+                AccessMode::Both | AccessMode::Write,
                 _,
-                Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
                 _,
                 SyscallOutcome::Success,
             ) => {
@@ -203,48 +203,18 @@ impl FirstState {
                 }
                 SyscallEvent::DirectoryRead(_, _, _) => (),
                 SyscallEvent::FailedExec(_) => (),
-                SyscallEvent::Open(_, Some(OffsetMode::Append), _, SyscallOutcome::Success) => {
+                SyscallEvent::Open(_, _, _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, SyscallOutcome::Success) => (),
                 SyscallEvent::Open(
                     _,
-                    Some(OffsetMode::Append),
+                    _,
                     _,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => {
                     self.0 = State::DoesntExist;
                 }
-                SyscallEvent::Open(
-                    _,
-                    Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Open(_, Some(OffsetMode::Trunc), _, SyscallOutcome::Fail(fail)) => {
-                    panic!("Failed to open trunc for strange reason: {:?}", fail)
-                }
-                //Not sure if O_RDONLY was used to specify Read access mode or
-                //None offset mode here
-                SyscallEvent::Open(
-                    AccessMode::Read,
-                    _,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                SyscallEvent::Open(
-                    _,
-                    mode,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::AlreadyExists),
-                ) => {
-                    panic!("Open for {:?} failed because file already exists??", mode)
-                }
-                SyscallEvent::Open(_, f, _, _) => panic!("Unexpected open flag: {:?}", f),
+                SyscallEvent::Open(_, _, _, _) => (),
                 SyscallEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;

@@ -1471,11 +1471,8 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         curr_file_postconditions.insert(accessor.clone(), facts);
                     }
                 }
-
                 (SyscallEvent::DirectoryRead(_, _, _), _, _) => (),
                 (SyscallEvent::FailedExec(_), _, _) => (),
-                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
-                (SyscallEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
                 // Open for write or read/write: doesn't matter either way FinalContents is the fact to add.
                 // And we don't care about the offset mode at all!
                 // I used "last_mod" here so we can just check that it is Mod::None (as it should be if first
@@ -1489,7 +1486,6 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     if *last_mod == Mod::None {
                         if outcome == SyscallOutcome::Success {
                             let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
-                            curr_set.insert(Fact::Exists);
                             curr_set.insert(Fact::FinalContents);
                         }
                     } else {
@@ -1502,13 +1498,10 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     State::Exists,
                     Mod::None,
                 ) => {
-                    //TODO: How to update the Mod?
                     if outcome == SyscallOutcome::Success {
-                            let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
-                            //TODO: Do we need to insert Exists fact again?
-                            //curr_set.insert(Fact::Exists);
-                            curr_set.insert(Fact::FinalContents);
-                        }
+                        let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
+                        curr_set.insert(Fact::FinalContents);
+                    }
                 }
                 // The last mod gave us FinalContents as a postcondition, so we don't need to do anything.
                 (
@@ -1516,20 +1509,14 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     State::DoesntExist | State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => (),
-                (
-                    //TODO: Check with Kelly: AccessMode::Both | AccessMode::Write => _
-                    //Shouldn't Read also fail here?
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
-                    State::Exists,
-                    Mod::Deleted,
-                ) => {
+                (SyscallEvent::Open(_, _, _, outcome), State::Exists, Mod::Deleted) => {
                     // This should not succeed!
                     if outcome == SyscallOutcome::Success {
                         panic!("Last mod was deleted but succeeded on open??");
                     }
                 }
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    SyscallEvent::Open(_, _, _, outcome),
                     State::DoesntExist | State::Exists,
                     Mod::Renamed(_, _),
                 ) => {
@@ -1543,8 +1530,9 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                     State::DoesntExist,
                     Mod::None,
                 ) => {
-                    //Do we create a file and then write to it?
-                    todo!();
+                    if outcome == SyscallOutcome::Success {
+                        panic!("Successfully opened, but file didn't exist and was not created!!");
+                    }
                 }
                 (
                     SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
@@ -1556,6 +1544,8 @@ pub fn generate_postconditions(exec_file_events: ExecFileEvents) -> Postconditio
                         panic!("Last mod was deleted but succeeded on open??");
                     }
                 }
+                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
+                (SyscallEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
                 (
                     SyscallEvent::Rename(old_path, new_path, outcome),
                     State::DoesntExist,

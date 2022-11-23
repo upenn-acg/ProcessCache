@@ -228,6 +228,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_statx)?;
     loader.let_pass(libc::SYS_times)?;
     loader.let_pass(libc::SYS_umask)?;
+    loader.let_pass(libc::SYS_uname)?;
     loader.let_pass(libc::SYS_utimensat)?;
     loader.let_pass(libc::SYS_wait4)?;
     loader.let_pass(libc::SYS_write)?;
