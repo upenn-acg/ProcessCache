@@ -212,9 +212,9 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     | Fact::NoPermission(_) => check_fact_holds(*second, path_name, pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
-                // TODO: Technically, if both of these failed, it would be valid too.
+                // Technically, if both of these failed, it would be valid too.
                 // They just can't both succeed.
-                first_perms_hold || second_perms_hold
+                !(first_perms_hold && second_perms_hold)
             }
             Fact::StartingContents(old_hash) => {
                 // Getdents: First the process will open the dir for reading,
