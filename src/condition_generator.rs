@@ -1814,10 +1814,7 @@ pub fn generate_dir_postconditions(
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);
         // Option cmd is used in rename
-        let (full_path, option_cmd) = match accessor.clone() {
-            Accessor::ChildProc(cmd, path) => (path, Some(cmd)),
-            Accessor::CurrProc(path) => (path, None),
-        };
+        let full_path = accessor.path();
 
         for event in event_list {
             let first_state = first_state_struct.state();
@@ -1990,9 +1987,9 @@ pub fn generate_dir_postconditions(
                 // We just deleted it. We cannot rename it.
                 (DirEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
                 (
-                    DirEvent::Rename(old_path, new_path, outcome),
+                    DirEvent::Rename(_old_path, _new_path, _outcome),
                     State::Exists,
-                    Mod::Renamed(_, last_new_path),
+                    Mod::Renamed(_, _last_new_path),
                 ) => {
                     panic!("Renamed dir and renaming it again!")
                     // let new_accessor = if let Some(cmd) = option_cmd.clone() {

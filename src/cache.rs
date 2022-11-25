@@ -98,7 +98,6 @@ impl CachedExecution {
                 let dir_postconditions = posts.dir_postconditions();
                 debug!("Dir posts: {:?}", dir_postconditions);
                 // First create necessary dirs. And rename appropriately.
-                // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
                 create_dirs(dir_postconditions.clone());
 
                 // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
