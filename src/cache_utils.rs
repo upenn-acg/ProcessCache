@@ -86,6 +86,7 @@ pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
         if !path.exists() {
             for fact in fact_set {
                 if fact == Fact::Exists {
+                    debug!("Fact is exists for dir!");
                     create_dir(path.clone()).unwrap();
                 }
             }
@@ -127,10 +128,13 @@ pub fn renamed_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 
     vec_of_paths.sort_by_key(|a| a.0.to_str().unwrap().chars().count());
-    for (path, fact_set) in vec_of_paths {
+    for (_, fact_set) in vec_of_paths {
         for fact in fact_set {
             if let Fact::Renamed(old_dir_path, new_dir_path) = fact {
                 debug!("Fact is renamed for dir!");
+                if !old_dir_path.exists() {
+                    create_dir(old_dir_path.clone()).unwrap();
+                }
                 rename(old_dir_path, new_dir_path).unwrap();
                 break;
             }

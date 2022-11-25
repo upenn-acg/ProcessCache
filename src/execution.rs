@@ -1059,16 +1059,20 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
     // retval = 0 is success for this syscall.
     let (full_old_path, full_new_path) = match syscall_name {
         // TODO: Use get_full_path()
+        // probably not technically correct for rename but whatever right now
         "rename" => {
             let old_path_arg_bytes = regs.arg1::<*const c_char>();
             let old_path_arg = tracer
                 .read_c_string(old_path_arg_bytes)
                 .with_context(|| context!("Cannot read `rename` path."))?;
-            let new_path_arg_bytes = regs.arg1::<*const c_char>();
+            let full_old_path = execution.cwd().join(old_path_arg);
+
+            let new_path_arg_bytes = regs.arg2::<*const c_char>();
             let new_path_arg = tracer
                 .read_c_string(new_path_arg_bytes)
                 .with_context(|| context!("Cannot read `rename` path."))?;
-            (PathBuf::from(old_path_arg), PathBuf::from(new_path_arg))
+            let full_new_path = execution.cwd().join(new_path_arg);
+            (full_old_path, full_new_path)
         }
         // TODO: Use get_full_path()
         "renameat" | "renameat2" => {
