@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use core::panic;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir},
+    fs::{self, read_dir, File},
     hash::Hash,
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
@@ -20,16 +20,16 @@ use tracing::{debug, error, info, span, trace, Level};
 use crate::{
     cache_utils::generate_hash,
     condition_utils::{dir_created_by_exec, update_file_posts_with_renamed_dirs, FileType},
-    syscalls::MyStatFs,
+    syscalls::{MyStatFs, DirEvent, FileEvent},
 };
 use crate::{
-    condition_utils::{no_mods_before_file_rename, Fact, FirstState, LastMod, Mod, State},
+    condition_utils::{Fact, FirstState, LastMod, Mod, State},
     syscalls::Stat,
 };
 use crate::{
     condition_utils::{Postconditions, Preconditions},
     syscalls::{
-        AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallEvent, SyscallFailure,
+        AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallFailure,
         SyscallOutcome,
     },
 };
@@ -1189,9 +1189,9 @@ pub fn generate_file_preconditions(
                         _ => panic!("Unexpected failure from execve!: {:?}", failure),
                     }
                 }
-                (SyscallEvent::Open(_, _, _, _), _, Mod::Renamed(_, _), _) => (),
+                (FileEvent::Open(_, _, _, _), _, Mod::Renamed(_, _), _) => (),
                 (
-                    SyscallEvent::Open(_, _, _, outcome),
+                    FileEvent::Open(_, _, _, outcome),
                     State::DoesntExist,
                     Mod::Created,
                     true,
@@ -1207,20 +1207,20 @@ pub fn generate_file_preconditions(
                     }
                 }
 
-                (SyscallEvent::Open(_, _, _, _), State::DoesntExist, Mod::Created, false) => {
+                (FileEvent::Open(_, _, _, _), State::DoesntExist, Mod::Created, false) => {
                     // Created, so not contents. not exists. we made the file in the exec so perms depend
                     // on that. and we already know x dir because we created the file at some point.
                     // So this just gives us nothing. (append, read, or trunc)
                 }
 
-                (SyscallEvent::Open(_, _, _, _), State::DoesntExist, Mod::Deleted, true) => {
+                (FileEvent::Open(_, _, _, _), State::DoesntExist, Mod::Deleted, true) => {
                     // We created it. We deleted it. So we already know x dir. The perms depend on making the file during the execution.
                     // Same with contents.(append, read, or trunc)
                 }
-                (SyscallEvent::Open(_,  _, _, _), State::DoesntExist, Mod::Modified, _) => {
+                (FileEvent::Open(_,  _, _, _), State::DoesntExist, Mod::Modified, _) => {
                     // Doesn't exist. Created, modified, maybe deleted and the whole process repeated.
                 }
-                (SyscallEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
                     if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
@@ -1228,15 +1228,15 @@ pub fn generate_file_preconditions(
                     }
                 }
 
-                (SyscallEvent::Open(_, _, _, _), State::Exists, _, true) => {
+                (FileEvent::Open(_, _, _, _), State::Exists, _, true) => {
                     // We know it existed at the start, so we have accessed it in some way.
                     // It has been deleted. Anything we do to it now is based on
                     // the file that was created during exec after the OG
                     // one was deleted. So no more preconditions contributed.
                 }
-                (SyscallEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
+                (FileEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
                 // First state exists means this is the old path, which doesn't exist anymore, so this won't succeed and doesn't change the preconditions.
-                (SyscallEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     if access_mode == AccessMode::Read {
                         panic!("Open for append with read access mode!!");
@@ -1283,7 +1283,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 //TODO: What about reading with RW mode?
-                (SyscallEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1330,7 +1330,7 @@ pub fn generate_file_preconditions(
                         f => panic!("Unexpected open none failure, file existed, {:?}", f),
                     }
                 }
-                (SyscallEvent::Open(access_mode, Some(OffsetMode::Trunc), _,outcome), State::Exists, Mod::None, false) => {
+                (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _,outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
@@ -1357,16 +1357,16 @@ pub fn generate_file_preconditions(
                     }
                 }
                 // START HERE!
-                (SyscallEvent::Open(_, _,  _,_), State::None, Mod::Created, _) => {
+                (FileEvent::Open(_, _,  _,_), State::None, Mod::Created, _) => {
                     panic!("First state none but last mod created??");
                 }
-                (SyscallEvent::Open(_, _,  _,_), State::None, Mod::Deleted, true) => {
+                (FileEvent::Open(_, _,  _,_), State::None, Mod::Deleted, true) => {
                     panic!("First state none but last mod deleted??");
                 }
-                (SyscallEvent::Open(_, _, _,_), State::None, Mod::Modified, _) => {
+                (FileEvent::Open(_, _, _,_), State::None, Mod::Modified, _) => {
                     panic!("First state none but last mod modified??");
                 }
-                (SyscallEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset append!!"),
@@ -1417,7 +1417,7 @@ pub fn generate_file_preconditions(
                         }
                     }
                 }
-                (SyscallEvent::Open(access_mode, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
@@ -1455,7 +1455,7 @@ pub fn generate_file_preconditions(
                         }
                     }
                 }
-                (SyscallEvent::Open(access_mode, None, optional_check_mech, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::None, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
@@ -2186,65 +2186,14 @@ pub fn generate_file_postconditions(
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-
-                // It was created, we can't create it again. Modified doesn't even
-                // make sense for a directory for us.
-                (
-                    FileEvent::DirectoryCreate(_, _),
-                    State::DoesntExist | State::Exists,
-                    Mod::Created | Mod::Modified,
-                ) => (),
-                // It was deleted, we can create a new one with the same name potentially.
-                (FileEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::Deleted) => {
-                    if outcome == SyscallOutcome::Success {
-                        curr_file_postconditions.remove(&accessor);
-                        let new_set = HashSet::from([Fact::Exists]);
-                        curr_file_postconditions.insert(accessor.clone(), new_set);
-                    } else {
-                        panic!("Unexpected result from mkdir: last mod deleted, failing to create dir!!");
-                    }
-                }
-                (FileEvent::DirectoryCreate(_, _), State::DoesntExist, Mod::Renamed(_, _)) => {
-                    todo!()
-                }
-                (FileEvent::DirectoryCreate(_, outcome), State::DoesntExist, Mod::None) => {
-                    if outcome == SyscallOutcome::Success {
-                        let facts = HashSet::from([Fact::Exists]);
-                        curr_file_postconditions.insert(accessor.clone(), facts);
-                    }
-                }
-                // It existed at start, was deleted. We can totally create it.
-                (FileEvent::DirectoryCreate(_, outcome), State::Exists, Mod::Deleted) => {
-                    if outcome == SyscallOutcome::Success {
-                        curr_file_postconditions.remove(&accessor);
-                        let new_set = HashSet::from([Fact::Exists]);
-                        curr_file_postconditions.insert(accessor.clone(), new_set);
-                    } else {
-                        panic!("Unexpected result from mkdir: last mod was deleted, failed to create dir!!");
-                    }
-                }
-                (FileEvent::DirectoryCreate(_, _), State::Exists, Mod::Renamed(_, _)) => todo!(),
-                (FileEvent::DirectoryCreate(_, outcome), State::Exists, Mod::None) => {
-                    if outcome == SyscallOutcome::Success {
-                        panic!("Unexpected result from mkdir: last mod was none, first state exists, but successfully created??");
-                    }
-                }
-                (FileEvent::DirectoryCreate(_, outcome), State::None, Mod::None) => {
-                    // Error cases don't contribute to the postconditions.
-                    if outcome == SyscallOutcome::Success {
-                        let facts = HashSet::from([Fact::Exists]);
-                        curr_file_postconditions.insert(accessor.clone(), facts);
-                    }
-                }
-                (SyscallEvent::DirectoryRead(_, _, _), _, _) => (),
-                (SyscallEvent::FailedExec(_), _, _) => (),
+                (FileEvent::FailedExec(_), _, _) => (),
                 // Open for write or read/write: doesn't matter either way FinalContents is the fact to add.
                 // And we don't care about the offset mode at all!
                 // I used "last_mod" here so we can just check that it is Mod::None (as it should be if first
                 // state is State::None) and panic otherwise, instead of having to do a separate match case for
                 // each. Efficiency!
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    FileEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::None,
                     last_mod,
                 ) => {
@@ -2259,7 +2208,7 @@ pub fn generate_file_postconditions(
                 }
 
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    FileEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::Exists,
                     Mod::None,
                 ) => {
@@ -2270,18 +2219,18 @@ pub fn generate_file_postconditions(
                 }
                 // The last mod gave us FinalContents as a postcondition, so we don't need to do anything.
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, _),
+                    FileEvent::Open(AccessMode::Both | AccessMode::Write, _, _, _),
                     State::DoesntExist | State::Exists,
                     Mod::Created | Mod::Modified,
                 ) => (),
-                (SyscallEvent::Open(_, _, _, outcome), State::Exists, Mod::Deleted) => {
+                (FileEvent::Open(_, _, _, outcome), State::Exists, Mod::Deleted) => {
                     // This should not succeed!
                     if outcome == SyscallOutcome::Success {
                         panic!("Last mod was deleted but succeeded on open??");
                     }
                 }
                 (
-                    SyscallEvent::Open(_, _, _, outcome),
+                    FileEvent::Open(_, _, _, outcome),
                     State::DoesntExist | State::Exists,
                     Mod::Renamed(_, _),
                 ) => {
@@ -2291,7 +2240,7 @@ pub fn generate_file_postconditions(
                     }
                 }
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    FileEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::DoesntExist,
                     Mod::None,
                 ) => {
@@ -2300,7 +2249,7 @@ pub fn generate_file_postconditions(
                     }
                 }
                 (
-                    SyscallEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
+                    FileEvent::Open(AccessMode::Both | AccessMode::Write, _, _, outcome),
                     State::DoesntExist,
                     Mod::Deleted,
                 ) => {
@@ -2310,9 +2259,9 @@ pub fn generate_file_postconditions(
                     }
                 }
                 //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
-                (SyscallEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
+                (FileEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
                 (
-                    SyscallEvent::Rename(old_path, new_path, outcome),
+                    FileEvent::Rename(old_path, new_path, outcome),
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {

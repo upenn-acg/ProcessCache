@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     condition_generator::Accessor,
-    syscalls::{DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome},
+    syscalls::{DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome, AccessMode},
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -110,7 +110,12 @@ impl LastMod {
             FileEvent::Delete(SyscallOutcome::Success) => {
                 self.0 = Mod::Deleted;
             }
-            FileEvent::Open(OFlag::O_APPEND | OFlag::O_TRUNC, _, SyscallOutcome::Success) => {
+            FileEvent::Open(
+                AccessMode::Both | AccessMode::Write,
+                _,
+                _,
+                SyscallOutcome::Success,
+            ) => {
                 self.0 = Mod::Modified;
             }
             FileEvent::Rename(old_path, new_path, outcome) => {
@@ -225,9 +230,8 @@ impl FirstState {
                 FileEvent::Access(_, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                SyscallEvent::DirectoryRead(_, _, _) => (),
-                SyscallEvent::FailedExec(_) => (),
-                SyscallEvent::Open(_, _, _, SyscallOutcome::Success) => {
+                FileEvent::FailedExec(_) => (),
+                FileEvent::Open(_, _, _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
                 FileEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
@@ -295,39 +299,20 @@ impl FirstState {
                     self.0 = State::Exists;
                 }
                 FileEvent::Delete(SyscallOutcome::Fail(_)) => (),
-                FileEvent::FailedExec(_) => (),
-                FileEvent::Open(OFlag::O_APPEND | OFlag::O_RDONLY, _, SyscallOutcome::Success) => {
+                FileEvent::Open(_, _, _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                FileEvent::Open(OFlag::O_TRUNC, _, SyscallOutcome::Success) => (),
                 FileEvent::Open(
-                    OFlag::O_APPEND | OFlag::O_RDONLY,
+                    _,
+                    _,
                     _,
                     SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
                 ) => {
                     self.0 = State::DoesntExist;
                 }
-                FileEvent::Open(
-                    OFlag::O_APPEND | OFlag::O_TRUNC,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                FileEvent::Open(OFlag::O_TRUNC, _, SyscallOutcome::Fail(fail)) => {
-                    panic!("Failed to open trunc for strange reason: {:?}", fail)
-                }
-                FileEvent::Open(
-                    OFlag::O_RDONLY,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::PermissionDenied),
-                ) => {
-                    self.0 = State::Exists;
-                }
-                FileEvent::Open(mode, _, SyscallOutcome::Fail(SyscallFailure::AlreadyExists)) => {
-                    panic!("Open for {:?} failed because file already exists??", mode)
-                }
-                FileEvent::Open(f, _, _) => panic!("Unexpected open flag: {:?}", f),
+                FileEvent::Open(_, _, _, _) => (),
+                FileEvent::FailedExec(_) => (),
+
                 FileEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;
@@ -371,32 +356,32 @@ pub fn dir_created_by_exec(
     }
 }
 
-pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
-    let mut no_mods = true;
-    for event in file_name_list {
-        match event {
-            SyscallEvent::Access(_, _) => (),
-            //Not sure if O_RDONLY was used to specify Read access mode or
-            //None offset mode here
-            SyscallEvent::Open(AccessMode::Read, _, _, _) => (),
-            SyscallEvent::Stat(_, _) => (),
-            SyscallEvent::Create(_, SyscallOutcome::Success)
-            | SyscallEvent::Delete(SyscallOutcome::Success)
-            | SyscallEvent::Open(
-                _,
-                Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-                _,
-                SyscallOutcome::Success,
-            )
-            | SyscallEvent::Rename(_, _, SyscallOutcome::Success) => {
-                no_mods = false;
-                break;
-            }
-            _ => (),
-        }
-    }
-    no_mods
-}
+// pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
+//     let mut no_mods = true;
+//     for event in file_name_list {
+//         match event {
+//             SyscallEvent::Access(_, _) => (),
+//             //Not sure if O_RDONLY was used to specify Read access mode or
+//             //None offset mode here
+//             SyscallEvent::Open(AccessMode::Read, _, _, _) => (),
+//             SyscallEvent::Stat(_, _) => (),
+//             SyscallEvent::Create(_, SyscallOutcome::Success)
+//             | SyscallEvent::Delete(SyscallOutcome::Success)
+//             | SyscallEvent::Open(
+//                 _,
+//                 Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
+//                 _,
+//                 SyscallOutcome::Success,
+//             )
+//             | SyscallEvent::Rename(_, _, SyscallOutcome::Success) => {
+//                 no_mods = false;
+//                 break;
+//             }
+//             _ => (),
+//         }
+//     }
+//     no_mods
+// }
 
 pub fn update_file_posts_with_renamed_dirs(
     file_posts: HashMap<Accessor, HashSet<Fact>>,

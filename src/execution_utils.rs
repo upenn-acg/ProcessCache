@@ -19,7 +19,7 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{CheckMechanism, FileEvent, SyscallFailure, SyscallOutcome},
+    syscalls::{CheckMechanism, FileEvent, SyscallFailure, SyscallOutcome, OpenFlags, OffsetMode, AccessMode},
     Ptracer,
 };
 
