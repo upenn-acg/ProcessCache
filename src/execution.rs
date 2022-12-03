@@ -603,10 +603,10 @@ pub async fn trace_process(
                     .with_context(|| context!("Failed to get regs in handle_access()"))?;
 
                 // flags are the 3rd arg to clone.
-                let flags = regs.arg3::<i32>();
-                if (flags & CLONE_THREAD) != 0 {
-                    panic!("THREADSSSSSSSSSS!");
-                }
+                // let flags = regs.arg3::<i32>();
+                // if (flags & CLONE_THREAD) != 0 {
+                //     panic!("THREADSSSSSSSSSS!");
+                // }
 
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {

@@ -1,7 +1,6 @@
 use crate::{
     cache_utils::{
-        create_dirs, delete_dirs, hash_command, rename_dirs, renamed_dirs, CachedExecMetadata,
-        Command,
+        create_dirs, delete_dirs, hash_command, rename_dirs, CachedExecMetadata, Command,
     },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
