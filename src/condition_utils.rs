@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     condition_generator::Accessor,
-    syscalls::{DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome, AccessMode},
+    syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome},
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -302,12 +302,7 @@ impl FirstState {
                 FileEvent::Open(_, _, _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                FileEvent::Open(
-                    _,
-                    _,
-                    _,
-                    SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-                ) => {
+                FileEvent::Open(_, _, _, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
                     self.0 = State::DoesntExist;
                 }
                 FileEvent::Open(_, _, _, _) => (),
@@ -317,6 +312,10 @@ impl FirstState {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;
                     } else if *curr_file_path == new_path {
+                        // TODO: The new path could have already existed. If they use NOREPLACE,
+                        // and it fails for EEXIST we know that new path already existed.
+                        // Otherwise, we don't really know it's true state, and idk how to handle
+                        // that lol.
                         self.0 = State::DoesntExist;
                     }
                 }
@@ -354,6 +353,15 @@ pub fn dir_created_by_exec(
     } else {
         false
     }
+}
+
+pub fn preconditions_contain_stat_fact(fact_set: HashSet<Fact>) -> bool {
+    for fact in fact_set {
+        if let Fact::StatStructMatches(_) = fact {
+            return true;
+        }
+    }
+    false
 }
 
 // pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {

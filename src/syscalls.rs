@@ -67,7 +67,7 @@ pub enum FileEvent {
         Option<CheckMechanism>,
         SyscallOutcome,
     ), // Can fail because the file didn't exist or permission denied
-    Rename(PathBuf, PathBuf, SyscallOutcome),            // Old, new, outcome
+    Rename(PathBuf, PathBuf, SyscallOutcome), // Old, new, outcome
     Stat(Option<Stat>, SyscallOutcome), // Can fail access denied (exec/search on dir) or file didn't exist
 }
 

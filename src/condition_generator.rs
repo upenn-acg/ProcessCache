@@ -2,6 +2,7 @@ use nix::{
     fcntl::OFlag,
     sys::statfs::statfs,
     unistd::{access, AccessFlags, Pid},
+    NixPath,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +20,11 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use crate::{
     cache_utils::generate_hash,
-    condition_utils::{dir_created_by_exec, update_file_posts_with_renamed_dirs, FileType},
-    syscalls::{MyStatFs, DirEvent, FileEvent},
+    condition_utils::{
+        dir_created_by_exec, preconditions_contain_stat_fact, update_file_posts_with_renamed_dirs,
+        FileType,
+    },
+    syscalls::{DirEvent, FileEvent, MyStatFs},
 };
 use crate::{
     condition_utils::{Fact, FirstState, LastMod, Mod, State},
@@ -28,10 +32,7 @@ use crate::{
 };
 use crate::{
     condition_utils::{Postconditions, Preconditions},
-    syscalls::{
-        AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallFailure,
-        SyscallOutcome,
-    },
+    syscalls::{AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallFailure, SyscallOutcome},
 };
 
 const DONT_HASH_FILES: bool = false;
@@ -1068,18 +1069,9 @@ pub fn generate_file_preconditions(
                         f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
                     }
                 }
-                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path), _) => {
-                    // old path? didnt exist, created, renamed. now trying to delete. won't succeed it doesnt exist anymore.
-                    // newpath? didn't exist, rename made it exist, now it might get deleted.
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            if *full_path == *new_path {
-                                has_been_deleted = true;
-                            }
-                        }
-                        f => panic!("Delete failed for unexpected reason, was created, last mod modified, no delete yet: {:?}", f),
-                    }
-                }
+                // old path? didnt exist, created, renamed. now trying to delete. won't succeed it doesnt exist anymore.
+                // No new path event right now
+                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, _), _) => (),
                 (FileEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1235,9 +1227,8 @@ pub fn generate_file_preconditions(
                     // one was deleted. So no more preconditions contributed.
                 }
                 (FileEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
-                // First state exists means this is the old path, which doesn't exist anymore, so this won't succeed and doesn't change the preconditions.
                 (FileEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     if access_mode == AccessMode::Read {
                         panic!("Open for append with read access mode!!");
                     }
@@ -1284,7 +1275,7 @@ pub fn generate_file_preconditions(
                 }
                 //TODO: What about reading with RW mode?
                 (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
@@ -1331,7 +1322,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _,outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
                         mode => {
@@ -1367,7 +1358,7 @@ pub fn generate_file_preconditions(
                     panic!("First state none but last mod modified??");
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset append!!"),
                         mode => {
@@ -1391,8 +1382,9 @@ pub fn generate_file_preconditions(
                                             }
                                         }
                                     }
-                                    curr_set.insert(Fact::Exists);
-                                    curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    if !parent_dir_was_created_by_exec {
+                                        curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    }
                                     curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
                                     if mode == AccessMode::Both {
                                         curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
@@ -1410,7 +1402,11 @@ pub fn generate_file_preconditions(
                                     if mode == AccessMode::Both {
                                         flags.insert(AccessFlags::R_OK);
                                     }
-                                    curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
+                                    if parent_dir_was_created_by_exec {
+                                        curr_set.insert(Fact::NoPermission(flags.bits()));
+                                    } else {
+                                        curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
+                                    }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                             }
@@ -1418,7 +1414,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
                         mode => {
@@ -1432,8 +1428,9 @@ pub fn generate_file_preconditions(
                                         flags.insert(AccessFlags::R_OK);
                                     }
                                     curr_set.insert(Fact::HasPermission((flags).bits()));
-                                    curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                                    curr_set.insert(Fact::Exists);
+                                    if !parent_dir_was_created_by_exec {
+                                        curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                                     panic!("Open trunc, no info yet, failed because file already exists??");
@@ -1447,8 +1444,12 @@ pub fn generate_file_preconditions(
                                     if mode == AccessMode::Both {
                                         flags.insert(AccessFlags::R_OK);
                                     }
-                                    curr_set.insert(Fact::NoPermission((flags).bits()));
-                                    curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+
+                                    if parent_dir_was_created_by_exec {
+                                        curr_set.insert(Fact::NoPermission((flags).bits()));
+                                    } else {
+                                        curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission((flags).bits()))));
+                                    }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                             }
@@ -1456,7 +1457,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
@@ -1477,8 +1478,6 @@ pub fn generate_file_preconditions(
                                     }
                                 }
                             }
-                            curr_set.insert(Fact::Exists);
-                            curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             match access_mode {
                                 AccessMode::Read => {curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
                                 AccessMode::Write => {curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));}
@@ -1491,7 +1490,6 @@ pub fn generate_file_preconditions(
                             if !parent_dir_was_created_by_exec {
                                 curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             }
-                            curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open read only, no info yet, failed because file already exists??");
@@ -1521,7 +1519,6 @@ pub fn generate_file_preconditions(
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
                     }
                 }
-                //TODO: Something similar for AccessMode?
                 (
                     FileEvent::Rename(_, _, _),
                     State::DoesntExist,
@@ -1629,18 +1626,15 @@ pub fn generate_file_preconditions(
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            if old_path == *full_path {
-                                // First event is renaming and we see old path, add all the preconds.
-                                curr_set.insert(Fact::Exists);
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                flags.insert(AccessFlags::X_OK);
-                                if !parent_dir_was_created_by_exec {
-                                    curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
-                                }
-                            } else {
-                                // full_path = new path
-                                curr_set.insert(Fact::DoesntExist);
+                            // No need to check if old path == full path because we are not
+                            // adding a rename event for new path, just old path (for now).
+                            // First event is renaming and we see old path, add all the preconds.
+                            curr_set.insert(Fact::Exists);
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            if !parent_dir_was_created_by_exec {
+                                curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
@@ -1684,44 +1678,29 @@ pub fn generate_file_preconditions(
                 (FileEvent::Stat(_,_), State::Exists, Mod::Deleted, true) => (),
                 (FileEvent::Stat(_,_), State::Exists, Mod::Modified, true) => (),
                 (FileEvent::Stat(_,_), State::Exists, Mod::Modified, false) => (),
-                // This file has been deleted, no way the stat struct is gonna be the same.
-                (FileEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), true) => (),
-                (FileEvent::Stat(stat_struct, outcome), State::Exists, Mod::Renamed(old_path, new_path), false) => {
-                    match outcome {
-                        SyscallOutcome::Success => {
-                            if *new_path == *full_path {
-                                // We actually have to add the stat struct matching to the old path's
-                                if let Some(list) = file_events.get(&Accessor::CurrProc(old_path.clone())) {
-                                    // &old_path.clone()
-                                    let no_mods_before_rename = no_mods_before_file_rename(list.to_vec());
-                                    if no_mods_before_rename {
-                                        let curr_set = curr_file_preconditions.get_mut(old_path).unwrap();
-                                        if let Some(stat_str) = stat_struct {
-                                            curr_set.insert(Fact::StatStructMatches(stat_str.clone()));
-                                        } else {
-                                            panic!("No stat struct found for successful stat event!");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        f => panic!("Unexpected failure by stat syscall, first state exists, last mod renamed: {:?}", f),
-                    }
-                }
+                // Currently only going to get an event like this for old path (no event for new path means no last mod).
+                // And this stat probably would fail anyway because the file was renamed.
+                // Alternatively: this file has been deleted, no way the stat struct is gonna be the same.
+                // (Could be either because of the _ in the has_been_deleted spot)
+                (FileEvent::Stat(_,_), State::Exists, Mod::Renamed(_,_), _) => (),
                 (FileEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
-                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get(full_path).unwrap().clone();
+                            let curr_set_mut = curr_file_preconditions.get_mut(full_path).unwrap();
+                            // KELLY START HERE
                             // TODO: don't add if there's already a stat struct, they'll conflict.
                             // Just going to check for duplicates in check_preconditions()?
                             // But they aren't ordered so this won't work.
                             // TODO: Before adding stat struct fact to the set, check if one is already there.
 
                             if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             }
                             if let Some(stat) = option_stat {
-                                curr_set.insert(Fact::StatStructMatches(stat.clone()));
+                                if !preconditions_contain_stat_fact(curr_set) {
+                                    curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                                }
                             } else {
                                 panic!("No stat struct found for successful stat syscall!");
                             }
@@ -1743,14 +1722,17 @@ pub fn generate_file_preconditions(
                     panic!("First state was none but last mod was renamed??");
                 }
                 (FileEvent::Stat(option_stat, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(stat) = option_stat {
-                                curr_set.insert(Fact::StatStructMatches(stat.clone()));
+                                if !preconditions_contain_stat_fact(curr_set) {
+                                    curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                                }
                                 if !parent_dir_was_created_by_exec {
-                                    curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                                 }
                             } else {
                                 panic!("No stat struct found for successful stat syscall!");
@@ -1761,11 +1743,11 @@ pub fn generate_file_preconditions(
                             panic!("Unexpected stat failure: file already exists??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
+                            curr_set_mut.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                                curr_set_mut.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
@@ -2053,7 +2035,6 @@ pub fn generate_dir_postconditions(
 }
 
 // REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
-// Directory Postconditions (for now just cwd), File Postconditions
 pub fn generate_file_postconditions(
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 ) -> HashMap<Accessor, HashSet<Fact>> {
@@ -2104,6 +2085,7 @@ pub fn generate_file_postconditions(
                 }
 
                 (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified) => (),
+                // This is old path because we only get an event for old path.
                 (FileEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         let curr_set = curr_file_postconditions.get_mut(&accessor).unwrap();
@@ -2148,23 +2130,12 @@ pub fn generate_file_postconditions(
                         curr_file_postconditions.insert(accessor.clone(), new_set);
                     }
                 }
-                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, new_path)) => {
-                    if outcome == SyscallOutcome::Success && full_path == *new_path {
-                        curr_file_postconditions.remove(&accessor);
-                        let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor.clone(), new_set);
-                    }
-                }
+                // We only have the old path event. If old path was just successfully renamed
+                // it can't be deleted.
+                (FileEvent::Delete(_), _, Mod::Renamed(_, _)) => (),
                 (FileEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
                 (FileEvent::Delete(_), State::DoesntExist, Mod::None) => (),
                 (FileEvent::Delete(outcome), State::Exists, Mod::Created | Mod::Modified) => {
-                    if outcome == SyscallOutcome::Success {
-                        curr_file_postconditions.remove(&accessor);
-                        let new_set = HashSet::from([Fact::DoesntExist]);
-                        curr_file_postconditions.insert(accessor.clone(), new_set);
-                    }
-                }
-                (FileEvent::Delete(outcome), State::Exists, Mod::Renamed(_, _)) => {
                     if outcome == SyscallOutcome::Success {
                         curr_file_postconditions.remove(&accessor);
                         let new_set = HashSet::from([Fact::DoesntExist]);
@@ -2258,55 +2229,47 @@ pub fn generate_file_postconditions(
                         panic!("Last mod was deleted but succeeded on open??");
                     }
                 }
-                //Not sure if O_RDONLY was used to specify Read access mode or None offset mode here
                 (FileEvent::Open(AccessMode::Read, _, _, _), _, _) => (),
+                // Don't have to check if full path == old path because there is only one rename event
+                // right now and it is for old path.
                 (
-                    FileEvent::Rename(old_path, new_path, outcome),
+                    FileEvent::Rename(_, new_path, outcome),
                     State::DoesntExist,
                     Mod::Created | Mod::Modified,
                 ) => {
-                    if outcome == SyscallOutcome::Success && old_path == full_path {
+                    if outcome == SyscallOutcome::Success {
                         let new_accessor = if let Some(cmd) = option_cmd.clone() {
                             Accessor::ChildProc(cmd, new_path)
                         } else {
                             Accessor::CurrProc(new_path)
                         };
 
-                        if curr_file_postconditions.contains_key(&accessor) {
-                            let old_set = curr_file_postconditions.remove(&accessor).unwrap();
-                            curr_file_postconditions.insert(new_accessor, old_set);
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                        } else {
-                            // We have never seen old path before.
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                            // new path is just "exists", that's all we know!
+                        // The postconditions get all the paths and empty sets set up before
+                        // this whole state machine is started. Don't need to check for key of
+                        // accessor; it is definitely there.
+
+                        // The old set may contain nothing right now. Or it may have some postconditions.
+                        // If it is empty, new accessor needs a new set with "Exists" as the fact because
+                        // that's all we know about it.
+                        let old_set = curr_file_postconditions.remove(&accessor).unwrap();
+                        if old_set.is_empty() {
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
+                        } else {
+                            curr_file_postconditions.insert(new_accessor, old_set);
                         }
-                    }
-                }
-                (
-                    FileEvent::Rename(old_path, new_path, outcome),
-                    State::DoesntExist,
-                    Mod::Renamed(_, last_new_path),
-                ) => {
-                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
-                        Accessor::ChildProc(cmd, new_path)
-                    } else {
-                        Accessor::CurrProc(new_path)
-                    };
-
-                    // This file is getting renamed. Again. For some god damn reason.
-                    if outcome == SyscallOutcome::Success && old_path == *last_new_path {
-                        let curr_set = curr_file_postconditions.remove(&accessor).unwrap();
-                        // let _ = curr_file_postconditions.remove(&new_path);
-                        curr_file_postconditions.insert(new_accessor, curr_set);
                         curr_file_postconditions
                             .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
+                // rename (old path, mid path)
+                // rename (mid path, new path)
+                // This is the event we will see for mid path
+                // FileEvent::Rename(mid path, new path), State::None, LastMod::None
+                // So we need to always "get()" the old set from the postconds just in case.
+                // But, this case would only happen for old path because there is no new path event
+                // as well. So this cannot succeed.
+                (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Renamed(_, _)) => (),
                 (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::Deleted) => (),
                 (FileEvent::Rename(_, _, _), State::DoesntExist, Mod::None) => (),
                 (
@@ -2320,98 +2283,58 @@ pub fn generate_file_postconditions(
                         Accessor::CurrProc(new_path)
                     };
 
-                    if outcome == SyscallOutcome::Success && old_path == full_path {
-                        if curr_file_postconditions.contains_key(&accessor) {
-                            let old_set = curr_file_postconditions.remove(&accessor).unwrap();
-                            curr_file_postconditions.insert(new_accessor, old_set);
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                        } else {
-                            // We have never seen old path before.
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                            // new path is just "exists", that's all we know!
+                    // Only old path events so don't have to check if full path == old path.
+                    if outcome == SyscallOutcome::Success {
+                        let old_set = curr_file_postconditions.remove(&accessor).unwrap();
+                        if old_path.is_empty() {
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
-                        }
-                    }
-                }
-                (
-                    FileEvent::Rename(old_path, new_path, outcome),
-                    State::Exists,
-                    Mod::Renamed(_, _),
-                ) => {
-                    let new_accessor = if let Some(cmd) = option_cmd.clone() {
-                        Accessor::ChildProc(cmd, new_path)
-                    } else {
-                        Accessor::CurrProc(new_path)
-                    };
-
-                    // First state existing tells us this must be the old path
-                    // but it's safer to check.
-                    if outcome == SyscallOutcome::Success && full_path == old_path {
-                        if curr_file_postconditions.contains_key(&accessor) {
-                            let old_set = curr_file_postconditions.remove(&accessor).unwrap();
-                            curr_file_postconditions.insert(new_accessor, old_set);
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                         } else {
-                            // We have never seen old path before.
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                            // new path is just "exists", that's all we know!
-                            curr_file_postconditions
-                                .insert(new_accessor, HashSet::from([Fact::Exists]));
+                            curr_file_postconditions.insert(new_accessor, old_set);
                         }
+                        curr_file_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
+                // Old path was just renamed so this cannot succeed.
+                (FileEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_, _)) => (),
                 (FileEvent::Rename(_, _, _), State::Exists, Mod::Deleted) => (),
-                (FileEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None) => {
+                (FileEvent::Rename(_, new_path, outcome), State::Exists, Mod::None) => {
                     let new_accessor = if let Some(cmd) = option_cmd.clone() {
                         Accessor::ChildProc(cmd, new_path)
                     } else {
                         Accessor::CurrProc(new_path)
                     };
 
-                    if outcome == SyscallOutcome::Success && full_path == old_path {
-                        if curr_file_postconditions.contains_key(&accessor) {
-                            let old_set = curr_file_postconditions.remove(&accessor).unwrap();
-                            curr_file_postconditions.insert(new_accessor, old_set);
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                        } else {
-                            // We have never seen old path before.
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                            // new path is just "exists", that's all we know!
+                    if outcome == SyscallOutcome::Success {
+                        let old_set = curr_file_postconditions.remove(&accessor).unwrap();
+                        if old_set.is_empty() {
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
+                        } else {
+                            curr_file_postconditions.insert(new_accessor, old_set);
                         }
+                        curr_file_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
-
-                // We haven't seen old path before.
-                (FileEvent::Rename(old_path, new_path, outcome), State::None, Mod::None) => {
+                (FileEvent::Rename(_, new_path, outcome), State::None, Mod::None) => {
                     let new_accessor = if let Some(cmd) = option_cmd.clone() {
                         Accessor::ChildProc(cmd, new_path)
                     } else {
                         Accessor::CurrProc(new_path)
                     };
 
-                    if outcome == SyscallOutcome::Success && full_path == old_path {
-                        if curr_file_postconditions.contains_key(&accessor) {
-                            let old_set = curr_file_postconditions.remove(&accessor).unwrap();
-                            curr_file_postconditions.insert(new_accessor, old_set);
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                        } else {
-                            // We have never seen old path before.
-                            curr_file_postconditions
-                                .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-                            // new path is just "exists", that's all we know!
+                    if outcome == SyscallOutcome::Success {
+                        let old_set = curr_file_postconditions.remove(&accessor).unwrap();
+                        if old_set.is_empty() {
                             curr_file_postconditions
                                 .insert(new_accessor, HashSet::from([Fact::Exists]));
+                        } else {
+                            curr_file_postconditions.insert(new_accessor, old_set);
                         }
+                        curr_file_postconditions
+                            .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
                     }
                 }
                 (FileEvent::Stat(_, _), _, _) => (),
