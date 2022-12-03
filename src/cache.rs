@@ -1,6 +1,7 @@
 use crate::{
     cache_utils::{
-        create_dirs, delete_dirs, hash_command, renamed_dirs, CachedExecMetadata, Command,
+        create_dirs, delete_dirs, hash_command, rename_dirs, renamed_dirs, CachedExecMetadata,
+        Command,
     },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
@@ -101,7 +102,7 @@ impl CachedExecution {
                 create_dirs(dir_postconditions.clone());
 
                 // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
-                renamed_dirs(dir_postconditions.clone());
+                rename_dirs(dir_postconditions.clone());
 
                 // Put files in the right places.
                 for (accessor, fact_set) in file_postconditions {
@@ -256,7 +257,7 @@ fn apply_file_transition_function(
                     fs::remove_file(file.clone()).unwrap();
                 }
             }
-            Fact::FinalContents | Fact::Exists => {
+            Fact::FinalContents => {
                 // Okay we want to copy the file from the cache to the correct
                 // output location.
                 match &accessor_and_file {

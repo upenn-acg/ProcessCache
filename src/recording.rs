@@ -698,18 +698,8 @@ pub fn generate_list_of_files_to_copy_to_cache(
                 };
 
             for fact in fact_set {
-                // We don't want to copy if it's a directory...
-                if (fact == Fact::Exists || fact == Fact::FinalContents) && path.exists() {
-                    if path.is_dir() {
-                        // We want to create the dir in the cache if it's a dir.
-                        fs::create_dir(dest_path.clone()).unwrap();
-                    } else {
-                        list_of_files.push((
-                            link_type.clone(),
-                            source_path.clone(),
-                            dest_path.clone(),
-                        ));
-                    }
+                if fact == Fact::FinalContents && path.exists() {
+                    list_of_files.push((link_type.clone(), source_path.clone(), dest_path.clone()));
                 }
             }
         }
@@ -745,9 +735,9 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let hashed_child_command = hash_command(child_command);
         let child_subdir = cache_dir.join(hashed_child_command.to_string());
 
-        if !child_subdir.exists() {
-            fs::create_dir(child_subdir.clone()).unwrap();
-        }
+        // if !child_subdir.exists() {
+        //     fs::create_dir(child_subdir.clone()).unwrap();
+        // }
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
