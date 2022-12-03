@@ -44,7 +44,7 @@ pub struct ExecMetadata {
 
 impl ExecMetadata {
     pub fn new(caller_pid: Proc) -> ExecMetadata {
-        let pid = caller_pid.0.clone();
+        let pid = caller_pid.0;
         ExecMetadata {
             caller_pid,
             command: Command(String::new(), Vec::new()),

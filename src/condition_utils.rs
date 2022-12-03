@@ -230,10 +230,6 @@ impl FirstState {
                 FileEvent::Access(_, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
-                FileEvent::FailedExec(_) => (),
-                FileEvent::Open(_, _, _, SyscallOutcome::Success) => {
-                    self.0 = State::Exists;
-                }
                 FileEvent::Access(_, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
                     self.0 = State::DoesntExist;
                 }
@@ -296,9 +292,10 @@ impl FirstState {
                     panic!("Failed to delete a file because it already exists??");
                 }
                 FileEvent::Delete(SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)) => {
-                    self.0 = State::Exists;
+                    self.0 = State::DoesntExist;
                 }
                 FileEvent::Delete(SyscallOutcome::Fail(_)) => (),
+                FileEvent::FailedExec(_) => (),
                 FileEvent::Open(_, _, _, SyscallOutcome::Success) => {
                     self.0 = State::Exists;
                 }
@@ -306,8 +303,6 @@ impl FirstState {
                     self.0 = State::DoesntExist;
                 }
                 FileEvent::Open(_, _, _, _) => (),
-                FileEvent::FailedExec(_) => (),
-
                 FileEvent::Rename(old_path, new_path, SyscallOutcome::Success) => {
                     if *curr_file_path == old_path {
                         self.0 = State::Exists;

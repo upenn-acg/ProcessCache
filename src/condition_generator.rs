@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use core::panic;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir, File},
+    fs::{self, read_dir},
     hash::Hash,
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
@@ -384,29 +384,16 @@ pub fn generate_dir_preconditions(
 
     for accessor in dir_events.keys() {
         // For preconditions, I am not concerned with with who accessed.
-        let path = match accessor {
-            Accessor::ChildProc(_, full_path) => full_path,
-            Accessor::CurrProc(full_path) => full_path,
-        };
+        let path = accessor.path();
         curr_dir_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
     for (accessor, event_list) in &dir_events {
-        let full_path = match accessor {
-            Accessor::ChildProc(_, path) => path,
-            Accessor::CurrProc(path) => path,
-        };
+        let full_path = &accessor.path();
 
         let mut first_state_struct = FirstState(State::None);
         let mut curr_state_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
-
-        // println!("Full path: {:?}", full_path);
-        // println!("Events:");
-        // for event in event_list.clone() {
-        //     println!("{:?}", event);
-        // }
-        // let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
         for event in event_list {
             let first_state = first_state_struct.state();
@@ -490,7 +477,7 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Create(_, _), State::Exists, Mod::Deleted, false) => {
                     panic!("Last mod deleted but has_been_deleted is false!!");
                 }
-                (DirEvent::Create(_, outcome), State::Exists, Mod::None, false) => {
+                (DirEvent::Create(root_dir, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             // Need W and X perm to parent dir.
@@ -498,7 +485,7 @@ pub fn generate_dir_preconditions(
                             let mut flags = AccessFlags::empty();
                             flags.insert(AccessFlags::W_OK);
                             flags.insert(AccessFlags::X_OK);
-                            curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                            curr_set.insert(Fact::NoDirPermission((flags).bits(), Some(root_dir)));
                         }
                         SyscallOutcome::Fail(_) => (),
                         SyscallOutcome::Success => {
@@ -549,6 +536,7 @@ pub fn generate_dir_preconditions(
                             flags.insert(AccessFlags::W_OK);
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                            has_been_deleted = true;
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => (),
                         o => panic!(
@@ -583,6 +571,7 @@ pub fn generate_dir_preconditions(
                             flags.insert(AccessFlags::W_OK);
                             flags.insert(AccessFlags::X_OK);
                             curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
+                            has_been_deleted = true;
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
@@ -598,19 +587,23 @@ pub fn generate_dir_preconditions(
                 }
                 (DirEvent::Delete(outcome), State::None, last_mod, deleted_previously) => {
                     if *last_mod == Mod::None {
-                        let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                        let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
+                        let curr_set_mut = curr_dir_preconditions.get_mut(full_path).unwrap();
                         match outcome {
                             SyscallOutcome::Success => {
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                flags.insert(AccessFlags::X_OK);
-                                // We have write perm to root dir and the created dir didn't already exist.
-                                curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
-                                // We also know it existed at the start because it has been
-                                // successfully deleted.
-                                curr_set.insert(Fact::Exists);
+                                if !curr_set.contains(&Fact::DoesntExist) {
+                                    let mut flags = AccessFlags::empty();
+                                    flags.insert(AccessFlags::W_OK);
+                                    flags.insert(AccessFlags::X_OK);
+                                    // We have write perm to root dir and the created dir didn't already exist.
+                                    curr_set_mut
+                                        .insert(Fact::HasDirPermission((flags).bits(), None));
+                                    curr_set_mut.insert(Fact::Exists);
+                                }
                                 if !deleted_previously {
                                     has_been_deleted = true;
+                                } else {
+                                    panic!("Last mod was none but has been deleted is true??");
                                 }
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
@@ -618,7 +611,7 @@ pub fn generate_dir_preconditions(
                                 let mut flags = AccessFlags::empty();
                                 flags.insert(AccessFlags::W_OK);
                                 flags.insert(AccessFlags::X_OK);
-                                curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                                curr_set_mut.insert(Fact::NoDirPermission((flags).bits(), None));
                             }
                             f => panic!("Unexpected failure rmdir: {:?}", f),
                         }
@@ -627,13 +620,16 @@ pub fn generate_dir_preconditions(
                     }
                 }
                 (DirEvent::Read(full_path, entries, outcome), _, _, _) => {
-                    let curr_set = curr_dir_preconditions.get_mut(&full_path).unwrap();
+                    let curr_set = curr_dir_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_dir_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
+                            curr_set_mut.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::DirEntriesMatch(entries));
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                curr_set_mut.insert(Fact::DirEntriesMatch(entries));
+                            }
                         }
                         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
                     }
@@ -685,56 +681,59 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Rename(_, _, _), State::Exists, Mod::Renamed(_, _), _) => (),
                 // It existed at start, has not been modified. We should be able to rename it.
                 // If this succeeds we know we are W+X for the parent dir.
-                (DirEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
+                (DirEvent::Rename(_, new_path, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
-                    if *full_path == old_path {
-                        match outcome {
-                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                flags.insert(AccessFlags::X_OK);
-                                curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
-                            }
-                            SyscallOutcome::Fail(f) => {
-                                panic!("Existed at start, no mods, failed to rename dir for unexpected reason: {:?}", f);
-                            }
-                            SyscallOutcome::Success => {
-                                let mut flags = AccessFlags::empty();
-                                flags.insert(AccessFlags::W_OK);
-                                flags.insert(AccessFlags::X_OK);
-                                curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
-                            }
+                    match outcome {
+                        SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
+                        }
+                        SyscallOutcome::Fail(f) => {
+                            panic!("Existed at start, no mods, failed to rename dir for unexpected reason: {:?}", f);
+                        }
+                        SyscallOutcome::Success => {
+                            let mut flags = AccessFlags::empty();
+                            flags.insert(AccessFlags::W_OK);
+                            flags.insert(AccessFlags::X_OK);
+                            curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
+                            curr_dir_preconditions
+                                .insert(new_path, HashSet::from([Fact::DoesntExist]));
                         }
                     }
                 }
-                (DirEvent::Rename(old_path, _, outcome), State::None, last_mod, _) => {
-                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                (DirEvent::Rename(_, new_path, outcome), State::None, last_mod, _) => {
+                    let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
+                    let curr_set_mut = curr_dir_preconditions.get_mut(full_path).unwrap();
 
                     if *last_mod == Mod::None {
-                        if *full_path == old_path {
-                            match outcome {
-                                SyscallOutcome::Success => {
-                                    // This is the first time we are seeing this dir! Hello dir!
-                                    // It has been successfully renamed. So we know it existed at
-                                    // the start.
-                                    curr_set.insert(Fact::Exists);
+                        match outcome {
+                            SyscallOutcome::Success => {
+                                // This is the first time we are seeing this dir! Hello dir!
+                                // It has been successfully renamed. So we know it existed at
+                                // the start. Unless this is a rename after a rename...
+                                if !curr_set.contains(&Fact::DoesntExist) {
+                                    curr_set_mut.insert(Fact::Exists);
                                     let mut flags = AccessFlags::empty();
                                     flags.insert(AccessFlags::W_OK);
                                     flags.insert(AccessFlags::X_OK);
-                                    curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
+                                    curr_set_mut.insert(Fact::HasDirPermission(flags.bits(), None));
                                 }
-                                SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                                    curr_set.insert(Fact::DoesntExist);
-                                }
-                                SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                    // We don't have some necessary permission to the parent dir.
-                                    let mut flags = AccessFlags::empty();
-                                    flags.insert(AccessFlags::W_OK);
-                                    flags.insert(AccessFlags::X_OK);
-                                    curr_set.insert(Fact::NoDirPermission(flags.bits(), None));
-                                }
-                                _ => (),
+                                curr_dir_preconditions
+                                    .insert(new_path, HashSet::from([Fact::DoesntExist]));
                             }
+                            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
+                                curr_set_mut.insert(Fact::DoesntExist);
+                            }
+                            SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
+                                // We don't have some necessary permission to the parent dir.
+                                let mut flags = AccessFlags::empty();
+                                flags.insert(AccessFlags::W_OK);
+                                flags.insert(AccessFlags::X_OK);
+                                curr_set_mut.insert(Fact::NoDirPermission(flags.bits(), None));
+                            }
+                            _ => (),
                         }
                     } else {
                         panic!("First state is none but last mod was: {:?}!!", last_mod);
@@ -743,18 +742,20 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Statfs(_, _), _, _, true) => (),
                 (DirEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
                 (DirEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
-
+                    let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
+                    let curr_set_mut = curr_dir_preconditions.get_mut(full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            if let Some(statfs) = option_statfs {
-                                curr_set.insert(Fact::StatFsStructMatches(statfs));
-                                curr_set.insert(Fact::HasDirPermission(
-                                    (AccessFlags::X_OK).bits(),
-                                    None,
-                                ));
-                            } else {
-                                panic!("No statfs struct found for successful statfs syscall!");
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                if let Some(statfs) = option_statfs {
+                                    curr_set_mut.insert(Fact::StatFsStructMatches(statfs));
+                                    curr_set_mut.insert(Fact::HasDirPermission(
+                                        (AccessFlags::X_OK).bits(),
+                                        None,
+                                    ));
+                                } else {
+                                    panic!("No statfs struct found for successful statfs syscall!");
+                                }
                             }
                         }
                         // This really should succeed. We know it exists, so we must also have X permission
@@ -775,29 +776,35 @@ pub fn generate_dir_preconditions(
                 // We won't see this for new_path because we aren't actually adding 2 events, only adding one for old path.
                 // So, because old_path was just renamed, we cannot stat it.
                 // TODO: 2 events for rename to properly handle old path and new path.
-                (DirEvent::Statfs(_, _), State::Exists, Mod::Renamed(_, _), false) => {
-                    todo!();
-                }
+                // If we rename(old, new) and then have stat(new), we don't want this stat as part of the precondition.
+                // BUT we will see DirEvet::Statfs(new), State::None, Mod::None.
+                // So we will add the statfs incorrectly to the preconditions.
+                (DirEvent::Statfs(_, _), State::Exists, Mod::Renamed(_, _), false) => (),
                 (DirEvent::Statfs(option_statfs, outcome), State::None, last_mod, false) => {
-                    let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
+                    let curr_set_mut = curr_dir_preconditions.get_mut(full_path).unwrap();
                     if *last_mod == Mod::None {
                         match outcome {
                             SyscallOutcome::Success => {
-                                if let Some(statfs) = option_statfs {
-                                    curr_set.insert(Fact::StatFsStructMatches(statfs));
-                                    curr_set.insert(Fact::HasDirPermission(
-                                        (AccessFlags::X_OK).bits(),
-                                        None,
-                                    ));
-                                } else {
-                                    panic!("No statfs struct found for successful statfs syscall!");
+                                if !curr_set.contains(&Fact::DoesntExist) {
+                                    if let Some(statfs) = option_statfs {
+                                        curr_set_mut.insert(Fact::StatFsStructMatches(statfs));
+                                        curr_set_mut.insert(Fact::HasDirPermission(
+                                            (AccessFlags::X_OK).bits(),
+                                            None,
+                                        ));
+                                    } else {
+                                        panic!(
+                                            "No statfs struct found for successful statfs syscall!"
+                                        );
+                                    }
                                 }
                             }
                             SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                                curr_set.insert(Fact::DoesntExist);
+                                curr_set_mut.insert(Fact::DoesntExist);
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                                curr_set.insert(Fact::NoDirPermission(
+                                curr_set_mut.insert(Fact::NoDirPermission(
                                     (AccessFlags::X_OK).bits(),
                                     None,
                                 ));
@@ -831,18 +838,12 @@ pub fn generate_file_preconditions(
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
     for accessor in file_events.keys() {
         // For preconditions, I am not concerned with with who accessed.
-        let path = match accessor {
-            Accessor::ChildProc(_, full_path) => full_path,
-            Accessor::CurrProc(full_path) => full_path,
-        };
+        let path = accessor.path();
         curr_file_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
     for (accessor, event_list) in &file_events {
-        let full_path = match accessor {
-            Accessor::ChildProc(_, path) => path,
-            Accessor::CurrProc(path) => path,
-        };
+        let full_path = accessor.path();
 
         // Here we can see if the parent dir of this path
         // was created by the exec.
@@ -888,7 +889,7 @@ pub fn generate_file_preconditions(
                     // BEFORE the execution :O
                     match outcome {
                         SyscallOutcome::Success => {
-                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                             let flag_set = AccessFlags::from_bits(flags).unwrap();
 
                             if flag_set.contains(AccessFlags::F_OK) {
@@ -898,7 +899,7 @@ pub fn generate_file_preconditions(
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
-                            let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                             curr_set.insert(Fact::NoPermission(flags));
                         }
                         o => panic!("Unexpected access syscall failure: {:?}", o),
@@ -917,29 +918,32 @@ pub fn generate_file_preconditions(
                     panic!("No first state but last mod was renamed??");
                 }
                 (FileEvent::Access(flags, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
-                            if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                let flag_set = AccessFlags::from_bits(flags).unwrap();
+                                if flag_set.contains(AccessFlags::F_OK) {
+                                    curr_set_mut.insert(Fact::Exists);
+                                } else {
+                                    curr_set_mut.insert(Fact::HasPermission(flags));
+                                }
                             }
-                            let flag_set = AccessFlags::from_bits(flags).unwrap();
-                            if flag_set.contains(AccessFlags::F_OK) {
-                                curr_set.insert(Fact::Exists);
-                            } else {
-                                curr_set.insert(Fact::HasPermission(flags));
+                            if !parent_dir_was_created_by_exec {
+                                curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
+                            curr_set_mut.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             if parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::NoPermission(flags));
+                                curr_set_mut.insert(Fact::NoPermission(flags));
                             } else {
                                 // Either we don't have exec access to the dir
                                 // Or we don't have these perms on this file
-                                curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags))));
+                                curr_set_mut.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags))));
                             }
                         }
                         o => panic!("Unexpected access syscall failure: {:?}", o),
@@ -953,7 +957,7 @@ pub fn generate_file_preconditions(
                 (FileEvent::Create(_, _), State::DoesntExist, Mod::Modified, false) => (),
                 (FileEvent::Create(_, _), State::DoesntExist, Mod::Renamed(_, _), _) => (),
                 (FileEvent::Create(mode, outcome), State::DoesntExist, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -997,7 +1001,7 @@ pub fn generate_file_preconditions(
                     panic!("First state none but last mod renamed??");
                 }
                 (FileEvent::Create(OFlag::O_CREAT, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -1026,7 +1030,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Create(OFlag::O_EXCL, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             curr_set.insert(Fact::DoesntExist);
@@ -1071,7 +1075,7 @@ pub fn generate_file_preconditions(
                 }
                 // old path? didnt exist, created, renamed. now trying to delete. won't succeed it doesnt exist anymore.
                 // No new path event right now
-                (FileEvent::Delete(outcome), State::DoesntExist, Mod::Renamed(_, _), _) => (),
+                (FileEvent::Delete(_), State::DoesntExist, Mod::Renamed(_, _), _) => (),
                 (FileEvent::Delete(outcome), State::DoesntExist, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1101,7 +1105,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Delete(outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1141,34 +1145,37 @@ pub fn generate_file_preconditions(
                     panic!("First state was none but last mod was renamed??");
                 }
                 (FileEvent::Delete(outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            curr_set.insert(Fact::Exists);
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                curr_set_mut.insert(Fact::Exists);
+                            }
                             let mut flags = AccessFlags::empty();
                             flags.insert(AccessFlags::W_OK);
                             flags.insert(AccessFlags::X_OK);
                             if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::HasDirPermission((flags).bits(), None));
+                                curr_set_mut.insert(Fact::HasDirPermission((flags).bits(), None));
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
+                            curr_set_mut.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             let mut flags = AccessFlags::empty();
                             flags.insert(AccessFlags::W_OK);
                             flags.insert(AccessFlags::X_OK);
                             if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::NoDirPermission((flags).bits(), None));
+                                curr_set_mut.insert(Fact::NoDirPermission((flags).bits(), None));
                             }
                         }
                         f => panic!("Unexpected failure from delete event: {:?}", f),
                     }
                 }
                 (FileEvent::FailedExec(failure), _, _, _) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match failure {
                         SyscallFailure::FileDoesntExist => {
                             curr_set.insert(Fact::DoesntExist);
@@ -1228,7 +1235,7 @@ pub fn generate_file_preconditions(
                 }
                 (FileEvent::Open(_, _,  _,_), State::Exists, Mod::Modified, false) => (),
                 (FileEvent::Open(access_mode, Some(OffsetMode::Append), optional_check_mech, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     if access_mode == AccessMode::Read {
                         panic!("Open for append with read access mode!!");
                     }
@@ -1275,7 +1282,7 @@ pub fn generate_file_preconditions(
                 }
                 //TODO: What about reading with RW mode?
                 (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
@@ -1322,7 +1329,7 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _,outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
                         mode => {
@@ -1358,7 +1365,8 @@ pub fn generate_file_preconditions(
                     panic!("First state none but last mod modified??");
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Append),  optional_check_mech, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset append!!"),
                         mode => {
@@ -1367,7 +1375,7 @@ pub fn generate_file_preconditions(
                                     if let Some(check_mech) = optional_check_mech {
                                         match check_mech {
                                             CheckMechanism::DiffFiles => {
-                                                curr_set.insert(Fact::InputFilesMatch);
+                                                curr_set_mut.insert(Fact::InputFilesMatch);
                                             }
                                             CheckMechanism::Hash(hash) => {
                                                 let hash = if DONT_HASH_FILES {
@@ -1375,26 +1383,28 @@ pub fn generate_file_preconditions(
                                                 } else {
                                                     hash
                                                 };
-                                                curr_set.insert(Fact::StartingContents(hash));
+                                                curr_set_mut.insert(Fact::StartingContents(hash));
                                             }
                                             CheckMechanism::Mtime(mtime) => {
-                                                curr_set.insert(Fact::Mtime(mtime));
+                                                curr_set_mut.insert(Fact::Mtime(mtime));
                                             }
                                         }
                                     }
                                     if !parent_dir_was_created_by_exec {
-                                        curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                        curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                                     }
-                                    curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
-                                    if mode == AccessMode::Both {
-                                        curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                                    if !curr_set.contains(&Fact::DoesntExist) {
+                                        curr_set_mut.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                                        if mode == AccessMode::Both {
+                                            curr_set_mut.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                                        }
                                     }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                                     panic!("Open append, no info yet, failed because file already exists??");
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                                    curr_set.insert(Fact::DoesntExist);
+                                    curr_set_mut.insert(Fact::DoesntExist);
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                     let mut flags = AccessFlags::empty();
@@ -1402,10 +1412,8 @@ pub fn generate_file_preconditions(
                                     if mode == AccessMode::Both {
                                         flags.insert(AccessFlags::R_OK);
                                     }
-                                    if parent_dir_was_created_by_exec {
-                                        curr_set.insert(Fact::NoPermission(flags.bits()));
-                                    } else {
-                                        curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
+                                    if !parent_dir_was_created_by_exec {
+                                        curr_set_mut.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission(flags.bits()))));
                                     }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
@@ -1414,7 +1422,8 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, Some(OffsetMode::Trunc), _, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match access_mode {
                         AccessMode::Read => panic!("Access mode is read with offset trunc!!"),
                         mode => {
@@ -1422,21 +1431,23 @@ pub fn generate_file_preconditions(
                                 SyscallOutcome::Success => {
                                     // TODO also write access to the file? but the program
                                     // doesn't know whether it exists..
-                                    let mut flags = AccessFlags::empty();
-                                    flags.insert(AccessFlags::W_OK);
-                                    if mode == AccessMode::Both {
-                                        flags.insert(AccessFlags::R_OK);
+                                    if !curr_set.contains(&Fact::DoesntExist) {
+                                        let mut flags = AccessFlags::empty();
+                                        flags.insert(AccessFlags::W_OK);
+                                        if mode == AccessMode::Both {
+                                            flags.insert(AccessFlags::R_OK);
+                                        }
+                                        curr_set_mut.insert(Fact::HasPermission((flags).bits()));
                                     }
-                                    curr_set.insert(Fact::HasPermission((flags).bits()));
                                     if !parent_dir_was_created_by_exec {
-                                        curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                        curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                                     }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                                     panic!("Open trunc, no info yet, failed because file already exists??");
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                                    curr_set.insert(Fact::DoesntExist);
+                                    curr_set_mut.insert(Fact::DoesntExist);
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                     let mut flags = AccessFlags::empty();
@@ -1445,10 +1456,8 @@ pub fn generate_file_preconditions(
                                         flags.insert(AccessFlags::R_OK);
                                     }
 
-                                    if parent_dir_was_created_by_exec {
-                                        curr_set.insert(Fact::NoPermission((flags).bits()));
-                                    } else {
-                                        curr_set.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission((flags).bits()))));
+                                    if !parent_dir_was_created_by_exec {
+                                        curr_set_mut.insert(Fact::Or(Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)), Box::new(Fact::NoPermission((flags).bits()))));
                                     }
                                 }
                                 SyscallOutcome::Fail(SyscallFailure::InvalArg) => (),
@@ -1457,13 +1466,14 @@ pub fn generate_file_preconditions(
                     }
                 }
                 (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
                         SyscallOutcome::Success => {
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
                                     CheckMechanism::DiffFiles => {
-                                        curr_set.insert(Fact::InputFilesMatch);
+                                        curr_set_mut.insert(Fact::InputFilesMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
@@ -1471,46 +1481,45 @@ pub fn generate_file_preconditions(
                                         } else {
                                             hash
                                         };
-                                        curr_set.insert(Fact::StartingContents(hash));
+                                        curr_set_mut.insert(Fact::StartingContents(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
-                                        curr_set.insert(Fact::Mtime(mtime));
+                                        curr_set_mut.insert(Fact::Mtime(mtime));
                                     }
                                 }
                             }
-                            match access_mode {
-                                AccessMode::Read => {curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
-                                AccessMode::Write => {curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));}
-                                AccessMode::Both => {
-                                    curr_set.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
-                                    curr_set.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                match access_mode {
+                                    AccessMode::Read => {curr_set_mut.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));}
+                                    AccessMode::Write => {curr_set_mut.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));}
+                                    AccessMode::Both => {
+                                        curr_set_mut.insert(Fact::HasPermission((AccessFlags::R_OK).bits()));
+                                        curr_set_mut.insert(Fact::HasPermission((AccessFlags::W_OK).bits()));
+                                    }
                                 }
                             }
-
                             if !parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                             }
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Open read only, no info yet, failed because file already exists??");
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
-                            curr_set.insert(Fact::DoesntExist);
+                            curr_set_mut.insert(Fact::DoesntExist);
                         }
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                             match access_mode {
-                                AccessMode::Read => {curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));}
-                                AccessMode::Write => {curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));}
+                                AccessMode::Read => {curr_set_mut.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));}
+                                AccessMode::Write => {curr_set_mut.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));}
                                 AccessMode::Both => {
-                                    curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
-                                    curr_set.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
+                                    curr_set_mut.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
+                                    curr_set_mut.insert(Fact::NoPermission((AccessFlags::W_OK).bits()));
                                 }
                             }
-                            curr_set.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
-                            if parent_dir_was_created_by_exec {
-                                curr_set.insert(Fact::NoPermission((AccessFlags::R_OK).bits()));
-                            } else {
-                                curr_set.insert(Fact::Or(
+                            curr_set_mut.insert(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None));
+                            if !parent_dir_was_created_by_exec {
+                                curr_set_mut.insert(Fact::Or(
                                     Box::new(Fact::NoPermission((AccessFlags::R_OK).bits())),
                                     Box::new(Fact::NoDirPermission((AccessFlags::X_OK).bits(), None)),
                                 ));
@@ -1542,7 +1551,7 @@ pub fn generate_file_preconditions(
                     // Success tells us nothing for preconds.
                 }
                 (FileEvent::Rename(_, _, outcome), State::DoesntExist, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     // So, it doesn't exist. We can't rename it.
                     // So this can't succeed.
@@ -1582,8 +1591,8 @@ pub fn generate_file_preconditions(
                     // Eventually we will handle rename flags where they don't wanna replace
                     // an existing file, and that will be a precondition.
                 }
-                (FileEvent::Rename(old_path, _, outcome), State::Exists, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                (FileEvent::Rename(old_path, new_path, outcome), State::Exists, Mod::None, false) => {
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     // It exists, we haven't modified it.
                     // It exists so we know that we have x access to the cwd.
@@ -1596,6 +1605,7 @@ pub fn generate_file_preconditions(
                                 if !parent_dir_was_created_by_exec {
                                     curr_set.insert(Fact::HasDirPermission((AccessFlags::W_OK).bits(), None));
                                 }
+                                curr_file_preconditions.insert(new_path, HashSet::from([Fact::DoesntExist]));
                             }
                             SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => {
                                 // We may not have permission to write to the directory.
@@ -1619,10 +1629,10 @@ pub fn generate_file_preconditions(
                 (FileEvent::Rename(_, _, _), State::None, Mod::Renamed(_,_), _) => {
                     panic!("No first state but last mod was renamed??");
                 }
-                (FileEvent::Rename(old_path, _, outcome), State::None, Mod::None, false) => {
+                (FileEvent::Rename(_, new_path, outcome), State::None, Mod::None, false) => {
                     // No first state, no mods, haven't deleted. This is the first thing we are doing to this
                     // resource probably.
-                    let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
@@ -1636,6 +1646,7 @@ pub fn generate_file_preconditions(
                             if !parent_dir_was_created_by_exec {
                                 curr_set.insert(Fact::HasDirPermission(flags.bits(), None));
                             }
+                            curr_file_preconditions.insert(new_path, HashSet::from([Fact::DoesntExist]));
                         }
                         SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) => {
                             // Old path doesn't exist cool.
@@ -1686,23 +1697,25 @@ pub fn generate_file_preconditions(
                 (FileEvent::Stat(option_stat, outcome), State::Exists, Mod::None, false) => {
                     match outcome {
                         SyscallOutcome::Success => {
-                            let curr_set = curr_file_preconditions.get(full_path).unwrap().clone();
-                            let curr_set_mut = curr_file_preconditions.get_mut(full_path).unwrap();
+                            let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                            let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
                             // KELLY START HERE
                             // TODO: don't add if there's already a stat struct, they'll conflict.
                             // Just going to check for duplicates in check_preconditions()?
                             // But they aren't ordered so this won't work.
                             // TODO: Before adding stat struct fact to the set, check if one is already there.
 
-                            if !parent_dir_was_created_by_exec {
-                                curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                            }
-                            if let Some(stat) = option_stat {
-                                if !preconditions_contain_stat_fact(curr_set) {
-                                    curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                if !parent_dir_was_created_by_exec {
+                                    curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
                                 }
-                            } else {
-                                panic!("No stat struct found for successful stat syscall!");
+                                if let Some(stat) = option_stat {
+                                    if !preconditions_contain_stat_fact(curr_set) {
+                                        curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                                    }
+                                } else {
+                                    panic!("No stat struct found for successful stat syscall!");
+                                }
                             }
                         }
                         f => panic!("Unexpected failure of stat call, file exists: {:?}", f),
@@ -1722,22 +1735,23 @@ pub fn generate_file_preconditions(
                     panic!("First state was none but last mod was renamed??");
                 }
                 (FileEvent::Stat(option_stat, outcome), State::None, Mod::None, false) => {
-                    let curr_set = curr_file_preconditions.get(full_path).unwrap().clone();
-                    let curr_set_mut = curr_file_preconditions.get_mut(full_path).unwrap();
+                    let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
+                    let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
 
                     match outcome {
                         SyscallOutcome::Success => {
-                            if let Some(stat) = option_stat {
-                                if !preconditions_contain_stat_fact(curr_set) {
-                                    curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                            if !curr_set.contains(&Fact::DoesntExist) {
+                                if let Some(stat) = option_stat {
+                                    if !preconditions_contain_stat_fact(curr_set) {
+                                        curr_set_mut.insert(Fact::StatStructMatches(stat.clone()));
+                                    }
+                                    if !parent_dir_was_created_by_exec {
+                                        curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
+                                    }
+                                } else {
+                                    panic!("No stat struct found for successful stat syscall!");
                                 }
-                                if !parent_dir_was_created_by_exec {
-                                    curr_set_mut.insert(Fact::HasDirPermission((AccessFlags::X_OK).bits(), None));
-                                }
-                            } else {
-                                panic!("No stat struct found for successful stat syscall!");
                             }
-
                         }
                         SyscallOutcome::Fail(SyscallFailure::AlreadyExists) => {
                             panic!("Unexpected stat failure: file already exists??");
@@ -1756,7 +1770,7 @@ pub fn generate_file_preconditions(
             }
 
             // This function will only change the first_state if it is None.
-            first_state_struct.update_based_on_file_event(full_path, event.clone());
+            first_state_struct.update_based_on_file_event(&full_path, event.clone());
             curr_state_struct.update_based_on_file_event(event.clone());
         }
     }
@@ -1816,8 +1830,8 @@ pub fn generate_dir_postconditions(
                 }
                 // If full path = old path, we can create. Thus we should insert Fact::Exists
                 // as old path's postconds if this succeeds.
-                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(old_path, _)) => {
-                    if full_path == *old_path && outcome == SyscallOutcome::Success {
+                (DirEvent::Create(_, outcome), State::DoesntExist, Mod::Renamed(_, _)) => {
+                    if outcome == SyscallOutcome::Success {
                         curr_dir_postconditions
                             .insert(accessor.clone(), HashSet::from([Fact::Exists]));
                     }
@@ -1840,8 +1854,8 @@ pub fn generate_dir_postconditions(
                 }
                 // If full path is old path, then old path was renamed to new path, and
                 // old path can be created again!
-                (DirEvent::Create(_, outcome), State::Exists, Mod::Renamed(old_path, _)) => {
-                    if full_path == *old_path && outcome == SyscallOutcome::Success {
+                (DirEvent::Create(_, outcome), State::Exists, Mod::Renamed(_, _)) => {
+                    if outcome == SyscallOutcome::Success {
                         curr_dir_postconditions
                             .insert(accessor.clone(), HashSet::from([Fact::Exists]));
                     }
@@ -2050,10 +2064,8 @@ pub fn generate_file_postconditions(
     for (accessor, event_list) in file_events {
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);
-        let (full_path, option_cmd) = match accessor.clone() {
-            Accessor::ChildProc(cmd, path) => (path, Some(cmd)),
-            Accessor::CurrProc(path) => (path, None),
-        };
+        let full_path = accessor.path();
+        let option_cmd = accessor.hashed_command();
 
         for event in event_list {
             let first_state = first_state_struct.state();
