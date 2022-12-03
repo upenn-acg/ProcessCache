@@ -119,7 +119,7 @@ pub fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 }
 
-pub fn renamed_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
+pub fn rename_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
 
     for (accessor, fact_set) in dir_postconditions {
