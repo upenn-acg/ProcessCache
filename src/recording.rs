@@ -3,6 +3,7 @@ use crate::{
     cache_utils::{hash_command, CachedExecMetadata, Command},
     condition_generator::{generate_preconditions, Accessor, ExecSyscallEvents},
     condition_utils::{Fact, Postconditions},
+    execution_utils::get_umask,
     syscalls::{DirEvent, FileEvent},
 };
 use nix::unistd::Pid;

@@ -19,7 +19,10 @@ use crate::{
     cache_utils::{hash_command, Command},
     context,
     recording::{LinkType, RcExecution},
-    syscalls::{CheckMechanism, FileEvent, SyscallFailure, SyscallOutcome, OpenFlags, OffsetMode, AccessMode},
+    syscalls::{
+        AccessMode, CheckMechanism, FileEvent, OffsetMode, OpenFlags, SyscallFailure,
+        SyscallOutcome,
+    },
     Ptracer,
 };
 
@@ -124,7 +127,7 @@ pub fn generate_open_syscall_file_event(
                     if open_flags.file_existed_at_start {
                         match (open_flags.offset_mode.clone(), open_flags.access_mode) {
                             (Some(mode), AccessMode::Read) => panic!("Offset mode {:?}, opened for reading!!", mode),
-                            (offset_mode, access_mode) => Some(SyscallEvent::Open(access_mode, offset_mode, optional_checking_mech, SyscallOutcome::Success))
+                            (offset_mode, access_mode) => Some(FileEvent::Open(access_mode, offset_mode, optional_checking_mech, SyscallOutcome::Success))
                         }
                     } else {
                         Some(FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success))
@@ -167,7 +170,7 @@ pub fn generate_open_syscall_file_event(
                     (Some(mode), AccessMode::Read) => {
                         panic!("Offset mode {:?}, opened for reading!!", mode)
                     }
-                    (offset_mode, access_mode) => Some(SyscallEvent::Open(
+                    (offset_mode, access_mode) => Some(FileEvent::Open(
                         access_mode,
                         offset_mode,
                         optional_checking_mech,
@@ -186,7 +189,7 @@ pub fn generate_open_syscall_file_event(
                         ret_val
                     ),
                 };
-                Some(SyscallEvent::Open(
+                Some(FileEvent::Open(
                     open_flags.access_mode,
                     open_flags.offset_mode,
                     optional_checking_mech,

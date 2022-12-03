@@ -15,10 +15,10 @@ use crate::{
     async_runtime::AsyncRuntime,
     condition_generator::ExecSyscallEvents,
     condition_utils::FileType,
-    execution_utils::{background_thread_copying_outputs, OpenFlags},
+    execution_utils::background_thread_copying_outputs,
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{DirEvent, FileEvent, MyStatFs},
+    syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
