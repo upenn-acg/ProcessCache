@@ -716,52 +716,52 @@ pub fn generate_list_of_files_to_copy_to_cache(
     }
 
     // The current proc's stdout file.
-    let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
-    let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
-    let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
+    // let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
+    // let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
+    // let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
 
-    if stdout_file_path.exists() {
-        // fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
-        list_of_files.push((
-            LinkType::Copy,
-            stdout_file_path.clone(),
-            cache_stdout_file_path,
-        ));
-        let mut f = File::open(stdout_file_path).unwrap();
-        let mut buf = Vec::new();
-        // Write the bytes to stdout.
-        let bytes = f.read_to_end(&mut buf).unwrap();
-        if bytes != 0 {
-            io::stdout().write_all(&buf).unwrap();
-        }
-        // We don't want to remove the file before the thread even has the chance to copy it to the cache...
-        // fs::remove_file(stdout_file_path).unwrap();
-    }
+    // if stdout_file_path.exists() {
+    //     // fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
+    //     list_of_files.push((
+    //         LinkType::Copy,
+    //         stdout_file_path.clone(),
+    //         cache_stdout_file_path,
+    //     ));
+    //     let mut f = File::open(stdout_file_path).unwrap();
+    //     let mut buf = Vec::new();
+    //     // Write the bytes to stdout.
+    //     let bytes = f.read_to_end(&mut buf).unwrap();
+    //     if bytes != 0 {
+    //         io::stdout().write_all(&buf).unwrap();
+    //     }
+    // We don't want to remove the file before the thread even has the chance to copy it to the cache...
+    // fs::remove_file(stdout_file_path).unwrap();
+    // }
 
     // Children's stdout files.
-    let children = curr_execution.children();
-    for child in children {
-        let child_command = ExecCommand(child.executable(), child.args());
-        let hashed_child_command = hash_command(child_command);
-        let child_subdir = cache_dir.join(hashed_child_command.to_string());
+    // let children = curr_execution.children();
+    // for child in children {
+    //     let child_command = Command(child.executable(), child.args());
+    //     let hashed_child_command = hash_command(child_command);
+    //     let child_subdir = cache_dir.join(hashed_child_command.to_string());
 
-        // if !child_subdir.exists() {
-        //     fs::create_dir(child_subdir.clone()).unwrap();
-        // }
-        let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
-        let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
+    //     // if !child_subdir.exists() {
+    //     //     fs::create_dir(child_subdir.clone()).unwrap();
+    //     // }
+    //     let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
+    //     let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
-        let parents_spot_for_childs_stdout =
-            cache_subdir_hashed_command.join(childs_cached_stdout_file);
-        if childs_cached_stdout_path.exists() {
-            // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
-            list_of_files.push((
-                LinkType::Hardlink,
-                childs_cached_stdout_path,
-                parents_spot_for_childs_stdout,
-            ))
-        }
-    }
+    //     let parents_spot_for_childs_stdout =
+    //         cache_subdir_hashed_command.join(childs_cached_stdout_file);
+    //     if childs_cached_stdout_path.exists() {
+    //         // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
+    //         list_of_files.push((
+    //             LinkType::Hardlink,
+    //             childs_cached_stdout_path,
+    //             parents_spot_for_childs_stdout,
+    //         ))
+    //     }
+    // }
 
     list_of_files
 }

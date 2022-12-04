@@ -84,32 +84,32 @@ impl CachedExecution {
             let comm_hash = hash_command(self.command());
             let cache_subdir = cache_subdir.join(comm_hash.to_string());
             debug!("cache_subdir: {:?}", cache_subdir);
-            let dir = read_dir(cache_subdir.clone()).unwrap();
+            // let dir = read_dir(cache_subdir.clone()).unwrap();
 
             // Parent has all the stdouts of the whole tree below it.
             // Get vec of all files that contain "stdout" in their file name
-            let mut vec_of_stdout_files = Vec::new();
-            for file in dir {
-                let file = file.unwrap();
-                let path = file.path();
-                let file_name = file.file_name();
-                let file_name = file_name.into_string().unwrap();
-                if file_name.contains("stdout") {
-                    vec_of_stdout_files.push(path);
-                }
-            }
+            // let mut vec_of_stdout_files = Vec::new();
+            // for file in dir {
+            //     let file = file.unwrap();
+            //     let path = file.path();
+            //     let file_name = file.file_name();
+            //     let file_name = file_name.into_string().unwrap();
+            //     if file_name.contains("stdout") {
+            //         vec_of_stdout_files.push(path);
+            //     }
+            // }
 
             // sort this vec
-            vec_of_stdout_files.sort();
+            // vec_of_stdout_files.sort();
             // print in this order
-            for stdout_file_path in vec_of_stdout_files {
-                let mut f = File::open(stdout_file_path).unwrap();
-                let mut buf = Vec::new();
-                let bytes = f.read_to_end(&mut buf).unwrap();
-                if bytes != 0 {
-                    io::stdout().write_all(&buf).unwrap();
-                }
-            }
+            // for stdout_file_path in vec_of_stdout_files {
+            //     let mut f = File::open(stdout_file_path).unwrap();
+            //     let mut buf = Vec::new();
+            //     let bytes = f.read_to_end(&mut buf).unwrap();
+            //     if bytes != 0 {
+            //         io::stdout().write_all(&buf).unwrap();
+            //     }
+            // }
 
             // If an execution has no postconditions, it may just not have output files.
             // That's not a reason to panic.

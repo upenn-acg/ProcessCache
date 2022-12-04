@@ -26,7 +26,7 @@ use crate::{
     condition_utils::{Fact, FileType},
     execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
-    redirection::{close_stdout_duped_fd, redirect_io_stream},
+    // redirection::{close_stdout_duped_fd, redirect_io_stream},
     syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
 };
 use crate::{
@@ -260,10 +260,10 @@ pub async fn trace_process(
     let mut iostream_redirected = false;
     let caching_off = false;
     let mut skip_execution = false;
-    let mut pls_close_stdout_fd = false;
-    let mut stdout_fd_has_been_closed = false;
+    // let mut pls_close_stdout_fd = false;
+    // let mut stdout_fd_has_been_closed = false;
     // TODO: Deal with PID recycling?
-    let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
+    // let stdout_file: String = format!("stdout_{:?}", tracer.curr_proc.as_raw());
 
     loop {
         let event = tracer
@@ -322,15 +322,15 @@ pub async fn trace_process(
                     // If close_stdout_fd == true, then we need to close our "stdout" fd.
                     // Whatever stdout is duped to.
                     // We only want to do this if we have NOT already done this.
-                    if pls_close_stdout_fd && !stdout_fd_has_been_closed {
-                        close_stdout_duped_fd(&curr_execution, &mut tracer)
-                            .await
-                            .with_context(|| context!("Unable to close stdout duped fd."))?;
-                        pls_close_stdout_fd = false;
-                        stdout_fd_has_been_closed = true;
-                        // Continue to let original system call run.
-                        continue;
-                    }
+                    // if pls_close_stdout_fd && !stdout_fd_has_been_closed {
+                    //     close_stdout_duped_fd(&curr_execution, &mut tracer)
+                    //         .await
+                    //         .with_context(|| context!("Unable to close stdout duped fd."))?;
+                    //     pls_close_stdout_fd = false;
+                    //     stdout_fd_has_been_closed = true;
+                    //     // Continue to let original system call run.
+                    //     continue;
+                    // }
 
                     // For file creation type events (creat, open, openat), we want to know if the file already existed
                     // before the syscall happens (i.e. in the prehook).
@@ -537,8 +537,8 @@ pub async fn trace_process(
                                             }
                                         } else if curr_execution.pid() != tracer.curr_proc {
                                             // Get the stdout fd from the current exec if it exists.
-                                            let childs_stdout_fd = curr_execution
-                                                .get_stdout_duped_fd(tracer.curr_proc);
+                                            // let childs_stdout_fd = curr_execution
+                                            //     .get_stdout_duped_fd(tracer.curr_proc);
 
                                             // New rc exec for the child exec.
                                             // Add to parent's struct.
@@ -550,14 +550,14 @@ pub async fn trace_process(
                                             let new_rc_child_exec =
                                                 RcExecution::new(new_child_exec);
 
-                                            if let Some(stdout_fd) = childs_stdout_fd {
-                                                new_rc_child_exec.add_stdout_duped_fd(
-                                                    stdout_fd,
-                                                    tracer.curr_proc,
-                                                );
-                                                curr_execution
-                                                    .remove_stdout_duped_fd(tracer.curr_proc)
-                                            }
+                                            // if let Some(stdout_fd) = childs_stdout_fd {
+                                            //     new_rc_child_exec.add_stdout_duped_fd(
+                                            //         stdout_fd,
+                                            //         tracer.curr_proc,
+                                            //     );
+                                            //     curr_execution
+                                            //         .remove_stdout_duped_fd(tracer.curr_proc)
+                                            // }
                                             curr_execution
                                                 .add_child_execution(new_rc_child_exec.clone());
                                             curr_execution = new_rc_child_exec;
@@ -613,41 +613,41 @@ pub async fn trace_process(
                                 }
                             }
                             _ => {
-                                if !iostream_redirected {
-                                    const STDOUT_FD: u32 = 1;
-                                    // const STDERR_FD: u32 = 2;
-                                    // TODO: Deal with PID recycling?
-                                    if !(PTRACE_ONLY || FACT_GEN) {
-                                        let exec = curr_execution.executable();
-                                        let args = curr_execution.args();
-                                        let comm_hash = hash_command(ExecCommand(exec, args));
-                                        let cache_subdir = fs::canonicalize("./cache").unwrap();
-                                        let cache_subdir =
-                                            cache_subdir.join(format!("{:?}", comm_hash));
-                                        if !cache_subdir.exists() {
-                                            fs::create_dir(cache_subdir.clone()).unwrap();
-                                        }
+                                // if !iostream_redirected {
+                                const STDOUT_FD: u32 = 1;
+                                // const STDERR_FD: u32 = 2;
+                                // TODO: Deal with PID recycling?
+                                if !(PTRACE_ONLY || FACT_GEN) {
+                                    let exec = curr_execution.executable();
+                                    let args = curr_execution.args();
+                                    let comm_hash = hash_command(Command(exec, args));
+                                    let cache_subdir = fs::canonicalize("./cache").unwrap();
+                                    let cache_subdir =
+                                        cache_subdir.join(format!("{:?}", comm_hash));
+                                    if !cache_subdir.exists() {
+                                        fs::create_dir(cache_subdir.clone()).unwrap();
                                     }
-
-                                    // This is the first real system call this program is doing after exec-ing.
-                                    // We will redirect their stdout and stderr output here by writing them to files.
-                                    redirect_io_stream(
-                                        &stdout_file,
-                                        STDOUT_FD,
-                                        &mut tracer,
-                                        &curr_execution,
-                                    )
-                                    .await
-                                    .with_context(|| context!("Unable to redirect stdout."))?;
-                                    // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
-                                    //     .await
-                                    //     .with_context(|| context!("Unable to redirect stderr."))?;
-                                    // TODO: Add stderr redirection.
-
-                                    iostream_redirected = true;
-                                    // Continue to let original system call run.
-                                    continue;
                                 }
+
+                                // This is the first real system call this program is doing after exec-ing.
+                                // We will redirect their stdout and stderr output here by writing them to files.
+                                // redirect_io_stream(
+                                //     &stdout_file,
+                                //     STDOUT_FD,
+                                //     &mut tracer,
+                                //     &curr_execution,
+                                // )
+                                // .await
+                                // .with_context(|| context!("Unable to redirect stdout."))?;
+                                // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
+                                //     .await
+                                //     .with_context(|| context!("Unable to redirect stderr."))?;
+                                // TODO: Add stderr redirection.
+
+                                iostream_redirected = true;
+                                // Continue to let original system call run.
+                                //     continue;
+                                // }
                             }
                         }
                     } else {
@@ -672,14 +672,14 @@ pub async fn trace_process(
                         "chdir" => handle_chdir(&curr_execution, &tracer)?,
                         "close" => {
                             // The call was successful.
-                            if ret_val == 0 && !stdout_fd_has_been_closed {
-                                let fd = regs.arg1::<i32>();
-                                // They are closing stdout.
-                                // Weirdos.
-                                if fd == 1 {
-                                    pls_close_stdout_fd = true;
-                                }
-                            }
+                            // if ret_val == 0 && !stdout_fd_has_been_closed {
+                            //     let fd = regs.arg1::<i32>();
+                            //     // They are closing stdout.
+                            //     // Weirdos.
+                            //     if fd == 1 {
+                            //         pls_close_stdout_fd = true;
+                            //     }
+                            // }
                         }
                         // TODO?
                         "connect" | "pipe" | "pipe2" | "socket" => (),
