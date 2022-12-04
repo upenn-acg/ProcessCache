@@ -48,7 +48,16 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
                 fs::remove_file(source).unwrap();
             }
         } else {
-            fs::hard_link(source.clone(), dest).unwrap();
+            if !dest.exists() {
+                match fs::hard_link(source.clone(), dest.clone()) {
+                    Ok(_) => (),
+                    Err(e) => panic!(
+                        "Hard link failed: source {:?}, dest {:?}, e: {:?}",
+                        source, dest, e
+                    ),
+                }
+            }
+            // fs::hard_link(source.clone(), dest).unwrap();
         }
     }
 }
@@ -66,15 +75,12 @@ pub fn generate_open_syscall_file_event(
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
     }
 
-    if full_path.starts_with("/dev/null") {
-        return None;
-    }
-
     if full_path.starts_with("/tmp")
         || full_path.starts_with("/temp")
         || full_path.starts_with("/proc")
         || full_path.starts_with("/usr")
         || full_path.starts_with("/etc")
+        || full_path.starts_with("/dev")
         || full_path == PathBuf::from("/home/kelly/research/ProcessCache")
     {
         return None;

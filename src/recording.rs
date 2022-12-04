@@ -598,7 +598,7 @@ pub fn copy_output_files_to_cache(
             };
 
         for fact in fact_set {
-            if (fact == Fact::Exists || fact == Fact::FinalContents) && path.clone().exists() {
+            if fact == Fact::FinalContents && path.clone().exists() {
                 if is_child {
                     // If it's a child's file, then we need to hardlink from the
                     // child's cache to the parent's.
