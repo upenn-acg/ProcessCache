@@ -1,7 +1,7 @@
 use crossbeam::channel::{unbounded, Sender};
 use libc::{
-    c_char, c_uchar, AT_FDCWD, CLONE_THREAD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG,
-    DT_SOCK, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
+    c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE,
+    O_RDONLY, O_RDWR, O_WRONLY,
 };
 use nix::{
     dir,
@@ -9,7 +9,15 @@ use nix::{
     sys::{stat::FileStat, statfs::Statfs},
     unistd::Pid,
 };
-use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
+use std::{
+    collections::HashMap,
+    ffi::CStr,
+    fs::{self, read_dir, remove_file, File},
+    io::Read,
+    path::PathBuf,
+    rc::Rc,
+    thread,
+};
 
 use crate::{
     async_runtime::AsyncRuntime,
@@ -121,49 +129,27 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // because of potential collisions on the hash.
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
     if !(full_tracking_on || first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
-        // const CACHE_LOCATION: &str = "./cache/cache";
-        // let cache_path = PathBuf::from(CACHE_LOCATION);
-
-        // TODO: add to existing cache
-        // let mut existing_cache = if !cache_path.exists() {
-        //     File::create(cache_path).unwrap();
-        //     HashMap::new()
-        // } else if let Some(existing_cache) = retrieve_existing_cache() {
-        //     existing_cache
-        // } else {
-        //     HashMap::new()
-        // };
-
+        // TODO: check for stdouts and try to print them?
         let mut cache_map = HashMap::new();
         first_execution.populate_cache_map(&mut cache_map);
         serialize_execs_to_cache(cache_map.clone());
 
-        // for (command, cached_exec) in cache_map {
-        //     println!("Command: {:?}", command);
-
-        //     let preconditions = cached_exec.preconditions();
-        //     let postconditions = cached_exec.postconditions();
-
-        //     println!();
-        //     println!("Preconditions:");
-        //     for (path, set) in preconditions {
-        //         if !set.is_empty() {
-        //             println!("Path: {:?}", path);
-        //             println!("Facts: {:?}", set);
-        //         }
-        //     }
-
-        //     println!();
-        //     println!("Postconditions:");
-        //     for (path, set) in postconditions {
-        //         if !set.is_empty() {
-        //             println!("Path: {:?}", path);
-        //             println!("Facts: {:?}", set);
-        //         }
-        //     }
-        //     println!();
-        // }
-        // serialize_execs_to_cache(new_cache);
+        let starting_cwd = first_execution.starting_cwd();
+        let dir = read_dir(starting_cwd.clone()).unwrap();
+        for file in dir {
+            let file = file.unwrap();
+            let path = file.path();
+            let file_name = file.file_name();
+            let file_name = file_name.into_string().unwrap();
+            if file_name.contains("stdout") {
+                let mut f = File::open(path.clone()).unwrap();
+                let mut buf = Vec::new();
+                let bytes = f.read_to_end(&mut buf).unwrap();
+                if bytes == 0 {
+                    remove_file(path).unwrap();
+                }
+            }
+        }
     }
 
     if let Some(sender) = option_sender {
@@ -598,9 +584,9 @@ pub async fn trace_process(
                 // unsigned long flags = (unsigned long)tracer.arg1();
                 // isThread = (flags & CLONE_THREAD) != 0;
 
-                let regs = tracer
-                    .get_registers()
-                    .with_context(|| context!("Failed to get regs in handle_access()"))?;
+                // let regs = tracer
+                //     .get_registers()
+                //     .with_context(|| context!("Failed to get regs in handle_access()"))?;
 
                 // flags are the 3rd arg to clone.
                 // let flags = regs.arg3::<i32>();
@@ -689,6 +675,8 @@ pub async fn trace_process(
             // if the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
             // instead of recomputing the child's along with its own
+            // TODO: if the tracer.curr_proc != curr_execution.pid, don't do any of this?
+            // because then it's a thread.
             if !(skip_execution || PTRACE_ONLY || FACT_GEN) {
                 // Add exit code to the exec struct, if this is the
                 // pid that exec'd the exec. execececececec.

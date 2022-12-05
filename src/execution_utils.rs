@@ -32,12 +32,15 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
     while let Ok((link_type, source, dest)) = recv_end.recv() {
         if link_type == LinkType::Copy {
             // fs::copy(source.clone(), dest).unwrap();
-            match fs::copy(source.clone(), dest.clone()) {
-                Ok(_) => (),
-                Err(e) => panic!(
-                    "Failed to copy source: {:?}, dest: {:?}, error: {:?}",
-                    source, dest, e
-                ),
+            // match fs::copy(source.clone(), dest.clone()) {
+            //     Ok(_) => (),
+            //     Err(e) => panic!(
+            //         "Failed to copy source: {:?}, dest: {:?}, error: {:?}",
+            //         source, dest, e
+            //     ),
+            // }
+            if source.clone().exists() {
+                fs::copy(source.clone(), dest).unwrap();
             }
             let source_str = source.clone().into_os_string().into_string().unwrap();
             // The thread removes the old stdout files once they have been moved to the cache.
