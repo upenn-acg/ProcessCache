@@ -326,6 +326,7 @@ pub async fn trace_process(
 
                                 let exec_path_buf = PathBuf::from(executable.clone());
                                 debug!("Raw executable: {:?}", exec_path_buf);
+                                debug!("args: {:?}", args);
                                 let exec_path_buf = if exec_path_buf.is_relative() {
                                     // fs::canonicalize(exec_path_buf).unwrap()
                                     let file_name = exec_path_buf.file_name().unwrap();
@@ -335,6 +336,16 @@ pub async fn trace_process(
                                 };
                                 debug!("Execve event, executable: {:?}", exec_path_buf);
 
+                                // let command = Command(
+                                //     exec_path_buf
+                                //         .clone()
+                                //         .into_os_string()
+                                //         .into_string()
+                                //         .unwrap(),
+                                //     args.clone(),
+                                // );
+                                // let hashed_command = hash_command(command.clone());
+                                // debug!("HASHED COMMAND: {:?}", hashed_command);
                                 // Check the cache for the thing
                                 if !FACT_GEN {
                                     if let Some(cache) = retrieve_existing_cache() {
@@ -870,7 +881,7 @@ fn handle_get_dents64(
 
     let fd = regs.arg1::<i32>();
     let full_path = path_from_fd(tracer.curr_proc, fd)?;
-
+    debug!("Full getdents64 path: {:?}", full_path);
     // Pointer to linux_dirent passed to get_dents64 system call.
     let mut dirp: *const u8 = regs.arg2::<*const u8>();
     // Number of bytes written by OS to dirp.

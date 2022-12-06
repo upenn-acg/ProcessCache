@@ -197,9 +197,13 @@ impl Execution {
     fn generate_cached_exec(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
         let command_key = Command(self.executable(), self.args());
 
+        let children = self.child_execs.clone();
+        let child_exec_count = children.len();
+
         // let preconditions = generate_preconditions(file_events);
         let cached_metadata = CachedExecMetadata::new(
             self.pid().as_raw(),
+            child_exec_count as u32,
             command_key.clone(),
             self.env_vars(),
             self.starting_cwd(),
@@ -211,8 +215,6 @@ impl Execution {
             None,
             self.postconditions(),
         );
-
-        let children = self.child_execs.clone();
 
         for child in children {
             child.generate_cached_exec(cache_map);

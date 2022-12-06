@@ -3,7 +3,7 @@ use tracing::debug;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    fs::{create_dir, remove_dir, rename, File},
+    fs::{create_dir, read_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
     io::Read,
     path::PathBuf,
@@ -17,6 +17,7 @@ use crate::{condition_generator::Accessor, condition_utils::Fact};
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecMetadata {
     caller_pid: SessionId,
+    child_exec_count: u32,
     command: Command,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
@@ -29,6 +30,7 @@ pub struct CachedExecMetadata {
 impl CachedExecMetadata {
     pub fn new(
         caller_pid: SessionId,
+        child_exec_count: u32,
         command: Command,
         env_vars: Vec<String>,
         starting_cwd: PathBuf,
@@ -36,6 +38,7 @@ impl CachedExecMetadata {
     ) -> CachedExecMetadata {
         CachedExecMetadata {
             caller_pid,
+            child_exec_count,
             command,
             env_vars,
             starting_cwd,
@@ -45,6 +48,10 @@ impl CachedExecMetadata {
 
     pub fn caller_pid(&self) -> SessionId {
         self.caller_pid
+    }
+
+    pub fn child_exec_count(&self) -> u32 {
+        self.child_exec_count
     }
 
     pub fn command(&self) -> Command {
@@ -67,6 +74,23 @@ impl Command {
     pub fn new(exe: String, args: Vec<String>) -> Self {
         Command(exe, args)
     }
+}
+
+pub fn number_of_child_cache_subdirs(root_exec_command: Command) -> u32 {
+    // Create the root exec's cache subdir path.
+    let hashed_root_exec_command = hash_command(root_exec_command);
+    let cache_dir = PathBuf::from("./cache");
+    let root_exec_cache_subdir = cache_dir.join(hashed_root_exec_command.to_string());
+
+    let curr_entries = read_dir(root_exec_cache_subdir).unwrap();
+    let mut count = 0;
+    for entry in curr_entries {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            count += 1;
+        }
+    }
+    count
 }
 
 pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {

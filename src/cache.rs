@@ -1,6 +1,7 @@
 use crate::{
     cache_utils::{
-        create_dirs, delete_dirs, hash_command, rename_dirs, CachedExecMetadata, Command,
+        create_dirs, delete_dirs, hash_command, number_of_child_cache_subdirs, rename_dirs,
+        CachedExecMetadata, Command,
     },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
@@ -119,6 +120,22 @@ impl CachedExecution {
     // TODO: this needs to work with the "ignored" stuff.
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
+            // Create the exec's cache subdir path.
+            let command = self.command();
+            let hashed_command = hash_command(command);
+            let cache_dir = PathBuf::from("./cache");
+            let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
+            if root_exec_cache_subdir.exists() {
+                if self.cached_metadata.child_exec_count()
+                    != number_of_child_cache_subdirs(self.command())
+                {
+                    debug!("Precondition that failed: diff number of child cache subdirs");
+                    return false;
+                }
+            } else {
+                // If it doesn't exist we certainly can't serve from it ;)
+                return false;
+            }
             let my_preconds = self.preconditions.clone();
             // TODO: actaully handle checking env vars x)
             let vars = std::env::vars();
