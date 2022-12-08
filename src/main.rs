@@ -181,7 +181,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getegid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getgid)?;
-    loader.let_pass(libc::SYS_getpgrp)?;
     loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_getppid)?;
     loader.let_pass(libc::SYS_getpgrp)?;
