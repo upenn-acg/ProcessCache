@@ -194,12 +194,16 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 // println!("Diff: {:?}", diff);
                 // println!("Other diff: {:?}", other_diff);
 
-                old_set == curr_dir_entries
+                let sets_are_equal = old_set == curr_dir_entries;
+                let proper_subset = old_set.is_subset(&curr_dir_entries);
+                sets_are_equal || proper_subset
             }
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
-            Fact::InputFilesMatch => true,
+            // TODO: Actually implement this for file diffing
+            // Also maybe rename InputFilesMatch --> InputFileDiffMatches
+            Fact::InputFilesMatch => todo!(),
             Fact::HasDirPermission(flags, optional_root_dir) => {
                 debug!("Dir perm flags: {:?}", flags);
                 let dir = if let Some(root_dir) = optional_root_dir {
