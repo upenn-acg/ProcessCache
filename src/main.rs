@@ -1,4 +1,4 @@
-use cache_utils::Command;
+use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     // TODO: get starting cwd of first exec
     let opt = Opt::from_args();
     let full_tracking_on = opt.full_tracking;
-    let command = Command::new(opt.exe, opt.args);
+    let command = ExecCommand::new(opt.exe, opt.args);
 
     run_tracer_and_tracee(command, full_tracking_on)?;
     Ok(())
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 // we do all the tracing,
 // we do all iterative (repetitive) precondition checking,
 // and let it run normally in between.
-fn run_tracer_and_tracee(command: Command, full_tracking_on: bool) -> anyhow::Result<()> {
+fn run_tracer_and_tracee(command: ExecCommand, full_tracking_on: bool) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -97,7 +97,7 @@ fn run_tracer_and_tracee(command: Command, full_tracking_on: bool) -> anyhow::Re
 
 /// This function should be called after a fork.
 /// uses execve to call the tracee program and have it ready to be ptraced.
-pub(crate) fn run_tracee(command: Command) -> anyhow::Result<()> {
+pub(crate) fn run_tracee(command: ExecCommand) -> anyhow::Result<()> {
     use nix::sys::signal::raise;
     use std::ffi::CStr;
 

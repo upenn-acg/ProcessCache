@@ -1,6 +1,6 @@
 use crate::{
     cache::{CacheMap, CachedExecution, RcCachedExec},
-    cache_utils::{hash_command, CachedExecMetadata, Command},
+    cache_utils::{hash_command, CachedExecMetadata, ExecCommand},
     condition_generator::{generate_preconditions, Accessor, ExecSyscallEvents},
     condition_utils::{Fact, Postconditions},
     execution_utils::get_umask,
@@ -32,7 +32,7 @@ pub enum LinkType {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecMetadata {
     caller_pid: Proc,
-    command: Command,
+    command: ExecCommand,
     cwd: PathBuf,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
@@ -47,7 +47,7 @@ impl ExecMetadata {
         let pid = caller_pid.0;
         ExecMetadata {
             caller_pid,
-            command: Command(String::new(), Vec::new()),
+            command: ExecCommand(String::new(), Vec::new()),
             cwd: PathBuf::new(),
             env_vars: Vec::new(),
             starting_cwd: PathBuf::new(),
@@ -79,7 +79,7 @@ impl ExecMetadata {
         pid
     }
 
-    fn command(&self) -> Command {
+    fn command(&self) -> ExecCommand {
         self.command.clone()
     }
 
@@ -178,7 +178,7 @@ impl Execution {
         self.child_execs.clone()
     }
 
-    fn command(&self) -> Command {
+    fn command(&self) -> ExecCommand {
         self.successful_exec.command()
     }
 
@@ -194,8 +194,8 @@ impl Execution {
         self.successful_exec.executable()
     }
 
-    fn generate_cached_exec(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
-        let command_key = Command(self.executable(), self.args());
+    fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
+        let command_key = ExecCommand(self.executable(), self.args());
 
         let children = self.child_execs.clone();
         let child_exec_count = children.len();
@@ -367,7 +367,7 @@ impl RcExecution {
         self.0.borrow().children()
     }
 
-    pub fn command(&self) -> Command {
+    pub fn command(&self) -> ExecCommand {
         self.0.borrow().command()
     }
 
@@ -383,7 +383,7 @@ impl RcExecution {
     //     self.0.borrow().generate_cached_exec(cache_map)
     // }
 
-    pub fn generate_cached_exec(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
+    pub fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
         self.0.borrow().generate_cached_exec(cache_map)
     }
 
@@ -408,7 +408,7 @@ impl RcExecution {
         self.0.borrow().pid()
     }
 
-    pub fn populate_cache_map(&self, cache_map: &mut HashMap<Command, RcCachedExec>) {
+    pub fn populate_cache_map(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
         self.0.borrow().populate_cache_map(cache_map)
     }
 
@@ -453,7 +453,7 @@ impl RcExecution {
 
 pub fn append_dir_events(
     parent_events: &mut HashMap<Accessor, Vec<DirEvent>>,
-    child_command: Command,
+    child_command: ExecCommand,
     child_events: HashMap<Accessor, Vec<DirEvent>>,
     child_pid: Pid,
 ) {
@@ -490,7 +490,7 @@ pub fn append_dir_events(
             // If the parent has never touched this dir we must copy the child's
             // events to the parent's map (with the CHILD as the Accessor).
             // child_accessor is this for the child: CurrProc(Path)
-            // For the parent it needs to be: ChildProc(HashedCommand, Path).
+            // For the parent it needs to be: ChildProc(HashedExecCommand, Path).
             let accessor = match child_accessor {
                 Accessor::ChildProc(hash_of_grandchild, path) => {
                     Accessor::ChildProc(hash_of_grandchild, path)
@@ -507,7 +507,7 @@ pub fn append_dir_events(
 
 pub fn append_file_events(
     parent_events: &mut HashMap<Accessor, Vec<FileEvent>>,
-    child_command: Command,
+    child_command: ExecCommand,
     child_events: HashMap<Accessor, Vec<FileEvent>>,
     child_pid: Pid,
 ) {
@@ -543,7 +543,7 @@ pub fn append_file_events(
             // If the parent has never touched this file we must copy the child's
             // events to the parent's map (with the CHILD as the Accessor).
             // child_accessor is this for the child: CurrProc(Path)
-            // For the parent it needs to be: ChildProc(HashedCommand, Path).
+            // For the parent it needs to be: ChildProc(HashedExecCommand, Path).
             let accessor = match child_accessor {
                 Accessor::ChildProc(hash_of_grandchild, path) => {
                     Accessor::ChildProc(hash_of_grandchild, path)
@@ -571,7 +571,7 @@ pub fn copy_output_files_to_cache(
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
 
-    let command = Command(curr_execution.executable(), curr_execution.args());
+    let command = ExecCommand(curr_execution.executable(), curr_execution.args());
     let hashed_command = hash_command(command);
     let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
     if !cache_subdir_hashed_command.exists() {
@@ -641,7 +641,7 @@ pub fn copy_output_files_to_cache(
 
     let children = curr_execution.children();
     for child in children {
-        let child_command = Command(child.executable(), child.args());
+        let child_command = ExecCommand(child.executable(), child.args());
         let hashed_command = hash_command(child_command);
         let child_subdir = cache_dir.join(hashed_command.to_string());
         if !child_subdir.exists() {
@@ -670,7 +670,7 @@ pub fn generate_list_of_files_to_copy_to_cache(
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
 
-    let command = Command(curr_execution.executable(), curr_execution.args());
+    let command = ExecCommand(curr_execution.executable(), curr_execution.args());
     let hashed_command = hash_command(command);
     let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
     if !cache_subdir_hashed_command.exists() {
@@ -741,7 +741,7 @@ pub fn generate_list_of_files_to_copy_to_cache(
     // Children's stdout files.
     let children = curr_execution.children();
     for child in children {
-        let child_command = Command(child.executable(), child.args());
+        let child_command = ExecCommand(child.executable(), child.args());
         let hashed_child_command = hash_command(child_command);
         let child_subdir = cache_dir.join(hashed_child_command.to_string());
 

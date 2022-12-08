@@ -16,8 +16,7 @@ use nix::{
 use tracing::debug;
 
 use crate::{
-    cache_utils::{hash_command, Command},
-    condition_generator::ExecSyscallEvents,
+    cache_utils::{hash_command, ExecCommand},
     context,
     recording::{LinkType, RcExecution},
     syscalls::{
@@ -213,7 +212,7 @@ fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathB
     let cache_dir = PathBuf::from(CACHE_LOCATION);
     let input_str = PathBuf::from("input_files");
 
-    let command = Command(curr_execution.executable(), curr_execution.args());
+    let command = ExecCommand(curr_execution.executable(), curr_execution.args());
     let hashed_command = hash_command(command);
     let cache_subdir_hashed_command = cache_dir.join(hashed_command.to_string());
     let cache_subdir_hashed_command_inputs_dir = cache_subdir_hashed_command.join(input_str);

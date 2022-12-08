@@ -1,7 +1,7 @@
 use crate::{
     cache_utils::{
         create_dirs, delete_dirs, hash_command, number_of_child_cache_subdirs, rename_dirs,
-        CachedExecMetadata, Command,
+        CachedExecMetadata, ExecCommand,
     },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
@@ -22,7 +22,7 @@ use tracing::{debug, error, info, span, trace, Level};
 
 // TODO:
 // pub type CacheMap = HashMap<Command, Vec<RcCachedExec>>;
-pub type CacheMap = HashMap<Command, RcCachedExec>;
+pub type CacheMap = HashMap<ExecCommand, RcCachedExec>;
 
 // The executable path and args
 // are the key to the map.
@@ -201,7 +201,7 @@ impl CachedExecution {
         }
     }
 
-    pub fn command(&self) -> Command {
+    pub fn command(&self) -> ExecCommand {
         self.cached_metadata.command()
     }
 
