@@ -32,7 +32,7 @@ use crate::{
     syscalls::Stat,
 };
 use crate::{
-    cache_utils::{hash_command, Command},
+    cache_utils::{hash_command, ExecCommand},
     condition_generator::generate_postconditions,
     recording::{append_file_events, copy_output_files_to_cache},
 };
@@ -152,7 +152,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         serialize_execs_to_cache(cache_map.clone());
 
         // for (command, cached_exec) in cache_map {
-        //     println!("Command: {:?}", command);
+        //     println!("ExecCommand: {:?}", command);
 
         //     let preconditions = cached_exec.preconditions();
         //     let postconditions = cached_exec.postconditions();
@@ -336,7 +336,7 @@ pub async fn trace_process(
                                 };
                                 debug!("Execve event, executable: {:?}", exec_path_buf);
 
-                                // let command = Command(
+                                // let command = ExecCommand(
                                 //     exec_path_buf
                                 //         .clone()
                                 //         .into_os_string()
@@ -345,11 +345,11 @@ pub async fn trace_process(
                                 //     args.clone(),
                                 // );
                                 // let hashed_command = hash_command(command.clone());
-                                // debug!("HASHED COMMAND: {:?}", hashed_command);
+                                // panic!("EXECCOMMAND: {:?}, HASHED COMMAND: {:?}", command, hashed_command);
                                 // Check the cache for the thing
                                 if !FACT_GEN {
                                     if let Some(cache) = retrieve_existing_cache() {
-                                        let command = Command(
+                                        let command = ExecCommand(
                                             exec_path_buf
                                                 .clone()
                                                 .into_os_string()
@@ -519,7 +519,7 @@ pub async fn trace_process(
                                     if !(PTRACE_ONLY || FACT_GEN) {
                                         let exec = curr_execution.executable();
                                         let args = curr_execution.args();
-                                        let comm_hash = hash_command(Command(exec, args));
+                                        let comm_hash = hash_command(ExecCommand(exec, args));
                                         let cache_subdir = fs::canonicalize("./cache").unwrap();
                                         let cache_subdir =
                                             cache_subdir.join(format!("{:?}", comm_hash));

@@ -18,7 +18,7 @@ use crate::{condition_generator::Accessor, condition_utils::Fact};
 pub struct CachedExecMetadata {
     caller_pid: SessionId,
     child_exec_count: u32,
-    command: Command,
+    command: ExecCommand,
     env_vars: Vec<String>,
     // Currently this is just the first argument to execve
     // so I am not making sure it's the abosolute path.
@@ -31,7 +31,7 @@ impl CachedExecMetadata {
     pub fn new(
         caller_pid: SessionId,
         child_exec_count: u32,
-        command: Command,
+        command: ExecCommand,
         env_vars: Vec<String>,
         starting_cwd: PathBuf,
         starting_umask: u32,
@@ -54,7 +54,7 @@ impl CachedExecMetadata {
         self.child_exec_count
     }
 
-    pub fn command(&self) -> Command {
+    pub fn command(&self) -> ExecCommand {
         self.command.clone()
     }
 
@@ -68,15 +68,15 @@ impl CachedExecMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct Command(pub String, pub Vec<String>);
+pub struct ExecCommand(pub String, pub Vec<String>);
 
-impl Command {
+impl ExecCommand {
     pub fn new(exe: String, args: Vec<String>) -> Self {
-        Command(exe, args)
+        ExecCommand(exe, args)
     }
 }
 
-pub fn number_of_child_cache_subdirs(root_exec_command: Command) -> u32 {
+pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
     // Create the root exec's cache subdir path.
     let hashed_root_exec_command = hash_command(root_exec_command);
     let cache_dir = PathBuf::from("./cache");
@@ -182,7 +182,7 @@ pub fn generate_hash(path: PathBuf) -> Vec<u8> {
     }
 }
 
-pub fn hash_command(command: Command) -> u64 {
+pub fn hash_command(command: ExecCommand) -> u64 {
     let mut hasher = DefaultHasher::new();
     command.hash(&mut hasher);
 
