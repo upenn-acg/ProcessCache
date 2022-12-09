@@ -17,6 +17,7 @@ use tracing::debug;
 
 use crate::{
     cache_utils::{hash_command, Command},
+    condition_generator::ExecSyscallEvents,
     context,
     recording::{LinkType, RcExecution},
     syscalls::{
@@ -97,6 +98,7 @@ pub fn generate_open_syscall_file_event(
             || open_flags.access_mode == AccessMode::Read)
     {
         // DIFF FILES
+        // TODO: Copy the input file to the cache for later checking.
         // Some(CheckMechanism::DiffFiles)
         // HASH
         // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
@@ -297,11 +299,24 @@ pub fn get_full_path(
     Ok(full_path)
 }
 
-pub fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
-    debug!("In path_from_fd()");
-    let proc_path = format!("/proc/{}/fd/{}", pid, fd);
-    let proc_path = readlink(proc_path.as_str())?;
-    Ok(PathBuf::from(proc_path))
+pub fn get_total_syscall_event_count_for_root(events: ExecSyscallEvents) -> u64 {
+    let mut total_syscall_count = 0;
+
+    // First let's count all the file events.
+    let file_events = events.file_events();
+    for (_, events) in file_events {
+        let file_event_count = events.len() as u64;
+        total_syscall_count += file_event_count;
+    }
+
+    // Then we will count all the dir events. (not to be confused with the Ders Effect)
+    let dir_events = events.dir_events();
+    for (_, events) in dir_events {
+        let dir_event_count = events.len() as u64;
+        total_syscall_count += dir_event_count;
+    }
+
+    total_syscall_count
 }
 
 pub fn get_umask(pid: &Pid) -> u32 {
@@ -316,4 +331,11 @@ pub fn get_umask(pid: &Pid) -> u32 {
         .unwrap();
     debug!("recording umask 0{:o}", umask);
     umask
+}
+
+pub fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
+    debug!("In path_from_fd()");
+    let proc_path = format!("/proc/{}/fd/{}", pid, fd);
+    let proc_path = readlink(proc_path.as_str())?;
+    Ok(PathBuf::from(proc_path))
 }

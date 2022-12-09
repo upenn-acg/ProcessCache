@@ -202,7 +202,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
             Fact::Exists => path_name.exists(),
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
             // TODO: Actually implement this for file diffing
-            // Also maybe rename InputFilesMatch --> InputFileDiffMatches
+            // Also maybe rename InputFilesMatch --> DiffInputFiles
             Fact::InputFilesMatch => todo!(),
             Fact::HasDirPermission(flags, optional_root_dir) => {
                 debug!("Dir perm flags: {:?}", flags);

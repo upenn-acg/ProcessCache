@@ -1,7 +1,7 @@
 use crossbeam::channel::{unbounded, Sender};
 use libc::{
-    c_char, c_uchar, AT_FDCWD, CLONE_THREAD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG,
-    DT_SOCK, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY,
+    c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE,
+    O_RDONLY, O_RDWR, O_WRONLY,
 };
 use nix::{
     dir,
@@ -9,13 +9,20 @@ use nix::{
     sys::{stat::FileStat, statfs::Statfs},
     unistd::Pid,
 };
-use std::{collections::HashMap, ffi::CStr, fs, path::PathBuf, rc::Rc, thread};
+use std::{
+    collections::HashMap,
+    ffi::CStr,
+    fs::{self},
+    path::PathBuf,
+    rc::Rc,
+    thread,
+};
 
 use crate::{
     async_runtime::AsyncRuntime,
     condition_generator::ExecSyscallEvents,
     condition_utils::FileType,
-    execution_utils::background_thread_copying_outputs,
+    execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
     syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
@@ -136,6 +143,12 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 
         let mut cache_map = HashMap::new();
         first_execution.populate_cache_map(&mut cache_map);
+        // ADDITIONAL METRICS: The total number of exec units for this execution
+        // is the number of keys in this map!
+        debug!(
+            "TOTAL NUMBER OF EXEC UNITS: {:?}",
+            cache_map.clone().keys().len()
+        );
         serialize_execs_to_cache(cache_map.clone());
 
         // for (command, cached_exec) in cache_map {
@@ -272,9 +285,12 @@ pub async fn trace_process(
                     // For file creation type events (creat, open, openat), we want to know if the file already existed
                     // before the syscall happens (i.e. in the prehook).
                     let mut file_existed_at_start = false;
-                    let mut nlinks_before = 0;
                     // For unlink, we want to know the number of hardlinks.
-                    // For now, let's panic if it's > 1.
+                    let mut nlinks_before = 0;
+                    // We have a "CheckMechanism" for input files (including files you write to that depend upon
+                    // the starting contents, such as O_RDONLY, O_WRONLY + O_APPEND, and also O_WRONLY w/o offset mode)
+                    // O_TRUNC idc about the contents. Opening for append does not change mtime.
+                    // TODO: Implement all check mechanisms fully.
 
                     // Special cases, we won't get a posthook event. Instead we will get
                     // an execve event or a posthook if execve returns failure. We don't
@@ -727,6 +743,14 @@ pub async fn trace_process(
                     }
                     ExecSyscallEvents::new(new_dir_events, new_file_events)
                 };
+
+                // ADDITIONAL METRICS: Here is  where we can count total number of syscalls in this whole
+                // big execution.
+                if curr_execution.is_root() {
+                    let total_syscall_event_count =
+                        get_total_syscall_event_count_for_root(new_events.clone());
+                    debug!("TOTAL SYSCALL EVENT COUNT: {:?}", total_syscall_event_count);
+                }
 
                 curr_execution.update_syscall_events(new_events.clone());
 
