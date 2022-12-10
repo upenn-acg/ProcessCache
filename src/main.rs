@@ -1,4 +1,6 @@
-use cache_utils::ExecCommand;
+use cache::{retrieve_existing_cache, serialize_execs_to_cache};
+use cache_utils::{ExecCommand, hash_command};
+use condition_utils::Fact;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
@@ -26,7 +28,10 @@ use nix::sys::ptrace;
 use nix::sys::signal::Signal;
 use nix::unistd::{execvp, fork, ForkResult};
 use std::ffi::CString;
+use std::fs::remove_dir_all;
+use std::path::PathBuf;
 use std::process::exit;
+use std::vec;
 use structopt::StructOpt;
 
 #[allow(unused_imports)]
@@ -66,6 +71,85 @@ fn main() -> anyhow::Result<()> {
     let full_tracking_on = opt.full_tracking;
     let command = ExecCommand::new(opt.exe, opt.args);
 
+    // Here we will try to correctly remove a bwa make job.
+    // First we get an entry from the cache.
+
+    let do_stuff = false;
+    if do_stuff {
+        if let Some(mut existing_cache) = retrieve_existing_cache() {
+            let mut vec_of_dirs_to_remove: Vec<u64> = Vec::new();
+            let existing_gcc_command = ExecCommand(
+                String::from("/usr/bin/gcc"),
+                vec![
+                    String::from("gcc"),
+                    String::from("-c"),
+                    String::from("-g"),
+                    String::from("-Wall"),
+                    String::from("-Wno-unused-function"),
+                    String::from("-O2"),
+                    String::from("-DHAVE_PTHREAD"),
+                    String::from("-DUSE_MALLOC_WRAPPERS"),
+                    String::from("utils.c"),
+                    String::from("-o"),
+                    String::from("utils.o"),
+                ],
+            );
+            // Remove the entry from the existing cache.
+            // This will give us back the entry if it existed.
+            let existing_gcc_entry = existing_cache.remove(&existing_gcc_command);
+            // Generate the hash and add to the vec of dirs to remove from /cache.
+            let hashed_existing_gcc_entry = hash_command(existing_gcc_command);
+            vec_of_dirs_to_remove.push(hashed_existing_gcc_entry);
+
+            if let Some(gcc_entry) = existing_gcc_entry {
+                // TODO: If this doesn't work right, we may need to remove all the child execs?
+                let postconditions = gcc_entry.postconditions();
+                if let Some(posts) = postconditions {
+                    let file_posts = posts.file_postconditions();
+                    for (accessor, fact_set) in file_posts {
+                        let child_hashed_command = accessor.hashed_command();
+                        if let Some(ch_command) = child_hashed_command {
+                            if fact_set.contains(&Fact::FinalContents) {
+                                // The key in the cache map that matches this hash is what we want to remove.
+                                for key in existing_cache.clone().keys() {
+                                    let hashed_command = hash_command(key.clone());
+                                    if hashed_command.to_string() == ch_command {
+                                        // Remove the appropriate child exec from the cache.
+                                        existing_cache.remove(key);
+                                        // Add this hash to the vec of dirs to remove from  /cache.
+                                        vec_of_dirs_to_remove.push(hashed_command);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    panic!("The gcc entry doesn't have postconditions??");
+                }
+            } else {
+                panic!("Could not find gcc execution in existing cache!!");
+            }
+            
+            // Also remove the /cache subdirs.
+            for hash in vec_of_dirs_to_remove {
+                let cache_path = PathBuf::from("/home/kship/kship/bioinformatics-workflows/bwa/bin/cache");
+                let dir_path = cache_path.join(hash.to_string());
+                if let Err(e) = remove_dir_all(dir_path.clone()) {
+                    panic!(
+                        "Failed to remove dir: {:?} because {:?}",
+                        dir_path, e
+                    );
+                }
+            }
+
+            // Serialize the cache map back to disk.
+            serialize_execs_to_cache(existing_cache);
+
+            // Short circuit.
+            return Ok(());
+        }
+    }
     run_tracer_and_tracee(command, full_tracking_on)?;
     Ok(())
 }

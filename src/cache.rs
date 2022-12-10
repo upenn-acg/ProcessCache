@@ -121,21 +121,21 @@ impl CachedExecution {
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
             // Create the exec's cache subdir path.
-            let command = self.command();
-            let hashed_command = hash_command(command);
-            let cache_dir = PathBuf::from("./cache");
-            let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
-            if root_exec_cache_subdir.exists() {
-                if self.cached_metadata.child_exec_count()
-                    != number_of_child_cache_subdirs(self.command())
-                {
-                    debug!("Precondition that failed: diff number of child cache subdirs");
-                    return false;
-                }
-            } else {
-                // If it doesn't exist we certainly can't serve from it ;)
-                return false;
-            }
+            // let command = self.command();
+            // let hashed_command = hash_command(command);
+            // let cache_dir = PathBuf::from("./cache");
+            // let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
+            // if root_exec_cache_subdir.exists() {
+            //     if self.cached_metadata.child_exec_count()
+            //         != number_of_child_cache_subdirs(self.command())
+            //     {
+            //         debug!("Precondition that failed: diff number of child cache subdirs");
+            //         return false;
+            //     }
+            // } else {
+            //     // If it doesn't exist we certainly can't serve from it ;)
+            //     return false;
+            // }
             let my_preconds = self.preconditions.clone();
             // TODO: actaully handle checking env vars x)
             let vars = std::env::vars();
@@ -201,6 +201,10 @@ impl CachedExecution {
         }
     }
 
+    pub fn child_exec_count(&self) -> u32 {
+        self.cached_metadata.child_exec_count()
+    }
+
     pub fn command(&self) -> ExecCommand {
         self.cached_metadata.command()
     }
@@ -232,6 +236,14 @@ impl RcCachedExec {
 
     pub fn check_all_preconditions_regardless(&self) {
         self.0.check_all_preconditions_regardless()
+    }
+
+    pub fn child_exec_count(&self) -> u32 {
+        self.0.child_exec_count()
+    }
+
+    pub fn postconditions(&self) -> Option<Postconditions> {
+        self.0.postconditions()
     }
 }
 
