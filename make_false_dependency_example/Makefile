@@ -9,17 +9,17 @@ clean:
 	rm -f one.bin
 
 justmake:
-	@echo "  ** build with standalone make **"
+	@echo "\n  ** build with standalone make **\n"
 	@make clean
-	@echo "  * initial build, should be slow"
+	@echo "\n  * initial build, should be slow\n"
 	$(TimeCmd) make
-	@echo "  * update false dependency"
+	@echo "\n  * update false dependency\n"
 	touch two.c
-	@echo "  * second build, still slow"
+	@echo "\n  * second build, still slow\n"
 	$(TimeCmd) make
 
 pcmake:
-	@echo "  ** build with make + ProcessCache **"
+	@echo "\n  ** build with make + ProcessCache **\n"
 	@make clean
 	rm -rf cache/
 	@echo "\n  * initial build, should be slow\n"
@@ -27,6 +27,7 @@ pcmake:
 	@echo "\n  * NOP build to populate cache\n"
 	$(TimeCmd) $(PCCmd) make
 	@echo "\n  * update false dependency\n"
+#	echo "a" >> two.c
 	touch two.c
 	@echo "\n  * third build, should be fast\n"
 	$(TimeCmd) $(PCCmd) make
