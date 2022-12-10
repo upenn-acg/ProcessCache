@@ -1,3 +1,4 @@
+use cache::{remove_entries_from_existing_cache_struct, remove_pash_dirs};
 use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
 
@@ -65,6 +66,25 @@ fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
     let full_tracking_on = opt.full_tracking;
     let command = ExecCommand::new(opt.exe, opt.args);
+
+    // Here we can remove PASH entries from the cache directory and the
+    // serialized cache structure itself.
+    // To force p$ to skip some jobs and run others, or to prep p$
+    // to skip 'em all.
+    // TODO: For all pash benchmarks
+    // TODO: For bioinfo
+
+    // let percent_to_remove = 50;
+    // let percent_to_remove = 5;
+    let percent_to_remove = 0;
+    // If you actually passed in a % of jobs to skip.
+    if percent_to_remove != 0 {
+        // Remove the entries from the serialized cache and from the physical cache.
+        let removed_entries = remove_entries_from_existing_cache_struct(percent_to_remove);
+        remove_pash_dirs(removed_entries);
+        // Short circuit this bad boy.
+        return Ok(());
+    }
 
     run_tracer_and_tracee(command, full_tracking_on)?;
     Ok(())

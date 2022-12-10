@@ -143,25 +143,31 @@ impl CachedExecution {
     // TODO: this needs to work with the "ignored" stuff.
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
-            if self.is_root() {
-                // Create the exec's cache subdir path.
-                let command = self.command();
-                let hashed_command = hash_command(command);
-                let cache_dir = PathBuf::from("./cache");
-                // Uh, Kelly? This is not necessarily the root??
-                let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
-                if root_exec_cache_subdir.exists() {
-                    if self.cached_metadata.child_exec_count()
-                        != number_of_child_cache_subdirs(self.command())
-                    {
-                        debug!("Precondition that failed: diff number of child cache subdirs");
-                        return false;
-                    }
-                } else {
-                    // If it doesn't exist we certainly can't serve from it ;)
-                    return false;
-                }
-            }
+            // Weird stuff happening with pash here when I try to skip all
+            // jobs. So.. yeah.
+            // if self.is_root() {
+            //     // Create the exec's cache subdir path.
+            //     let command = self.command();
+            //     let hashed_command = hash_command(command);
+            //     let cache_dir = PathBuf::from("./cache");
+            //     // Uh, Kelly? This is not necessarily the root??
+            //     let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
+            //     if root_exec_cache_subdir.exists() {
+            //         let child_exec_count = self.cached_metadata.child_exec_count();
+            //         let child_subdir_count = number_of_child_cache_subdirs(self.command());
+            //         debug!("CHILD EXEC COUNT: {:?}", child_exec_count);
+            //         debug!("CHILD SUBDIR COUNT: {:?}", child_subdir_count);
+            //         if self.cached_metadata.child_exec_count()
+            //             != number_of_child_cache_subdirs(self.command())
+            //         {
+            //             debug!("Precondition that failed: diff number of child cache subdirs");
+            //             return false;
+            //         }
+            //     } else {
+            //         // If it doesn't exist we certainly can't serve from it ;)
+            //         return false;
+            //     }
+            // }
             let my_preconds = self.preconditions.clone();
             // TODO: actaully handle checking env vars x)
             let vars = std::env::vars();
@@ -349,10 +355,22 @@ pub fn retrieve_existing_cache() -> Option<CacheMap> {
 // This is for 1_1.sh of the pash benchmarks lol.
 // Returns a list of removed ExecCommands.
 // So we know which cache subdirs to delete
-pub fn remove_entries_from_existing_cache_struct() -> Vec<ExecCommand> {
+pub fn remove_entries_from_existing_cache_struct(percent_to_remove: i32) -> Vec<ExecCommand> {
     if let Some(mut existing_cache) = retrieve_existing_cache() {
-        let five_percent: f64 = (1060.0) * (5.0 / 100.0);
-        let five_percent = five_percent as u64;
+        // TODO: Handle for bioinfo / other pash
+        let child_exec_count = 1060;
+        let num_to_remove_from_cache = match percent_to_remove {
+            5 => {
+                let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
+                five_percent as u64
+            }
+            50 => child_exec_count / 2,
+            90 => {
+                let ninety_percent: f64 = (child_exec_count as f64) * (90.0 / 100.0);
+                ninety_percent as u64
+            }
+            e => panic!("Unrecognized skip option: {:?}", e),
+        };
 
         // Remove /usr/bin/ls
         // Remove /usr/bin/head
@@ -367,7 +385,7 @@ pub fn remove_entries_from_existing_cache_struct() -> Vec<ExecCommand> {
         let mut curr_count = 0;
 
         for (key, _) in existing_cache.clone() {
-            if curr_count < five_percent {
+            if curr_count < num_to_remove_from_cache {
                 let exec = key.exec();
                 let args = key.args();
                 if exec == "/usr/bin/bash" && args.len() > 2 {
@@ -379,10 +397,10 @@ pub fn remove_entries_from_existing_cache_struct() -> Vec<ExecCommand> {
             }
         }
 
-        println!("Keys to remove:");
-        for key in list_to_remove.clone() {
-            println!("{:?}", key);
-        }
+        // println!("Keys to remove:");
+        // for key in list_to_remove.clone() {
+        //     println!("{:?}", key);
+        // }
         // Then we actually remove them.
         for key in list_to_remove.clone() {
             existing_cache.remove(&key);

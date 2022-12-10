@@ -417,6 +417,7 @@ pub async fn trace_process(
                                                 .unwrap(),
                                             args.clone(),
                                         );
+                                        debug!("THERE ARE {:?} number of entries in the existing cache", cache.keys().len());
                                         if let Some(entry) = cache.get(&command) {
                                             debug!(
                                                 "Checking all preconditions: execution is: {:?}",
