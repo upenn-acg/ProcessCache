@@ -74,6 +74,14 @@ impl ExecCommand {
     pub fn new(exe: String, args: Vec<String>) -> Self {
         ExecCommand(exe, args)
     }
+
+    pub fn exec(&self) -> String {
+        self.0.clone()
+    }
+
+    pub fn args(&self) -> Vec<String> {
+        self.1.clone()
+    }
 }
 
 pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
