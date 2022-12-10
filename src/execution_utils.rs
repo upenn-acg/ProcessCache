@@ -17,6 +17,7 @@ use tracing::debug;
 
 use crate::{
     cache_utils::{hash_command, ExecCommand},
+    condition_generator::ExecSyscallEvents,
     context,
     recording::{LinkType, RcExecution},
     syscalls::{
