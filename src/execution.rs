@@ -21,9 +21,9 @@ use std::{
 
 use crate::{
     async_runtime::AsyncRuntime,
-    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
-    condition_generator::{Accessor, ExecSyscallEvents},
-    condition_utils::{Fact, FileType},
+    cache::{remove_entries_from_existing_cache_struct, remove_pash_dirs},
+    condition_generator::ExecSyscallEvents,
+    condition_utils::FileType,
     execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     // redirection::{close_stdout_duped_fd, redirect_io_stream},
@@ -76,6 +76,13 @@ const FACT_GEN: bool = false;
 // TODO: Refactor this file
 pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     info!("Running whole program");
+
+    // Here we can remove PASH entries from the cache directory and the
+    // serialized cache structure itself.
+    // To force p$ to skip some jobs and run others, or to prep p$
+    // to skip 'em all.
+    // let removed_entries = remove_entries_from_existing_cache_struct();
+    // remove_pash_dirs(removed_entries);
 
     let async_runtime = AsyncRuntime::new();
 
@@ -386,16 +393,19 @@ pub async fn trace_process(
                                 };
                                 debug!("Execve event, executable: {:?}", exec_path_buf);
 
-                                // let command = ExecCommand(
-                                //     exec_path_buf
-                                //         .clone()
-                                //         .into_os_string()
-                                //         .into_string()
-                                //         .unwrap(),
-                                //     args.clone(),
-                                // );
-                                // let hashed_command = hash_command(command.clone());
-                                // panic!("EXECCOMMAND: {:?}, HASHED COMMAND: {:?}", command, hashed_command);
+                                let command = ExecCommand(
+                                    exec_path_buf
+                                        .clone()
+                                        .into_os_string()
+                                        .into_string()
+                                        .unwrap(),
+                                    args.clone(),
+                                );
+                                let hashed_command = hash_command(command.clone());
+                                debug!(
+                                    "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
+                                    command, hashed_command
+                                );
                                 // Check the cache for the thing
                                 if !FACT_GEN {
                                     if let Some(cache) = retrieve_existing_cache() {
@@ -620,7 +630,7 @@ pub async fn trace_process(
                                 if !(PTRACE_ONLY || FACT_GEN) {
                                     let exec = curr_execution.executable();
                                     let args = curr_execution.args();
-                                    let comm_hash = hash_command(Command(exec, args));
+                                    let comm_hash = hash_command(ExecCommand(exec, args));
                                     let cache_subdir = fs::canonicalize("./cache").unwrap();
                                     let cache_subdir =
                                         cache_subdir.join(format!("{:?}", comm_hash));

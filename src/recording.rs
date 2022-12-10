@@ -212,6 +212,7 @@ impl Execution {
         let mut new_cached_exec = CachedExecution::new(
             cached_metadata,
             self.is_ignored,
+            self.is_root,
             None,
             self.postconditions(),
         );

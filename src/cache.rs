@@ -12,8 +12,7 @@ use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, read_dir, File},
-    io::{self, Read, Write},
+    fs::{self, read_dir, remove_dir_all},
     path::PathBuf,
     rc::Rc,
 };
@@ -33,6 +32,7 @@ pub type CacheMap = HashMap<ExecCommand, RcCachedExec>;
 pub struct CachedExecution {
     cached_metadata: CachedExecMetadata,
     is_ignored: bool,
+    is_root: bool,
     preconditions: Option<Preconditions>,
     postconditions: Option<Postconditions>,
 }
@@ -41,12 +41,14 @@ impl CachedExecution {
     pub fn new(
         cached_metadata: CachedExecMetadata,
         is_ignored: bool,
+        is_root: bool,
         preconditions: Option<Preconditions>,
         postconditions: Option<Postconditions>,
     ) -> CachedExecution {
         CachedExecution {
             cached_metadata,
             is_ignored,
+            is_root,
             preconditions,
             postconditions,
         }
@@ -118,6 +120,7 @@ impl CachedExecution {
                 let file_postconditions = posts.file_postconditions();
                 let dir_postconditions = posts.dir_postconditions();
                 debug!("Dir posts: {:?}", dir_postconditions);
+                debug!("File posts: {:?}", file_postconditions);
                 // First create necessary dirs. And rename appropriately.
                 create_dirs(dir_postconditions.clone());
 
@@ -140,21 +143,24 @@ impl CachedExecution {
     // TODO: this needs to work with the "ignored" stuff.
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
-            // Create the exec's cache subdir path.
-            let command = self.command();
-            let hashed_command = hash_command(command);
-            let cache_dir = PathBuf::from("./cache");
-            let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
-            if root_exec_cache_subdir.exists() {
-                if self.cached_metadata.child_exec_count()
-                    != number_of_child_cache_subdirs(self.command())
-                {
-                    debug!("Precondition that failed: diff number of child cache subdirs");
+            if self.is_root() {
+                // Create the exec's cache subdir path.
+                let command = self.command();
+                let hashed_command = hash_command(command);
+                let cache_dir = PathBuf::from("./cache");
+                // Uh, Kelly? This is not necessarily the root??
+                let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
+                if root_exec_cache_subdir.exists() {
+                    if self.cached_metadata.child_exec_count()
+                        != number_of_child_cache_subdirs(self.command())
+                    {
+                        debug!("Precondition that failed: diff number of child cache subdirs");
+                        return false;
+                    }
+                } else {
+                    // If it doesn't exist we certainly can't serve from it ;)
                     return false;
                 }
-            } else {
-                // If it doesn't exist we certainly can't serve from it ;)
-                return false;
             }
             let my_preconds = self.preconditions.clone();
             // TODO: actaully handle checking env vars x)
@@ -225,30 +231,8 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
-    // Get a list of stdout files to serve from the cache.
-    pub fn list_stdout_files(&self) -> Vec<PathBuf> {
-        let cache_subdir = PathBuf::from("./cache/");
-        let comm_hash = hash_command(self.command());
-        let cache_subdir = cache_subdir.join(comm_hash.to_string());
-        debug!("cache_subdir: {:?}", cache_subdir);
-        let dir = read_dir(cache_subdir.clone()).unwrap();
-
-        // Parent has all the stdouts of the whole tree below it.
-        // Get vec of all files that contain "stdout" in their file name
-        let mut vec_of_stdout_files = Vec::new();
-        for file in dir {
-            let file = file.unwrap();
-            let path = file.path();
-            let file_name = file.file_name();
-            let file_name = file_name.into_string().unwrap();
-            if file_name.contains("stdout") {
-                vec_of_stdout_files.push(path);
-            }
-        }
-
-        // sort this vec
-        vec_of_stdout_files.sort();
-        vec_of_stdout_files
+    pub fn is_root(&self) -> bool {
+        self.is_root
     }
 
     pub fn postconditions(&self) -> Option<Postconditions> {
@@ -358,5 +342,150 @@ pub fn retrieve_existing_cache() -> Option<CacheMap> {
         Some(rmp_serde::from_read_ref(&exec_struct_bytes).unwrap())
     } else {
         None
+    }
+}
+
+// This IS NOT GENERAL.
+// This is for 1_1.sh of the pash benchmarks lol.
+// Returns a list of removed ExecCommands.
+// So we know which cache subdirs to delete
+pub fn remove_entries_from_existing_cache_struct() -> Vec<ExecCommand> {
+    if let Some(mut existing_cache) = retrieve_existing_cache() {
+        let five_percent: f64 = (1060.0) * (5.0 / 100.0);
+        let five_percent = five_percent as u64;
+
+        // Remove /usr/bin/ls
+        // Remove /usr/bin/head
+        // Remove five percent of ExecCommand("/usr/bin/bash", ["/usr/bin/bash", where there are MORE THAN 2 ARGS.
+        // (These are the output file generating ones).
+        // So first we go through the existing the cache and add these keys to a list.
+        let mut list_to_remove: Vec<ExecCommand> = Vec::new();
+        // let ls_command = ExecCommand(String::from("/usr/bin/ls"), vec![String::from("ls"), String::from("input/pg/")]);
+        // let head_command = ExecCommand(String::from("/usr/bin/head"), vec![String::from("head"), String::from("-n"), String::from("1060")]);
+        // list_to_remove.push(ls_command);
+        // list_to_remove.push(head_command);
+        let mut curr_count = 0;
+
+        for (key, _) in existing_cache.clone() {
+            if curr_count < five_percent {
+                let exec = key.exec();
+                let args = key.args();
+                if exec == "/usr/bin/bash" && args.len() > 2 {
+                    list_to_remove.push(key);
+                    curr_count += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        println!("Keys to remove:");
+        for key in list_to_remove.clone() {
+            println!("{:?}", key);
+        }
+        // Then we actually remove them.
+        for key in list_to_remove.clone() {
+            existing_cache.remove(&key);
+        }
+        // Remove ls and head.
+        let ls_command = ExecCommand(
+            String::from("/usr/bin/ls"),
+            vec![String::from("ls"), String::from("input/pg/")],
+        );
+        let head_command = ExecCommand(
+            String::from("/usr/bin/head"),
+            vec![
+                String::from("head"),
+                String::from("-n"),
+                String::from("1060"),
+            ],
+        );
+        existing_cache.remove(&ls_command);
+        existing_cache.remove(&head_command);
+
+        // Then we serialize the cache back to disk.
+        serialize_execs_to_cache(existing_cache);
+
+        list_to_remove
+    } else {
+        panic!("Can't remove entries from a nonexistent cache!!");
+    }
+}
+
+// Takes in a list of ExecCommands that were removed from the existing cache.
+// We will hash 'em and turn 'em into paths to cache subdirs we will then
+// remove.
+// Get EVERYTHING ready to skip SOME jobs.
+pub fn remove_pash_dirs(exec_command_list: Vec<ExecCommand>) {
+    let cache_path = PathBuf::from("/home/kship/kship/bioinformatics-workflows/pash_nlp/cache");
+
+    // TODO: Remove /usr/bin/ls
+    // TODO: Remove /usr/bin/head
+    let ls_command = ExecCommand(
+        String::from("/usr/bin/ls"),
+        vec![String::from("ls"), String::from("input/pg/")],
+    );
+    let head_command = ExecCommand(
+        String::from("/usr/bin/head"),
+        vec![
+            String::from("head"),
+            String::from("-n"),
+            String::from("1060"),
+        ],
+    );
+    let hashed_ls_command = hash_command(ls_command);
+    let hashed_head_command = hash_command(head_command);
+
+    println!("Trying to remove ls");
+    let ls_cache_subdir_path = cache_path.join(hashed_ls_command.to_string());
+    if let Err(e) = remove_dir_all(ls_cache_subdir_path.clone()) {
+        panic!(
+            "Failed to remove dir: {:?} because {:?}",
+            ls_cache_subdir_path, e
+        );
+    }
+
+    println!("Trying to remove head");
+    let head_cache_subdir_path = cache_path.join(hashed_head_command.to_string());
+    if let Err(e) = remove_dir_all(head_cache_subdir_path.clone()) {
+        panic!(
+            "Failed to remove dir: {:?} because {:?}",
+            head_cache_subdir_path, e
+        );
+    }
+
+    for exec_command in exec_command_list {
+        // Remove the exec's cache subdir.
+        let hashed_command = hash_command(exec_command.clone());
+        // println!("Command I'm trying to remove dir for {:?}", exec_command);
+        let cache_subdir_path = cache_path.join(hashed_command.to_string());
+        if let Err(e) = remove_dir_all(cache_subdir_path.clone()) {
+            panic!(
+                "Failed to remove dir: {:?} because {:?}",
+                cache_subdir_path, e
+            );
+        }
+        // remove_dir_all(cache_subdir_path).unwrap();
+
+        // Remove it from the root exec's subdir as well.
+        let root_executable = String::from("/usr/bin/bash");
+        let root_args = vec![String::from("/usr/bin/bash"), String::from("bash_c_1_1.sh")];
+        let root_exec_command = ExecCommand(root_executable, root_args);
+        let hashed_root_command = hash_command(root_exec_command);
+        let root_exec_cache_path = cache_path.join(hashed_root_command.to_string());
+        let childs_subdir_in_root = root_exec_cache_path.join(hashed_command.to_string());
+        println!(
+            "Child exec whose dir I'ma try to remove: {:?}",
+            exec_command
+        );
+        if let Err(e) = remove_dir_all(childs_subdir_in_root.clone()) {
+            panic!(
+                "Failed to remove dir: {:?} because {:?}",
+                childs_subdir_in_root, e
+            );
+        } else {
+            println!("Successfully removed dir: {:?}", childs_subdir_in_root);
+        }
+        // remove_dir_all(childs_subdir_in_root).unwrap();
     }
 }
