@@ -22,8 +22,9 @@ use std::{
 use crate::{
     async_runtime::AsyncRuntime,
     cache::{remove_entries_from_existing_cache_struct, remove_pash_dirs},
-    condition_generator::ExecSyscallEvents,
-    condition_utils::FileType,
+    cache_utils::background_thread_serving_outputs,
+    condition_generator::{Accessor, ExecSyscallEvents},
+    condition_utils::{Fact, FileType},
     execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     // redirection::{close_stdout_duped_fd, redirect_io_stream},
@@ -103,8 +104,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 
     // Initialize the channel for communication between the tracer and background thread.
     let (caching_sender, caching_receiver) = unbounded();
-    // Initialize the stdout serving channel and output file serving channel.
-    let (stdout_sender, stdout_receiver) = unbounded();
+    // Initialize output file serving channel.
     let (serving_file_sender, serving_file_receiver) = unbounded();
 
     let option_handle_vec = if BACKGROUND_THREADS {
@@ -126,29 +126,23 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         None
     };
 
-    let (option_stdout_vec, option_file_serving_vec) = if BACKGROUND_SERVING_THREADS {
-        let mut stdout_handle_vec = Vec::new();
+    let option_file_serving_vec = if BACKGROUND_SERVING_THREADS {
         let mut file_handle_vec = Vec::new();
         // HERE is where we can modify the number of background threads.
-        for _ in 0..5 {
-            let r2 = stdout_receiver.clone();
-            let handle = thread::spawn(move || background_thread_serving_stdout(r2));
-            stdout_handle_vec.push(handle);
-        }
         for _ in 0..5 {
             let r2 = serving_file_receiver.clone();
             let handle = thread::spawn(move || background_thread_serving_outputs(r2));
             file_handle_vec.push(handle);
         }
-        (Some(stdout_handle_vec), Some(file_handle_vec))
+        Some(file_handle_vec)
     } else {
-        (None, None)
+        None
     };
 
-    let (option_file_sender, option_stdout_sender) = if BACKGROUND_SERVING_THREADS {
-        (Some(serving_file_sender), Some(stdout_sender))
+    let option_file_sender = if BACKGROUND_SERVING_THREADS {
+        Some(serving_file_sender)
     } else {
-        (None, None)
+        None
     };
 
     let mut total_intercepted_syscall_count = Rc::new(RefCell::new(0));
@@ -162,6 +156,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         option_file_sender.clone(),
         option_stdout_sender.clone(),
         total_intercepted_syscall_count.clone(),
+        None,
     );
     async_runtime
         .run_task(first_proc, f)
@@ -219,9 +214,6 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     if let Some(serving_file_sender) = option_file_sender {
         drop(serving_file_sender);
     }
-    if let Some(stdout_sender) = option_stdout_sender {
-        drop(stdout_sender);
-    }
 
     if let Some(handle_vec) = option_handle_vec {
         for handle in handle_vec {
@@ -230,11 +222,6 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     }
     if let Some(file_serving_vec) = option_file_serving_vec {
         for handle in file_serving_vec {
-            let _ = handle.join();
-        }
-    }
-    if let Some(stdout_vec) = option_stdout_vec {
-        for handle in stdout_vec {
             let _ = handle.join();
         }
     }
@@ -438,18 +425,6 @@ pub async fn trace_process(
                                                     // Parallel serving.
                                                     // First apply dir transitions.
                                                     entry.apply_all_dir_transitions();
-
-                                                    // Next send stdout files (paths) to threads to print.
-                                                    let stdout_file_vec = entry.list_stdout_files();
-                                                    if let Some(stdout_sender) =
-                                                        stdout_send_end.clone()
-                                                    {
-                                                        for stdout_file in stdout_file_vec {
-                                                            stdout_sender
-                                                                .send(stdout_file)
-                                                                .unwrap();
-                                                        }
-                                                    }
 
                                                     // Then send output files (paths) to threads to serve.
                                                     let posts = entry.postconditions();
