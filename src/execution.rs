@@ -10,6 +10,7 @@ use nix::{
     unistd::Pid,
 };
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
     fs::{self},
@@ -53,7 +54,7 @@ use tracing::{debug, error, info, span, trace, Level};
 use anyhow::{bail, Context, Result};
 
 // Toggle additional metrics.
-const ADDITIONAL_METRICS: bool = false;
+const ADDITIONAL_METRICS: bool = true;
 // These flags are optimizations to P$.
 // This one allows the user to skip caching the root execution
 // because it may just not be worth it anyway (think raxml).
@@ -143,6 +144,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         (None, None)
     };
 
+    let mut total_intercepted_syscall_count = Rc::new(RefCell::new(0));
     let f = trace_process(
         async_runtime.clone(),
         full_tracking_on,
@@ -152,6 +154,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         option_caching_sender.clone(),
         option_file_sender.clone(),
         option_stdout_sender.clone(),
+        total_intercepted_syscall_count.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -182,7 +185,11 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         // ADDITIONAL METRICS: The total number of exec units for this execution
         // is the number of keys in this map!
         if ADDITIONAL_METRICS {
-            debug!(
+            println!(
+                "TOTAL NUMBER OF INTERCEPTED SYSCALLS: {:?}",
+                total_intercepted_syscall_count
+            );
+            println!(
                 "TOTAL NUMBER OF EXEC UNITS: {:?}",
                 cache_map.clone().keys().len()
             );
@@ -192,8 +199,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
             if let Some(first_entry) = first_cache_entry {
                 let (total_preconditions, total_postconditions) =
                     first_entry.total_pre_and_post_count();
-                debug!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
-                debug!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
+                println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
+                println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
             }
         }
         serialize_execs_to_cache(cache_map.clone());
@@ -245,6 +252,7 @@ pub async fn trace_process(
     caching_send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
     file_send_end: Option<Sender<(Accessor, PathBuf, HashSet<Fact>)>>,
     stdout_send_end: Option<Sender<PathBuf>>,
+    total_intercepted_syscall_count: Rc<RefCell<u64>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -277,6 +285,8 @@ pub async fn trace_process(
                 break;
             }
             TraceEvent::Prehook(_) => {
+                *total_intercepted_syscall_count.borrow_mut() += 1;
+
                 if !PTRACE_ONLY {
                     let e = s.enter();
 
@@ -746,6 +756,7 @@ pub async fn trace_process(
                     caching_send_end.clone(),
                     file_send_end.clone(),
                     stdout_send_end.clone(),
+                    total_intercepted_syscall_count.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -770,6 +781,7 @@ pub async fn trace_process(
                     caching_send_end.clone(),
                     file_send_end.clone(),
                     stdout_send_end.clone(),
+                    total_intercepted_syscall_count.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -855,7 +867,7 @@ pub async fn trace_process(
                 if ADDITIONAL_METRICS && curr_execution.is_root() {
                     let total_syscall_event_count =
                         get_total_syscall_event_count_for_root(new_events.clone());
-                    debug!("TOTAL SYSCALL EVENT COUNT: {:?}", total_syscall_event_count);
+                    println!("TOTAL SYSCALL EVENT COUNT: {:?}", total_syscall_event_count);
                 }
 
                 curr_execution.update_syscall_events(new_events.clone());
