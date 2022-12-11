@@ -154,9 +154,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         Rc::new(cache_dir.clone()),
         option_caching_sender.clone(),
         option_file_sender.clone(),
-        option_stdout_sender.clone(),
-        total_intercepted_syscall_count.clone(),
         None,
+        total_intercepted_syscall_count.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
