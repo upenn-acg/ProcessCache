@@ -1,7 +1,7 @@
 use crate::{
     cache_utils::{
-        create_dirs, delete_dirs, hash_command, number_of_child_cache_subdirs, rename_dirs,
-        CachedExecMetadata, ExecCommand,
+        apply_file_transition_function, create_dirs, delete_dirs, hash_command,
+        number_of_child_cache_subdirs, rename_dirs, CachedExecMetadata, ExecCommand,
     },
     condition_generator::{check_preconditions, Accessor},
     condition_utils::{Fact, Postconditions, Preconditions},
@@ -54,6 +54,26 @@ impl CachedExecution {
 
     pub fn add_preconditions(&mut self, pres: Preconditions) {
         self.preconditions = Some(pres);
+    }
+
+    fn apply_all_dir_transitions(&self) {
+        if !self.is_ignored {
+            let posts = self.postconditions();
+            // There are postconditions.
+            if let Some(postconditions) = posts {
+                let dir_postconditions = postconditions.dir_postconditions();
+                // First create necessary dirs. And rename appropriately.
+                create_dirs(dir_postconditions.clone());
+
+                // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
+                rename_dirs(dir_postconditions.clone());
+
+                // TODO: Deleting dirs should prob happen at the end of all transitions.
+                // But I want this to go zoom zoom.
+                // Delete appropriate dirs.
+                delete_dirs(dir_postconditions);
+            }
+        }
     }
 
     fn apply_all_transitions(&self) {
@@ -205,6 +225,32 @@ impl CachedExecution {
         self.cached_metadata.command()
     }
 
+    // Get a list of stdout files to serve from the cache.
+    pub fn list_stdout_files(&self) -> Vec<PathBuf> {
+        let cache_subdir = PathBuf::from("./cache/");
+        let comm_hash = hash_command(self.command());
+        let cache_subdir = cache_subdir.join(comm_hash.to_string());
+        debug!("cache_subdir: {:?}", cache_subdir);
+        let dir = read_dir(cache_subdir.clone()).unwrap();
+
+        // Parent has all the stdouts of the whole tree below it.
+        // Get vec of all files that contain "stdout" in their file name
+        let mut vec_of_stdout_files = Vec::new();
+        for file in dir {
+            let file = file.unwrap();
+            let path = file.path();
+            let file_name = file.file_name();
+            let file_name = file_name.into_string().unwrap();
+            if file_name.contains("stdout") {
+                vec_of_stdout_files.push(path);
+            }
+        }
+
+        // sort this vec
+        vec_of_stdout_files.sort();
+        vec_of_stdout_files
+    }
+
     pub fn postconditions(&self) -> Option<Postconditions> {
         self.postconditions.clone()
     }
@@ -257,6 +303,14 @@ impl RcCachedExec {
         RcCachedExec(Rc::new(cached_exec))
     }
 
+    pub fn command(&self) -> ExecCommand {
+        self.0.command()
+    }
+
+    pub fn apply_all_dir_transitions(&self) {
+        self.0.apply_all_dir_transitions()
+    }
+
     pub fn apply_all_transitions(&self) {
         self.0.apply_all_transitions()
     }
@@ -273,96 +327,16 @@ impl RcCachedExec {
         self.0.check_all_preconditions_regardless()
     }
 
+    pub fn list_stdout_files(&self) -> Vec<PathBuf> {
+        self.0.list_stdout_files()
+    }
+
+    pub fn postconditions(&self) -> Option<Postconditions> {
+        self.0.postconditions()
+    }
+
     pub fn total_pre_and_post_count(&self) -> (u64, u64) {
         self.0.total_pre_and_post_count()
-    }
-}
-
-// So for directories. I think this is basically just creating and deleting.
-// Thoughts: Deleting dirs. So, you delete a dir once there are no files in it. I see
-// two cases here.
-// 1) This is an empty dir. We delete it. Doesn't really matter when, just so long
-// as we delete them LONGEST path to SHORTEST. Think: rm /hello/hi then rm /hello
-// 2) This dir has stuff in it. A bunch of files must be deleted in it first. Then it
-// is NECESSARY for us to delete the files first (apply file transition function first)
-// before deleting the dirs.
-// -----------------------------------------------------------------------------------
-// Thoughts: rename. Rename is weird. It is not obvious the order to things.
-// If we rename a directory, and the execution is accessing files in that directory,
-// we need to know to update the paths.
-// We also need to ... I guess make sure we rename the dir before applying the
-// transition function for files.
-// write /foo/file.txt
-// rename /foo /bar
-// vs.
-// rename /foo /bar
-// write /bar/file.txt
-
-fn apply_file_transition_function(
-    accessor_and_file: Accessor,
-    parents_cache_subdir: PathBuf,
-    fact_set: HashSet<Fact>,
-) {
-    for fact in fact_set {
-        debug!("Applying transition for fact");
-        match fact {
-            Fact::DoesntExist => {
-                let file = match &accessor_and_file {
-                    Accessor::ChildProc(_, path) => path,
-                    Accessor::CurrProc(path) => path,
-                };
-
-                if file.exists() {
-                    fs::remove_file(file.clone()).unwrap();
-                }
-            }
-            Fact::FinalContents => {
-                // Okay we want to copy the file from the cache to the correct
-                // output location.
-                match &accessor_and_file {
-                    Accessor::ChildProc(hashed_child_cmd, file) => {
-                        // Who done it? Child.
-                        // Ex: Child writes to foo. cache/child/foo
-                        // Parent will have this in its cache: cache/parent/child/foo
-                        let file_name = file.file_name().unwrap();
-                        let childs_subdir_in_parents_cache =
-                            parents_cache_subdir.join(hashed_child_cmd);
-                        let childs_cache_file_location =
-                            childs_subdir_in_parents_cache.join(file_name);
-
-                        debug!(
-                            "child's subdir in parent's cache: {:?}",
-                            childs_subdir_in_parents_cache
-                        );
-                        debug!("cache file location: {:?}", childs_cache_file_location);
-                        debug!("og file path: {:?}", file);
-
-                        if childs_cache_file_location.exists() {
-                            fs::copy(childs_cache_file_location, file.clone()).unwrap();
-                        }
-                    }
-                    Accessor::CurrProc(file) => {
-                        // Simple case when curr proc was the writer of the file.
-                        match file.file_name() {
-                            Some(file_name) => {
-                                let cache_file_location = parents_cache_subdir.join(file_name);
-                                debug!("cache file location: {:?}", cache_file_location);
-                                debug!("og file path: {:?}", file);
-                                if cache_file_location.exists() {
-                                    fs::copy(cache_file_location, file.clone()).unwrap();
-                                }
-                            }
-                            None => {
-                                panic!("can't get file name for: {:?}", file);
-                            }
-                        }
-
-                        // let file_name = file.file_name().unwrap();
-                    }
-                }
-            }
-            _ => (),
-        }
     }
 }
 
