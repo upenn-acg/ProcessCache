@@ -212,6 +212,45 @@ impl CachedExecution {
     pub fn postconditions(&self) -> Option<Postconditions> {
         self.postconditions.clone()
     }
+
+    // (Precondition Count, Postcondition Count)
+    fn total_pre_and_post_count(&self) -> (u64, u64) {
+        let mut total_preconditions = 0;
+        let pres = self.preconditions.clone().unwrap();
+
+        let file_pres = pres.file_preconditions();
+        let dir_pres = pres.dir_preconditions();
+
+        // Count file preconditions.
+        for (_, fact_set) in file_pres {
+            let set_size = fact_set.len();
+            total_preconditions += set_size as u64;
+        }
+
+        // Count dir preconditions.
+        for (_, fact_set) in dir_pres {
+            let set_size = fact_set.len();
+            total_preconditions += set_size as u64;
+        }
+
+        let mut total_postconditions = 0;
+        let posts = self.postconditions.clone().unwrap();
+
+        let file_posts = posts.file_postconditions();
+        let dir_posts = posts.dir_postconditions();
+
+        for (_, fact_set) in file_posts {
+            let set_size = fact_set.len();
+            total_postconditions += set_size as u64;
+        }
+
+        for (_, fact_set) in dir_posts {
+            let set_size = fact_set.len();
+            total_postconditions += set_size as u64;
+        }
+
+        (total_preconditions, total_postconditions)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -244,6 +283,10 @@ impl RcCachedExec {
 
     pub fn postconditions(&self) -> Option<Postconditions> {
         self.0.postconditions()
+    }
+    
+    pub fn total_pre_and_post_count(&self) -> (u64, u64) {
+        self.0.total_pre_and_post_count()
     }
 }
 

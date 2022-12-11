@@ -51,6 +51,8 @@ use tracing::{debug, error, info, span, trace, Level};
 
 use anyhow::{bail, Context, Result};
 
+// Toggle additional metrics.
+const ADDITIONAL_METRICS: bool = false;
 // These flags are optimizations to P$.
 // This one allows the user to skip caching the root execution
 // because it may just not be worth it anyway (think raxml).
@@ -145,38 +147,22 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         first_execution.populate_cache_map(&mut cache_map);
         // ADDITIONAL METRICS: The total number of exec units for this execution
         // is the number of keys in this map!
-        debug!(
-            "TOTAL NUMBER OF EXEC UNITS: {:?}",
-            cache_map.clone().keys().len()
-        );
+        if ADDITIONAL_METRICS {
+            debug!(
+                "TOTAL NUMBER OF EXEC UNITS: {:?}",
+                cache_map.clone().keys().len()
+            );
+            // ADDITIONAL METRICS: Count the number of preconditions.
+            let first_command = first_execution.command();
+            let first_cache_entry = cache_map.get(&first_command);
+            if let Some(first_entry) = first_cache_entry {
+                let (total_preconditions, total_postconditions) =
+                    first_entry.total_pre_and_post_count();
+                debug!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
+                debug!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
+            }
+        }
         serialize_execs_to_cache(cache_map.clone());
-
-        // for (command, cached_exec) in cache_map {
-        //     println!("ExecCommand: {:?}", command);
-
-        //     let preconditions = cached_exec.preconditions();
-        //     let postconditions = cached_exec.postconditions();
-
-        //     println!();
-        //     println!("Preconditions:");
-        //     for (path, set) in preconditions {
-        //         if !set.is_empty() {
-        //             println!("Path: {:?}", path);
-        //             println!("Facts: {:?}", set);
-        //         }
-        //     }
-
-        //     println!();
-        //     println!("Postconditions:");
-        //     for (path, set) in postconditions {
-        //         if !set.is_empty() {
-        //             println!("Path: {:?}", path);
-        //             println!("Facts: {:?}", set);
-        //         }
-        //     }
-        //     println!();
-        // }
-        // serialize_execs_to_cache(new_cache);
     }
 
     if let Some(sender) = option_sender {
@@ -427,6 +413,7 @@ pub async fn trace_process(
                                                 // If we know it's the root exec that hasn't exec'd,
                                                 // and we see the DONT_CACHE_ROOT flag is true, we update
                                                 // this Execution to be ignored.
+                                                println!("SETTING ROOT TO IGNORED");
                                                 curr_execution.set_to_ignored(new_exec_metadata);
                                             } else {
                                                 // Otherwise, we start caching by first updating the exec
@@ -757,7 +744,7 @@ pub async fn trace_process(
 
                 // ADDITIONAL METRICS: Here is  where we can count total number of syscalls in this whole
                 // big execution.
-                if curr_execution.is_root() {
+                if ADDITIONAL_METRICS && curr_execution.is_root() {
                     let total_syscall_event_count =
                         get_total_syscall_event_count_for_root(new_events.clone());
                     debug!("TOTAL SYSCALL EVENT COUNT: {:?}", total_syscall_event_count);
@@ -768,6 +755,9 @@ pub async fn trace_process(
                 // If the execution was set to "ignored", we don't want to
                 // generate + add postconditions.
                 if !curr_execution.is_ignored() {
+                    if curr_execution.is_root() {
+                        println!("THE FUCKING ROOT IS COPYING FILES OVER");
+                    }
                     let postconditions = generate_postconditions(new_events);
                     curr_execution.update_postconditions(postconditions.clone());
                     let file_postconditions = postconditions.file_postconditions();
