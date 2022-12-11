@@ -10,7 +10,7 @@ use nix::{
     unistd::Pid,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::CStr,
     fs::{self},
     path::PathBuf,
@@ -20,8 +20,9 @@ use std::{
 
 use crate::{
     async_runtime::AsyncRuntime,
-    condition_generator::ExecSyscallEvents,
-    condition_utils::FileType,
+    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
+    condition_generator::{Accessor, ExecSyscallEvents},
+    condition_utils::{Fact, FileType},
     execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
@@ -61,6 +62,8 @@ const DONT_CACHE_ROOT: bool = false;
 // thread copying for outputs, and at least parallel copying at the
 // end of execution.
 const BACKGROUND_THREADS: bool = true;
+// Toggle parallelism for skipping jobs.
+const BACKGROUND_SERVING_THREADS: bool = true;
 
 // Flags for turning on and off different parts of process cache.
 // For profiling purposes.
@@ -91,13 +94,16 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     }
 
     // Initialize the channel for communication between the tracer and background thread.
-    let (sender, receiver) = unbounded();
+    let (caching_sender, caching_receiver) = unbounded();
+    // Initialize the stdout serving channel and output file serving channel.
+    let (stdout_sender, stdout_receiver) = unbounded();
+    let (serving_file_sender, serving_file_receiver) = unbounded();
 
     let option_handle_vec = if BACKGROUND_THREADS {
         let mut handle_vec = Vec::new();
         // HERE is where we can modify the number of background threads.
         for _ in 0..5 {
-            let r2 = receiver.clone();
+            let r2 = caching_receiver.clone();
             let handle = thread::spawn(move || background_thread_copying_outputs(r2));
             handle_vec.push(handle);
         }
@@ -106,18 +112,46 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         None
     };
 
-    let option_sender = if BACKGROUND_THREADS {
-        Some(sender)
+    let option_caching_sender = if BACKGROUND_THREADS {
+        Some(caching_sender)
     } else {
         None
     };
+
+    let (option_stdout_vec, option_file_serving_vec) = if BACKGROUND_SERVING_THREADS {
+        let mut stdout_handle_vec = Vec::new();
+        let mut file_handle_vec = Vec::new();
+        // HERE is where we can modify the number of background threads.
+        for _ in 0..5 {
+            let r2 = stdout_receiver.clone();
+            let handle = thread::spawn(move || background_thread_serving_stdout(r2));
+            stdout_handle_vec.push(handle);
+        }
+        for _ in 0..5 {
+            let r2 = serving_file_receiver.clone();
+            let handle = thread::spawn(move || background_thread_serving_outputs(r2));
+            file_handle_vec.push(handle);
+        }
+        (Some(stdout_handle_vec), Some(file_handle_vec))
+    } else {
+        (None, None)
+    };
+
+    let (option_file_sender, option_stdout_sender) = if BACKGROUND_SERVING_THREADS {
+        (Some(serving_file_sender), Some(stdout_sender))
+    } else {
+        (None, None)
+    };
+
     let f = trace_process(
         async_runtime.clone(),
         full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
         Rc::new(cache_dir.clone()),
-        option_sender.clone(),
+        option_caching_sender.clone(),
+        option_file_sender.clone(),
+        option_stdout_sender.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -165,14 +199,32 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         serialize_execs_to_cache(cache_map.clone());
     }
 
-    if let Some(sender) = option_sender {
-        drop(sender);
+    if let Some(caching_sender) = option_caching_sender {
+        drop(caching_sender);
     }
+    if let Some(serving_file_sender) = option_file_sender {
+        drop(serving_file_sender);
+    }
+    if let Some(stdout_sender) = option_stdout_sender {
+        drop(stdout_sender);
+    }
+
     if let Some(handle_vec) = option_handle_vec {
         for handle in handle_vec {
             let _ = handle.join();
         }
     }
+    if let Some(file_serving_vec) = option_file_serving_vec {
+        for handle in file_serving_vec {
+            let _ = handle.join();
+        }
+    }
+    if let Some(stdout_vec) = option_stdout_vec {
+        for handle in stdout_vec {
+            let _ = handle.join();
+        }
+    }
+
     Ok(())
 }
 
@@ -190,7 +242,9 @@ pub async fn trace_process(
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
-    send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
+    caching_send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
+    file_send_end: Option<Sender<(Accessor, PathBuf, HashSet<Fact>)>>,
+    stdout_send_end: Option<Sender<PathBuf>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -358,7 +412,57 @@ pub async fn trace_process(
                                                 // rax, orig_rax, arg1
                                                 skip_execution = true;
                                                 debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-                                                entry.apply_all_transitions();
+
+                                                if BACKGROUND_SERVING_THREADS {
+                                                    // Parallel serving.
+                                                    // First apply dir transitions.
+                                                    entry.apply_all_dir_transitions();
+
+                                                    // Next send stdout files (paths) to threads to print.
+                                                    let stdout_file_vec = entry.list_stdout_files();
+                                                    if let Some(stdout_sender) =
+                                                        stdout_send_end.clone()
+                                                    {
+                                                        for stdout_file in stdout_file_vec {
+                                                            stdout_sender
+                                                                .send(stdout_file)
+                                                                .unwrap();
+                                                        }
+                                                    }
+
+                                                    // Then send output files (paths) to threads to serve.
+                                                    let posts = entry.postconditions();
+
+                                                    if let Some(file_sender) = file_send_end.clone()
+                                                    {
+                                                        if let Some(postconditions) = posts {
+                                                            let file_postconditions =
+                                                                postconditions
+                                                                    .file_postconditions();
+                                                            let cache_subdir =
+                                                                PathBuf::from("./cache/");
+                                                            let comm_hash =
+                                                                hash_command(entry.command());
+                                                            let parent_cache_subdir = cache_subdir
+                                                                .join(comm_hash.to_string());
+                                                            for (accessor, fact_set) in
+                                                                file_postconditions
+                                                            {
+                                                                file_sender
+                                                                    .send((
+                                                                        accessor,
+                                                                        parent_cache_subdir.clone(),
+                                                                        fact_set,
+                                                                    ))
+                                                                    .unwrap();
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Normal serving.
+                                                    entry.apply_all_transitions();
+                                                }
+
                                                 let regs =
                                                     tracer.get_registers().with_context(|| {
                                                         context!(
@@ -639,7 +743,9 @@ pub async fn trace_process(
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
-                    send_end.clone(),
+                    caching_send_end.clone(),
+                    file_send_end.clone(),
+                    stdout_send_end.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -661,7 +767,9 @@ pub async fn trace_process(
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
-                    send_end.clone(),
+                    caching_send_end.clone(),
+                    file_send_end.clone(),
+                    stdout_send_end.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -755,15 +863,12 @@ pub async fn trace_process(
                 // If the execution was set to "ignored", we don't want to
                 // generate + add postconditions.
                 if !curr_execution.is_ignored() {
-                    if curr_execution.is_root() {
-                        println!("THE FUCKING ROOT IS COPYING FILES OVER");
-                    }
                     let postconditions = generate_postconditions(new_events);
                     curr_execution.update_postconditions(postconditions.clone());
                     let file_postconditions = postconditions.file_postconditions();
 
                     // Here is where we send the files to be copied to the background threads.
-                    if let Some(sender) = send_end {
+                    if let Some(caching_sender) = caching_send_end {
                         // Get the (source, dest) pairs of files to copy.
                         let file_pairs = generate_list_of_files_to_copy_to_cache(
                             &curr_execution,
@@ -772,7 +877,7 @@ pub async fn trace_process(
 
                         // Send each pair to across the channel.
                         for pair in file_pairs {
-                            sender.send(pair).unwrap();
+                            caching_sender.send(pair).unwrap();
                         }
                     } else {
                         copy_output_files_to_cache(&curr_execution, file_postconditions);

@@ -1,11 +1,12 @@
+use crossbeam::channel::Receiver;
 use nix::pty::SessionId;
 use tracing::debug;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    fs::{create_dir, read_dir, remove_dir, rename, File},
+    fs::{self, create_dir, read_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
-    io::Read,
+    io::{self, Read, Write},
     path::PathBuf,
 };
 
@@ -214,4 +215,119 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
     }
     let final_array = &sh.finalize();
     final_array.to_vec()
+}
+
+// Accessor, Parent Cache Subdir, Fact Set
+pub fn background_thread_serving_outputs(recv_end: Receiver<(Accessor, PathBuf, HashSet<Fact>)>) {
+    while let Ok((accessor, parent_cache_subdir, fact_set)) = recv_end.recv() {
+        apply_file_transition_function(accessor, parent_cache_subdir, fact_set);
+    }
+    // while let Ok((source, dest)) = recv_end.recv() {
+    //     match fs::copy(source.clone(), dest.clone()) {
+    //         Ok(_) => (),
+    //         Err(e) => panic!(
+    //             "Failed to serve file from cache source: {:?}, dest: {:?}, error: {:?}",
+    //             source, dest, e
+    //         ),
+    //     }
+    // }
+}
+
+pub fn background_thread_serving_stdout(recv_end: Receiver<PathBuf>) {
+    while let Ok(stdout_file) = recv_end.recv() {
+        // It's a stdout file just print it.
+        let mut f = File::open(stdout_file).unwrap();
+        let mut buf = Vec::new();
+        let bytes = f.read_to_end(&mut buf).unwrap();
+        if bytes != 0 {
+            io::stdout().write_all(&buf).unwrap();
+        }
+    }
+}
+
+// So for directories. I think this is basically just creating and deleting.
+// Thoughts: Deleting dirs. So, you delete a dir once there are no files in it. I see
+// two cases here.
+// 1) This is an empty dir. We delete it. Doesn't really matter when, just so long
+// as we delete them LONGEST path to SHORTEST. Think: rm /hello/hi then rm /hello
+// 2) This dir has stuff in it. A bunch of files must be deleted in it first. Then it
+// is NECESSARY for us to delete the files first (apply file transition function first)
+// before deleting the dirs.
+// -----------------------------------------------------------------------------------
+// Thoughts: rename. Rename is weird. It is not obvious the order to things.
+// If we rename a directory, and the execution is accessing files in that directory,
+// we need to know to update the paths.
+// We also need to ... I guess make sure we rename the dir before applying the
+// transition function for files.
+// write /foo/file.txt
+// rename /foo /bar
+// vs.
+// rename /foo /bar
+// write /bar/file.txt
+pub fn apply_file_transition_function(
+    accessor_and_file: Accessor,
+    parents_cache_subdir: PathBuf,
+    fact_set: HashSet<Fact>,
+) {
+    for fact in fact_set {
+        debug!("Applying transition for fact");
+        match fact {
+            Fact::DoesntExist => {
+                let file = match &accessor_and_file {
+                    Accessor::ChildProc(_, path) => path,
+                    Accessor::CurrProc(path) => path,
+                };
+
+                if file.exists() {
+                    fs::remove_file(file.clone()).unwrap();
+                }
+            }
+            Fact::FinalContents => {
+                // Okay we want to copy the file from the cache to the correct
+                // output location.
+                match &accessor_and_file {
+                    Accessor::ChildProc(hashed_child_cmd, file) => {
+                        // Who done it? Child.
+                        // Ex: Child writes to foo. cache/child/foo
+                        // Parent will have this in its cache: cache/parent/child/foo
+                        let file_name = file.file_name().unwrap();
+                        let childs_subdir_in_parents_cache =
+                            parents_cache_subdir.join(hashed_child_cmd);
+                        let childs_cache_file_location =
+                            childs_subdir_in_parents_cache.join(file_name);
+
+                        debug!(
+                            "child's subdir in parent's cache: {:?}",
+                            childs_subdir_in_parents_cache
+                        );
+                        debug!("cache file location: {:?}", childs_cache_file_location);
+                        debug!("og file path: {:?}", file);
+
+                        if childs_cache_file_location.exists() {
+                            fs::copy(childs_cache_file_location, file.clone()).unwrap();
+                        }
+                    }
+                    Accessor::CurrProc(file) => {
+                        // Simple case when curr proc was the writer of the file.
+                        match file.file_name() {
+                            Some(file_name) => {
+                                let cache_file_location = parents_cache_subdir.join(file_name);
+                                debug!("cache file location: {:?}", cache_file_location);
+                                debug!("og file path: {:?}", file);
+                                if cache_file_location.exists() {
+                                    fs::copy(cache_file_location, file.clone()).unwrap();
+                                }
+                            }
+                            None => {
+                                panic!("can't get file name for: {:?}", file);
+                            }
+                        }
+
+                        // let file_name = file.file_name().unwrap();
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
 }
