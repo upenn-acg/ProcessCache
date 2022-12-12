@@ -1226,9 +1226,9 @@ pub fn generate_file_preconditions(
                 (FileEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
-                    if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
-                        panic!("Unexpected outcome open event, doesn't exist, no mods: {:?}", outcome);
-                    }
+                    // if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
+                    //     panic!("Unexpected outcome open event, doesn't exist, no mods: {:?}", outcome);
+                    // }
                 }
 
                 (FileEvent::Open(_, _, _, _), State::Exists, _, true) => {
@@ -1684,7 +1684,8 @@ pub fn generate_file_preconditions(
                         // Already know it exists so we don't need to add search perms
                         // on the parent dir as a precondition.
                         SyscallOutcome::Fail(SyscallFailure::PermissionDenied) => (),
-                        f => panic!("Unexpected failure by stat syscall, first state was doesn't exist, last mod none: {:?}", f),
+                        _ => (),
+                        // f => panic!("Unexpected failure by stat syscall, first state was doesn't exist, last mod none: {:?}", f),
                     }
                 }
                 // It existed at the start, but we have modified it, so this stat doesn't depend on

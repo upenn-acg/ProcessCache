@@ -54,7 +54,7 @@ use tracing::{debug, error, info, span, trace, Level};
 use anyhow::{bail, Context, Result};
 
 // Toggle additional metrics.
-const ADDITIONAL_METRICS: bool = true;
+const ADDITIONAL_METRICS: bool = false;
 // These flags are optimizations to P$.
 // This one allows the user to skip caching the root execution
 // because it may just not be worth it anyway (think raxml).
@@ -144,7 +144,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         (None, None)
     };
 
-    let mut total_intercepted_syscall_count = Rc::new(RefCell::new(0));
+    let total_intercepted_syscall_count = Rc::new(RefCell::new(0));
+    let total_syscall_event_count = Rc::new(RefCell::new(0));
     let f = trace_process(
         async_runtime.clone(),
         full_tracking_on,
@@ -155,6 +156,7 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
         option_file_sender.clone(),
         option_stdout_sender.clone(),
         total_intercepted_syscall_count.clone(),
+        total_syscall_event_count.clone(),
     );
     async_runtime
         .run_task(first_proc, f)
@@ -193,7 +195,14 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
                 "TOTAL NUMBER OF EXEC UNITS: {:?}",
                 cache_map.clone().keys().len()
             );
+            println!(
+                "TOTAL NUMBER OF SYSCALL EVENTS: {:?}",
+                total_syscall_event_count
+            );
             // ADDITIONAL METRICS: Count the number of preconditions.
+            let mut total_preconditions = 0;
+            let mut total_postconditions = 0;
+
             let first_command = first_execution.command();
             let first_cache_entry = cache_map.get(&first_command);
             if let Some(first_entry) = first_cache_entry {
@@ -202,6 +211,25 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
                 println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
                 println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
             }
+            // for (_, entry) in cache_map.clone() {
+            //     let preconditions = entry.preconditions();
+            //     if let Some(pres) = preconditions {
+            //         let file_pres = pres.file_preconditions().len() as u64;
+            //         total_preconditions += file_pres;
+            //         let dir_pres = pres.dir_preconditions().len() as u64;
+            //         total_preconditions += dir_pres;
+            //     }
+
+            //     let postconditions = entry.postconditions();
+            //     if let Some(posts) = postconditions {
+            //         let file_posts = posts.file_postconditions().len() as u64;
+            //         total_postconditions += file_posts;
+            //         let dir_posts = posts.dir_postconditions().len() as u64;
+            //         total_postconditions += dir_posts;
+            //     }
+            // }
+            // println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
+            // println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
         }
         serialize_execs_to_cache(cache_map.clone());
     }
@@ -253,6 +281,7 @@ pub async fn trace_process(
     file_send_end: Option<Sender<(Accessor, PathBuf, HashSet<Fact>)>>,
     stdout_send_end: Option<Sender<PathBuf>>,
     total_intercepted_syscall_count: Rc<RefCell<u64>>,
+    total_syscall_event_count: Rc<RefCell<u64>>,
 ) -> Result<()> {
     let s = span!(Level::INFO, stringify!(trace_process), pid=?tracer.curr_proc);
     s.in_scope(|| info!("Starting Process"));
@@ -386,16 +415,19 @@ pub async fn trace_process(
                                 };
                                 debug!("Execve event, executable: {:?}", exec_path_buf);
 
-                                // let command = ExecCommand(
-                                //     exec_path_buf
-                                //         .clone()
-                                //         .into_os_string()
-                                //         .into_string()
-                                //         .unwrap(),
-                                //     args.clone(),
-                                // );
-                                // let hashed_command = hash_command(command.clone());
-                                // panic!("EXECCOMMAND: {:?}, HASHED COMMAND: {:?}", command, hashed_command);
+                                let command = ExecCommand(
+                                    exec_path_buf
+                                        .clone()
+                                        .into_os_string()
+                                        .into_string()
+                                        .unwrap(),
+                                    args.clone(),
+                                );
+                                let hashed_command = hash_command(command.clone());
+                                debug!(
+                                    "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
+                                    command, hashed_command
+                                );
                                 // Check the cache for the thing
                                 if !FACT_GEN {
                                     if let Some(cache) = retrieve_existing_cache() {
@@ -668,7 +700,9 @@ pub async fn trace_process(
                     span!(Level::INFO, "Posthook", ret_val).in_scope(|| info!(name));
 
                     match name {
-                        "access" => handle_access(&curr_execution, &tracer)?,
+                        "access" => {
+                            handle_access(&curr_execution, &tracer, &total_syscall_event_count)?
+                        }
                         "chdir" => handle_chdir(&curr_execution, &tracer)?,
                         "close" => {
                             // The call was successful.
@@ -683,22 +717,44 @@ pub async fn trace_process(
                         }
                         // TODO?
                         "connect" | "pipe" | "pipe2" | "socket" => (),
-                        "creat" | "openat" | "open" => {
-                            handle_open(&curr_execution, file_existed_at_start, name, &tracer)?
-                        }
+                        "creat" | "openat" | "open" => handle_open(
+                            &curr_execution,
+                            file_existed_at_start,
+                            name,
+                            &tracer,
+                            &total_syscall_event_count,
+                        )?,
                         // TODO: newfstatat
-                        "fstat" | "lstat" | "stat" => {
-                            handle_stat_family(&curr_execution, name, &tracer)?
-                        }
+                        "fstat" | "lstat" | "stat" => handle_stat_family(
+                            &curr_execution,
+                            name,
+                            &tracer,
+                            &total_syscall_event_count,
+                        )?,
                         "getdents64" => {
                             // TODO: Kelly, you can use this variable to know what directories were read.
-                            handle_get_dents64(&curr_execution, &regs, &tracer)?
+                            handle_get_dents64(
+                                &curr_execution,
+                                &regs,
+                                &tracer,
+                                &total_syscall_event_count,
+                            )?
                         }
-                        "mkdir" | "mkdirat" => handle_mkdir(&curr_execution, name, &tracer)?,
-                        "rename" | "renameat" | "renameat2" => {
-                            handle_rename(&curr_execution, name, &tracer)?
+                        "mkdir" | "mkdirat" => handle_mkdir(
+                            &curr_execution,
+                            name,
+                            &tracer,
+                            &total_syscall_event_count,
+                        )?,
+                        "rename" | "renameat" | "renameat2" => handle_rename(
+                            &curr_execution,
+                            name,
+                            &tracer,
+                            &total_syscall_event_count,
+                        )?,
+                        "statfs" => {
+                            handle_statfs(&curr_execution, &tracer, &total_syscall_event_count)?
                         }
-                        "statfs" => handle_statfs(&curr_execution, &tracer)?,
                         "unlink" | "unlinkat" => {
                             if nlinks_before == 1 {
                                 // before facts? (success)
@@ -708,7 +764,12 @@ pub async fn trace_process(
                                 // - x access to dir
                                 // after facts? (success)
                                 // - doesnt exist
-                                handle_unlink(&curr_execution, name, &tracer)?
+                                handle_unlink(
+                                    &curr_execution,
+                                    name,
+                                    &tracer,
+                                    &total_syscall_event_count,
+                                )?
                             }
                         }
                         _ => panic!("Unhandled system call: {:?}", name),
@@ -757,6 +818,7 @@ pub async fn trace_process(
                     file_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),
+                    total_syscall_event_count.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -782,6 +844,7 @@ pub async fn trace_process(
                     file_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),
+                    total_syscall_event_count.clone(),
                 );
                 async_runtime.add_new_task(child, f)?;
             }
@@ -913,7 +976,11 @@ pub async fn trace_process(
 }
 
 // Handling the access system call.
-fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+fn handle_access(
+    execution: &RcExecution,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_access", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -946,6 +1013,7 @@ fn handle_access(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
     };
 
     execution.add_new_file_event(tracer.curr_proc, event, full_path);
+    *total_syscall_event_count.borrow_mut() += 1;
     Ok(())
 }
 
@@ -980,6 +1048,7 @@ fn handle_get_dents64(
     execution: &RcExecution,
     regs: &Regs<Unmodified>,
     tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
 ) -> Result<()> {
     // We only care about successful get_dents or when bytes were actually written.
     // if regs.retval::<i32>() <= 0 {
@@ -1033,12 +1102,18 @@ fn handle_get_dents64(
     // We only cared if you actually read values.
     if ret_val > 0 {
         execution.add_new_dir_event(tracer.curr_proc, getdents_event, full_path);
+        *total_syscall_event_count.borrow_mut() += 1;
     }
 
     Ok(())
 }
 
-fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+fn handle_mkdir(
+    execution: &RcExecution,
+    syscall_name: &str,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_mkdir", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -1067,6 +1142,7 @@ fn handle_mkdir(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -
 
     let mkdir_event = DirEvent::Create(root_dir, syscall_outcome);
     execution.add_new_dir_event(tracer.curr_proc, mkdir_event, full_path);
+    *total_syscall_event_count.borrow_mut() += 1;
     Ok(())
 }
 
@@ -1075,6 +1151,7 @@ fn handle_open(
     file_existed_at_start: bool,
     syscall_name: &str,
     tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
 ) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_open", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
@@ -1171,6 +1248,7 @@ fn handle_open(
         generate_open_syscall_file_event(execution, full_path.clone(), open_flags, syscall_outcome);
 
     if let Some(event) = open_syscall_event {
+        *total_syscall_event_count.borrow_mut() += 1;
         execution.add_new_file_event(tracer.curr_proc, event, full_path);
     }
     Ok(())
@@ -1189,7 +1267,12 @@ fn handle_open(
 //     Ok(())
 // }
 
-fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+fn handle_rename(
+    execution: &RcExecution,
+    syscall_name: &str,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     debug!("WE ARE IN HANDLE RENAME");
     let sys_span = span!(Level::INFO, "handle_rename", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
@@ -1260,17 +1343,24 @@ fn handle_rename(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) 
         debug!("It is a file!: {:?}", full_old_path);
         let event = FileEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_file_event(tracer.curr_proc, event, full_old_path);
+        *total_syscall_event_count.borrow_mut() += 1;
     } else {
         debug!("It is a dir!: {:?}", full_old_path);
         let event = DirEvent::Rename(full_old_path.clone(), full_new_path, outcome);
         execution.add_new_dir_event(tracer.curr_proc, event, full_old_path);
+        *total_syscall_event_count.borrow_mut() += 1;
     }
 
     Ok(())
 }
 
 // Handling the stat system calls.
-fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptracer) -> Result<()> {
+fn handle_stat_family(
+    execution: &RcExecution,
+    syscall_name: &str,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_stat", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -1334,12 +1424,17 @@ fn handle_stat_family(execution: &RcExecution, syscall_name: &str, tracer: &Ptra
             && path.is_file()
         {
             execution.add_new_file_event(tracer.curr_proc, stat_syscall_event, path);
+            *total_syscall_event_count.borrow_mut() += 1;
         }
     }
     Ok(())
 }
 
-fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
+fn handle_statfs(
+    execution: &RcExecution,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_statfs", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -1388,11 +1483,17 @@ fn handle_statfs(execution: &RcExecution, tracer: &Ptracer) -> Result<()> {
         && !full_path.starts_with("/sys")
     {
         execution.add_new_dir_event(tracer.curr_proc, stat_syscall_event, full_path);
+        *total_syscall_event_count.borrow_mut() += 1;
     }
     Ok(())
 }
 
-fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Result<()> {
+fn handle_unlink(
+    execution: &RcExecution,
+    name: &str,
+    tracer: &Ptracer,
+    total_syscall_event_count: &Rc<RefCell<u64>>,
+) -> Result<()> {
     let sys_span = span!(Level::INFO, "handle_unlink", pid=?tracer.curr_proc);
     let _ = sys_span.enter();
 
@@ -1426,6 +1527,7 @@ fn handle_unlink(execution: &RcExecution, name: &str, tracer: &Ptracer) -> Resul
             e => panic!("Unexpected error returned by unlink syscall!: {:?}", e),
         };
         execution.add_new_file_event(tracer.curr_proc, file_event, full_path);
+        *total_syscall_event_count.borrow_mut() += 1;
     }
     Ok(())
 }

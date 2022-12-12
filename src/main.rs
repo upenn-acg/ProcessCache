@@ -1,12 +1,13 @@
-use cache::{
-    remove_entries_from_existing_cache, retrieve_existing_cache, serialize_execs_to_cache,
+use cache_benchmarking::{
+    remove_bioinfo_entries_from_existing_cache, remove_buildbwa_entries_from_existing_cache,
+    remove_buildraxml_entries_from_existing_cache,
 };
-use cache_utils::{hash_command, ExecCommand};
-use condition_utils::Fact;
+use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
 mod cache;
+mod cache_benchmarking;
 mod cache_utils;
 mod condition_generator;
 mod condition_utils;
@@ -30,10 +31,7 @@ use nix::sys::ptrace;
 use nix::sys::signal::Signal;
 use nix::unistd::{execvp, fork, ForkResult};
 use std::ffi::CString;
-use std::fs::remove_dir_all;
-use std::path::PathBuf;
 use std::process::exit;
-use std::vec;
 use structopt::StructOpt;
 
 #[allow(unused_imports)]
@@ -73,16 +71,18 @@ fn main() -> anyhow::Result<()> {
     let full_tracking_on = opt.full_tracking;
     let command = ExecCommand::new(opt.exe, opt.args);
 
-    // Here we will try to correctly remove a bwa make job.
-    // First we get an entry from the cache.
-    // There are 31 gcc jobs that lead to an object file.
-    // exec: "/usr/bin/gcc", arg count: 11.
     let percent_to_remove = 0;
     // let percent_to_remove = 5;
     // let percent_to_remove = 50;
     // let percent_to_remove = 90;
     if percent_to_remove != 0 {
-        remove_entries_from_existing_cache(percent_to_remove);
+        // BWA BUILD
+        // remove_buildbwa_entries_from_existing_cache(percent_to_remove);
+        // RAXML BUILD
+        remove_buildraxml_entries_from_existing_cache(percent_to_remove);
+        // BIOINFO JOBS
+        // remove_bioinfo_entries_from_existing_cache(percent_to_remove);
+
         // Short circuit.
         return Ok(());
     }
