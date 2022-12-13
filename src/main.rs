@@ -1,6 +1,6 @@
 use cache_benchmarking::{
     remove_bioinfo_entries_from_existing_cache, remove_buildbwa_entries_from_existing_cache,
-    remove_buildraxml_entries_from_existing_cache,
+    remove_buildraxml_entries_from_existing_cache, remove_buildminigraph_entries_from_existing_cache,
 };
 use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
@@ -79,9 +79,11 @@ fn main() -> anyhow::Result<()> {
         // BWA BUILD
         // remove_buildbwa_entries_from_existing_cache(percent_to_remove);
         // RAXML BUILD
-        remove_buildraxml_entries_from_existing_cache(percent_to_remove);
+        // remove_buildraxml_entries_from_existing_cache(percent_to_remove);
+        // MINIGRAPH BUILD
+        // remove_buildminigraph_entries_from_existing_cache(percent_to_remove);
         // BIOINFO JOBS
-        // remove_bioinfo_entries_from_existing_cache(percent_to_remove);
+        remove_bioinfo_entries_from_existing_cache(percent_to_remove);
 
         // Short circuit.
         return Ok(());
