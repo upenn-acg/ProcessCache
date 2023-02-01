@@ -269,8 +269,7 @@ pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32)
 
         // Actually remove the /cache subdirs.
         for hash in vec_of_dirs_to_remove {
-            let cache_path =
-                PathBuf::from("/home/kship/kship/minigraph/cache");
+            let cache_path = PathBuf::from("/home/kship/kship/minigraph/cache");
             let dir_path = cache_path.join(hash.to_string());
             if let Err(e) = remove_dir_all(dir_path.clone()) {
                 panic!("Failed to remove dir: {:?} because {:?}", dir_path, e);
@@ -313,7 +312,9 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
                 //ExecCommand("/home/kship/kship/bioinformatics-workflows/hmmbuild",
                 // ["./hmmer/bin/hmmbuild", "--cpu", "0", "./hmmer/out/100.aln", "./hmmer/in/100/100.fa"]), HASHED COMMAND: 15141315317065790283
                 // if exec == "/home/kship/kship/bioinformatics-workflows/hmmbuild" && arg_count > 3 {
-                if exec == "/home/kship/kship/bioinformatics-workflows/raxml/bin/raxml" && arg_count > 2 {
+                if exec == "/home/kship/kship/bioinformatics-workflows/raxml/bin/raxml"
+                    && arg_count > 2
+                {
                     list_to_remove.push(key.clone());
                     curr_count += 1;
                 }

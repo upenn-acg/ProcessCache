@@ -1,6 +1,7 @@
 use cache_benchmarking::{
     remove_bioinfo_entries_from_existing_cache, remove_buildbwa_entries_from_existing_cache,
-    remove_buildraxml_entries_from_existing_cache, remove_buildminigraph_entries_from_existing_cache,
+    remove_buildminigraph_entries_from_existing_cache,
+    remove_buildraxml_entries_from_existing_cache,
 };
 use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
