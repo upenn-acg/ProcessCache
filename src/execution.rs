@@ -168,20 +168,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     // Copy output files... carefully --> can't just do /cache/commandhash/yada
     // because of potential collisions on the hash.
     // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
-    if !(full_tracking_on || first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
-        // const CACHE_LOCATION: &str = "./cache/cache";
-        // let cache_path = PathBuf::from(CACHE_LOCATION);
-
-        // TODO: add to existing cache
-        // let mut existing_cache = if !cache_path.exists() {
-        //     File::create(cache_path).unwrap();
-        //     HashMap::new()
-        // } else if let Some(existing_cache) = retrieve_existing_cache() {
-        //     existing_cache
-        // } else {
-        //     HashMap::new()
-        // };
-
+    // if !(full_tracking_on || first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
+    if !(first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
         let mut cache_map = HashMap::new();
         first_execution.populate_cache_map(&mut cache_map);
         // ADDITIONAL METRICS: The total number of exec units for this execution

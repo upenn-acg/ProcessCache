@@ -27,7 +27,10 @@ use crate::{
     Ptracer,
 };
 
-const DONT_HASH_FILES: bool = false;
+// This used to be "don't hash files" but I think what
+// we want is for it to be "don't hash or mtime".
+// const DONT_HASH_FILES: bool = false;
+const DONT_HASH_OR_MTIME: bool = false;
 
 pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, PathBuf)>) {
     while let Ok((link_type, source, dest)) = recv_end.recv() {
@@ -91,7 +94,7 @@ pub fn generate_open_syscall_file_event(
     // - HASHING
     // - MTIME
     // - COPYING FILES
-    let optional_checking_mech = if DONT_HASH_FILES {
+    let optional_checking_mech = if DONT_HASH_OR_MTIME {
         None
     } else if syscall_outcome.is_ok()
         && (open_flags.offset_mode == Some(OffsetMode::Append)
