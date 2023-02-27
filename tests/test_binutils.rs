@@ -16,7 +16,7 @@ fn pwd() -> io::Result<()> {
 #[test]
 fn sleep1() -> io::Result<()> {
     let mut cmd = Command::new("../target/debug/conflict_tracer");
-    cmd.args(&["sleep", "1"]);
+    cmd.args(["sleep", "1"]);
     let output = cmd.output()?;
     println!("status: {}", output.status);
     io::stdout().write_all(&output.stdout)?;
@@ -29,7 +29,7 @@ fn sleep1() -> io::Result<()> {
 #[test]
 fn usr_lib() -> io::Result<()> {
     let output = Command::new("../target/debug/conflict_tracer")
-        .args(&["ls", "/usr/lib"])
+        .args(["ls", "/usr/lib"])
         .output()?;
 
     println!("status: {}", output.status);

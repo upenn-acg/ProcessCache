@@ -23,7 +23,7 @@ use crate::async_runtime::AsyncPtrace;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum ContinueEvent {
     Continue,
     SystemCall,

@@ -74,7 +74,7 @@ const PTRACE_ONLY: bool = false;
 const FACT_GEN: bool = false;
 
 // TODO: Refactor this file
-pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
+pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
 
     let async_runtime = AsyncRuntime::new();
@@ -148,7 +148,6 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
     let total_syscall_event_count = Rc::new(RefCell::new(0));
     let f = trace_process(
         async_runtime.clone(),
-        full_tracking_on,
         Ptracer::new(first_proc),
         first_execution.clone(),
         Rc::new(cache_dir.clone()),
@@ -188,8 +187,8 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
                 total_syscall_event_count
             );
             // ADDITIONAL METRICS: Count the number of preconditions.
-            let mut total_preconditions = 0;
-            let mut total_postconditions = 0;
+            // let mut total_preconditions = 0;
+            // let mut total_postconditions = 0;
 
             let first_command = first_execution.command();
             let first_cache_entry = cache_map.get(&first_command);
@@ -259,9 +258,9 @@ pub fn trace_program(first_proc: Pid, full_tracking_on: bool) -> Result<()> {
 /// So we actually can just ignore this event. This is actually what we want and how we handle the
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
+#[allow(clippy::too_many_arguments)]
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
-    full_tracking_on: bool,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
@@ -416,8 +415,8 @@ pub async fn trace_process(
                                     "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
                                     command, hashed_command
                                 );
-                                // Check the cache for the thing
                                 if !FACT_GEN {
+                                    // Check the cache for the thing
                                     if let Some(cache) = retrieve_existing_cache() {
                                         let command = ExecCommand(
                                             exec_path_buf
@@ -427,16 +426,14 @@ pub async fn trace_process(
                                                 .unwrap(),
                                             args.clone(),
                                         );
+                                        // Do we have this entry in the cache already?
                                         if let Some(entry) = cache.get(&command) {
                                             debug!(
                                                 "Checking all preconditions: execution is: {:?}",
                                                 command
                                             );
-                                            if full_tracking_on {
-                                                entry.check_all_preconditions_regardless()
-                                            } else if entry
-                                                .check_all_preconditions(tracer.curr_proc)
-                                            {
+                                            // We check all the preconditions here.
+                                            if entry.check_all_preconditions(tracer.curr_proc) {
                                                 // Check if we should skip this execution.
                                                 // If we are gonna skip, we have to change:
                                                 // rax, orig_rax, arg1
@@ -489,7 +486,7 @@ pub async fn trace_process(
                                                         }
                                                     }
                                                 } else {
-                                                    // Normal serving.
+                                                    // Normal serving, single threaded.
                                                     entry.apply_all_transitions();
                                                 }
 
@@ -502,14 +499,15 @@ pub async fn trace_process(
                                                 let mut regs = regs.make_modified();
                                                 let exit_syscall_num = libc::SYS_exit as u64;
 
-                                                // Change the arg1 to correct exit code?
+                                                // Change the arg1 to correct exit code.
                                                 regs.write_arg1(0);
-                                                // Change the orig rax val don't ask me why
+                                                // Change the orig rax val (Omar told me to, thus it is so.)
                                                 regs.write_syscall_number(exit_syscall_num);
-                                                // Change the rax val
+                                                // Change the rax val.
                                                 regs.write_rax(exit_syscall_num);
-
+                                                // Actually *set* those registers.
                                                 tracer.set_regs(&mut regs)?;
+                                                // Go to the next iteration of the loop so the process can exit.
                                                 continue;
                                             }
                                         }
@@ -775,9 +773,9 @@ pub async fn trace_process(
                 // unsigned long flags = (unsigned long)tracer.arg1();
                 // isThread = (flags & CLONE_THREAD) != 0;
 
-                let regs = tracer
-                    .get_registers()
-                    .with_context(|| context!("Failed to get regs in handle_access()"))?;
+                // let regs = tracer
+                //     .get_registers()
+                //     .with_context(|| context!("Failed to get regs in handle_access()"))?;
 
                 // flags are the 3rd arg to clone.
                 // let flags = regs.arg3::<i32>();
@@ -798,7 +796,6 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
-                    full_tracking_on,
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),
@@ -824,7 +821,6 @@ pub async fn trace_process(
                 // process' future and its parent execution
                 let f = trace_process(
                     async_runtime.clone(),
-                    full_tracking_on,
                     Ptracer::new(child),
                     curr_execution.clone(),
                     cache_dir.clone(),

@@ -7,6 +7,7 @@
 ///
 /// Basically wraps the format!() macro adding prepending the function name to the string.
 /// Functions exactly like format!().
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! context {
     ($str_literal:expr, $($arg:expr),*) => {
         format!(concat!("{}(): ", $str_literal, " file: {}, line: {}."),

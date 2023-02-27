@@ -1223,7 +1223,7 @@ pub fn generate_file_preconditions(
                 (FileEvent::Open(_,  _, _, _), State::DoesntExist, Mod::Modified, _) => {
                     // Doesn't exist. Created, modified, maybe deleted and the whole process repeated.
                 }
-                (FileEvent::Open(_, _, _, outcome), State::DoesntExist, Mod::None, false) => {
+                (FileEvent::Open(_, _, _, _), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
                     // if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {

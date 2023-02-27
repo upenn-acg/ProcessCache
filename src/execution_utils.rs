@@ -51,17 +51,14 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
             if source_str.contains("stdout") && source.exists() {
                 fs::remove_file(source).unwrap();
             }
-        } else {
-            if !dest.exists() {
-                match fs::hard_link(source.clone(), dest.clone()) {
-                    Ok(_) => (),
-                    Err(e) => panic!(
-                        "Hard link failed: source {:?}, dest {:?}, e: {:?}",
-                        source, dest, e
-                    ),
-                }
+        } else if !dest.exists() {
+            match fs::hard_link(source.clone(), dest.clone()) {
+                Ok(_) => (),
+                Err(e) => panic!(
+                    "Hard link failed: source {:?}, dest {:?}, e: {:?}",
+                    source, dest, e
+                ),
             }
-            // fs::hard_link(source.clone(), dest).unwrap();
         }
     }
 }
@@ -325,10 +322,10 @@ pub fn get_total_syscall_event_count_for_root(events: ExecSyscallEvents) -> u64 
 pub fn get_umask(pid: &Pid) -> u32 {
     let status_file = format!("/proc/{}/status", pid.as_raw());
     let umask: u32 = fs::read_to_string(&status_file)
-        .expect(&format!("error reading {}", status_file))
-        .split("\n")
+        .unwrap_or_else(|_| panic!("error reading {}", status_file))
+        .split('\n')
         .filter(|l| l.starts_with("Umask:"))
-        .map(|l| u32::from_str_radix(l.split_once(":").unwrap().1.trim(), 8).unwrap())
+        .map(|l| u32::from_str_radix(l.split_once(':').unwrap().1.trim(), 8).unwrap())
         .collect::<Vec<u32>>()
         .pop()
         .unwrap();

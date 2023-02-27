@@ -29,7 +29,7 @@ pub enum LinkType {
 // even if the execution fails (so we know it should fail
 // if we see it again, it would be some kinda error if
 // we expect it to fail and it succeeds).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecMetadata {
     caller_pid: Proc,
     command: ExecCommand,
@@ -252,7 +252,7 @@ impl Execution {
     }
 
     pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-        let _ = self.generate_cached_exec(cache_map);
+        self.generate_cached_exec(cache_map);
     }
 
     fn postconditions(&self) -> Option<Postconditions> {

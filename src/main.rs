@@ -1,3 +1,6 @@
+// We comment out certain benchmarking functions and then uncomment... and so on...
+// So I don't want to have to import them over and over each time.
+#[allow(unused_imports)]
 use cache_benchmarking::{
     remove_bioinfo_entries_from_existing_cache, remove_buildbwa_entries_from_existing_cache,
     remove_buildminigraph_entries_from_existing_cache,
@@ -42,16 +45,17 @@ use anyhow::{Context, Result};
 // it is based on alphabetical order...
 // This is even after using the correct flag through clap.
 #[derive(StructOpt, Debug)]
-#[structopt(name = "trackerIO", about = "TrackerIO: Program IO Tracking.")]
+#[structopt(
+    name = "ProcessCache",
+    about = "ProcessCache: Automatic Caching for Unmodified Linux Programs"
+)]
 pub struct Opt {
     /// Executable to run. Will use $PATH.
     pub exe: String,
-    #[structopt(short, long)]
-    pub full_tracking: bool,
     /// Print system calls when they return -1, off by default.
     #[structopt(short, long)]
     pub print_syscalls_on_error: bool,
-    /// Write IOTracking info to this file, if it is specified.
+    /// Write ProcessCache info to this file, if the name of the file is specified.
     /// If not specified, it'll write to "output.txt"
     #[structopt(short, long, default_value = "output.txt")]
     pub output_file: String,
@@ -66,16 +70,30 @@ fn main() -> anyhow::Result<()> {
         .without_time()
         .init();
 
-    // TODO: get env vars of first exec
-    // TODO: get starting cwd of first exec
     let opt = Opt::from_args();
-    let full_tracking_on = opt.full_tracking;
     let command = ExecCommand::new(opt.exe, opt.args);
 
+    // This variable tells Process Cache if you want the system to:
+    // - Look in its existing cache for the JOB specified
+    // - Remove this percent of the jobs.
+    // - Short circuit and exit.
+    // This is *not* normal user behavior, these programs exist
+    // to facilitate benchmarking, making it simple to create
+    // conditions in the cache so that, within one benchmark,
+    // either:
+    // - all jobs are skipped
+    // - 95% of jobs are skipped (meaning 5% of the inputs changed)
+    // - 50% of jobs are skipped (50% of the inputs changed)
+    // - 10% of jobs are skipped (90% of inputs changed)
+    // This helps exercise the flexibility of ProcessCache, we can
+    // skip all of your program, or some of your program! Perfect
+    // conditions are not required to benefit from ProcessCache :-)
     let percent_to_remove = 0;
     // let percent_to_remove = 5;
     // let percent_to_remove = 50;
     // let percent_to_remove = 90;
+
+    // If percent_to_remove == 0, we just run ProcessCache normally.
     if percent_to_remove != 0 {
         // BWA BUILD
         // remove_buildbwa_entries_from_existing_cache(percent_to_remove);
@@ -90,89 +108,11 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // let do_stuff = false;
-    // if do_stuff {
-    //     if let Some(mut existing_cache) = retrieve_existing_cache() {
-    //         let mut vec_of_dirs_to_remove: Vec<u64> = Vec::new();
-    //         let existing_gcc_command = ExecCommand(
-    //             String::from("/usr/bin/gcc"),
-    //             vec![
-    //                 String::from("gcc"),
-    //                 String::from("-c"),
-    //                 String::from("-g"),
-    //                 String::from("-Wall"),
-    //                 String::from("-Wno-unused-function"),
-    //                 String::from("-O2"),
-    //                 String::from("-DHAVE_PTHREAD"),
-    //                 String::from("-DUSE_MALLOC_WRAPPERS"),
-    //                 String::from("utils.c"),
-    //                 String::from("-o"),
-    //                 String::from("utils.o"),
-    //             ],
-    //         );
-    //         // Remove the entry from the existing cache.
-    //         // This will give us back the entry if it existed.
-    //         let existing_gcc_entry = existing_cache.remove(&existing_gcc_command);
-    //         // Generate the hash and add to the vec of dirs to remove from /cache.
-    //         let hashed_existing_gcc_entry = hash_command(existing_gcc_command);
-    //         vec_of_dirs_to_remove.push(hashed_existing_gcc_entry);
-
-    //         if let Some(gcc_entry) = existing_gcc_entry {
-    //             // TODO: If this doesn't work right, we may need to remove all the child execs?
-    //             let postconditions = gcc_entry.postconditions();
-    //             if let Some(posts) = postconditions {
-    //                 let file_posts = posts.file_postconditions();
-    //                 for (accessor, fact_set) in file_posts {
-    //                     let child_hashed_command = accessor.hashed_command();
-    //                     if let Some(ch_command) = child_hashed_command {
-    //                         if fact_set.contains(&Fact::FinalContents) {
-    //                             // The key in the cache map that matches this hash is what we want to remove.
-    //                             for key in existing_cache.clone().keys() {
-    //                                 let hashed_command = hash_command(key.clone());
-    //                                 if hashed_command.to_string() == ch_command {
-    //                                     // Remove the appropriate child exec from the cache.
-    //                                     existing_cache.remove(key);
-    //                                     // Add this hash to the vec of dirs to remove from  /cache.
-    //                                     vec_of_dirs_to_remove.push(hashed_command);
-    //                                     break;
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //             } else {
-    //                 panic!("The gcc entry doesn't have postconditions??");
-    //             }
-    //         } else {
-    //             panic!("Could not find gcc execution in existing cache!!");
-    //         }
-
-    //         // Also remove the /cache subdirs.
-    //         for hash in vec_of_dirs_to_remove {
-    //             let cache_path =
-    //                 PathBuf::from("/home/kship/kship/bioinformatics-workflows/bwa/bin/cache");
-    //             let dir_path = cache_path.join(hash.to_string());
-    //             if let Err(e) = remove_dir_all(dir_path.clone()) {
-    //                 panic!("Failed to remove dir: {:?} because {:?}", dir_path, e);
-    //             }
-    //         }
-
-    //         // Serialize the cache map back to disk.
-    //         serialize_execs_to_cache(existing_cache);
-
-    //         // Short circuit.
-    //         return Ok(());
-    //     }
-    // }
-    run_tracer_and_tracee(command, full_tracking_on)?;
+    run_tracer_and_tracee(command)?;
     Ok(())
 }
 
-// full tracking = regardless of whether we CAN skip it,
-// we do all the tracing,
-// we do all iterative (repetitive) precondition checking,
-// and let it run normally in between.
-fn run_tracer_and_tracee(command: ExecCommand, full_tracking_on: bool) -> anyhow::Result<()> {
+fn run_tracer_and_tracee(command: ExecCommand) -> anyhow::Result<()> {
     use nix::sys::wait::waitpid;
 
     match fork()? {
@@ -185,7 +125,7 @@ fn run_tracer_and_tracee(command: ExecCommand, full_tracking_on: bool) -> anyhow
             Ptracer::set_trace_options(tracee_pid)
                 .with_context(|| context!("Unable to set ptracing options."))?;
 
-            execution::trace_program(tracee_pid, full_tracking_on)
+            execution::trace_program(tracee_pid)
                 .with_context(|| context!("Failed while tracing program."))?;
             Ok(())
         }
@@ -218,7 +158,7 @@ pub(crate) fn run_tracee(command: ExecCommand) -> anyhow::Result<()> {
         .collect();
     args.insert(0, exe.clone());
 
-    let args_cstr: Vec<&CStr> = (&args).iter().map(|s: &CString| s.as_c_str()).collect();
+    let args_cstr: Vec<&CStr> = (args).iter().map(|s: &CString| s.as_c_str()).collect();
 
     if let Err(e) = execvp(&exe, args_cstr.as_slice()) {
         error!(
@@ -265,7 +205,6 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.intercept(libc::SYS_stat)?;
     loader.intercept(libc::SYS_statfs)?;
     loader.intercept(libc::SYS_vfork)?;
-    // loader.intercept(libc::SYS_umask)?;
     loader.intercept(libc::SYS_unlink)?;
     loader.intercept(libc::SYS_unlinkat)?;
 

@@ -4,7 +4,7 @@ use tracing::debug;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    fs::{self, create_dir, read_dir, remove_dir, rename, File},
+    fs::{self, create_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
     io::{self, Read, Write},
     path::PathBuf,
@@ -51,9 +51,9 @@ impl CachedExecMetadata {
         self.caller_pid
     }
 
-    pub fn child_exec_count(&self) -> u32 {
-        self.child_exec_count
-    }
+    // pub fn child_exec_count(&self) -> u32 {
+    //     self.child_exec_count
+    // }
 
     pub fn command(&self) -> ExecCommand {
         self.command.clone()
@@ -85,22 +85,23 @@ impl ExecCommand {
     }
 }
 
-pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
-    // Create the root exec's cache subdir path.
-    let hashed_root_exec_command = hash_command(root_exec_command);
-    let cache_dir = PathBuf::from("./cache");
-    let root_exec_cache_subdir = cache_dir.join(hashed_root_exec_command.to_string());
+// Counts the number child subdirs a parent exec has in its cache subdir.
+// pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
+//     // Create the root exec's cache subdir path.
+//     let hashed_root_exec_command = hash_command(root_exec_command);
+//     let cache_dir = PathBuf::from("./cache");
+//     let root_exec_cache_subdir = cache_dir.join(hashed_root_exec_command.to_string());
 
-    let curr_entries = read_dir(root_exec_cache_subdir).unwrap();
-    let mut count = 0;
-    for entry in curr_entries {
-        let entry = entry.unwrap();
-        if entry.file_type().unwrap().is_dir() {
-            count += 1;
-        }
-    }
-    count
-}
+//     let curr_entries = read_dir(root_exec_cache_subdir).unwrap();
+//     let mut count = 0;
+//     for entry in curr_entries {
+//         let entry = entry.unwrap();
+//         if entry.file_type().unwrap().is_dir() {
+//             count += 1;
+//         }
+//     }
+//     count
+// }
 
 pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     // We need to create dirs in order: shortest path to longest path.

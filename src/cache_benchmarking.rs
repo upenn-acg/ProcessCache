@@ -6,6 +6,7 @@ use crate::{
     condition_utils::Fact,
 };
 
+#[allow(dead_code)]
 pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
     // exec: "/usr/bin/gcc", arg count: 11.
@@ -99,6 +100,7 @@ pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
     }
 }
 
+#[allow(dead_code)]
 pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
     // exec: "/usr/bin/gcc", arg count: 10
@@ -191,6 +193,7 @@ pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
     }
 }
 
+#[allow(dead_code)]
 pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
     // exec: "/usr/bin/gcc", arg count: 11.
