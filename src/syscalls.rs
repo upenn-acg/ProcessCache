@@ -5,6 +5,8 @@ use libc::c_int;
 use nix::{fcntl::OFlag, unistd::Pid};
 use serde::{Deserialize, Serialize};
 
+// Our own stat struct that contains everything that does not vary
+// across Linux versions and is important.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStat {
     pub st_dev: u64,
@@ -19,6 +21,8 @@ pub struct MyStat {
     pub st_blocks: i64,
 }
 
+// Our own statfs struct that contains everything that does not
+// vary across Linux versions and is important.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MyStatFs {
     // pub filesystem_type: FsType,
@@ -33,6 +37,8 @@ pub struct MyStatFs {
     // pub filesystem_id: fsid_t,
 }
 
+// There are so many flags for the open system call.
+// This struct helps us keep them all in one place.
 pub struct OpenFlags {
     pub creat_flag: bool,
     pub excl_flag: bool,
@@ -41,6 +47,7 @@ pub struct OpenFlags {
     pub access_mode: AccessMode,
 }
 
+// Enum of potential directory events (successful and failing).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DirEvent {
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
@@ -57,7 +64,7 @@ pub enum DirEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileEvent {
     Access(c_int, SyscallOutcome),
-    Create(OFlag, SyscallOutcome), // Can fail because pathcomponentdoesntexist or failedtocreatefileexclusively, or accessdenied
+    Create(OFlag, SyscallOutcome), // Can fail because "path component doesn't exist", "failed to create file exclusively", "access denied"
     Delete(SyscallOutcome),
     FailedExec(SyscallFailure),
     ChildExec(Pid), // We want to know when our child processes have successfully called execve.
@@ -79,6 +86,17 @@ pub enum Stat {
     Stat(MyStat),
 }
 
+// Enum for toggling between the different input checking mechanisms.
+// DiffFiles = we copy your input files to the cache, and we diff the cached
+//             file with the current input file.
+// Mtime = we get the mtime at time of access during the recording run,
+//         and see if it has changed when we are checking whether to skip.
+// Hash = we hash your input file, and then when deciding whether to skip,
+//        we hash the current input file, and compare that to the cached hash.
+// Trade-offs:
+// DiffFiles = Very strong correctness guarantees. Not great for space or for speed.
+// Mtime = Basic correctness guarantees. Grate for space AND speed.
+// Hash = Very strong correctness guarantees. Not great for speed, but good for space.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub enum CheckMechanism {
@@ -87,9 +105,7 @@ pub enum CheckMechanism {
     Hash(Vec<u8>),
 }
 
-// PRANOTI: I moved these here because I think they belong here.
-// They fall more under syscallsrs I think than something related to
-// execution_utils.rs (which is just a place for functions used in execution.rs)
+// Nicer enum to use than c_int's or whatever it is at the OS level.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessMode {
     Read,
@@ -97,12 +113,14 @@ pub enum AccessMode {
     Both,
 }
 
+// Nicer enum to use than c_int's or whatever it is at the OS level.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OffsetMode {
     Append,
     Trunc,
 }
 
+// Enum of the different types of syscall failures.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallFailure {
     AlreadyExists,
@@ -111,7 +129,6 @@ pub enum SyscallFailure {
     PermissionDenied,
 }
 
-// The i32 is the return value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallOutcome {
     Fail(SyscallFailure),

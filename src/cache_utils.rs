@@ -4,7 +4,7 @@ use tracing::debug;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    fs::{self, create_dir, remove_dir, rename, File},
+    fs::{self, create_dir, read_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
     io::{self, Read, Write},
     path::PathBuf,
@@ -15,15 +15,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{condition_generator::Accessor, condition_utils::Fact};
 
+// Struct housing the metadata associated with a unique execution.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CachedExecMetadata {
     caller_pid: SessionId,
     child_exec_count: u32,
     command: ExecCommand,
     env_vars: Vec<String>,
-    // Currently this is just the first argument to execve
-    // so I am not making sure it's the abosolute path.
-    // May want to do that in the future?
     starting_cwd: PathBuf,
     starting_umask: u32,
 }
@@ -51,10 +49,6 @@ impl CachedExecMetadata {
         self.caller_pid
     }
 
-    // pub fn child_exec_count(&self) -> u32 {
-    //     self.child_exec_count
-    // }
-
     pub fn command(&self) -> ExecCommand {
         self.command.clone()
     }
@@ -68,6 +62,12 @@ impl CachedExecMetadata {
     }
 }
 
+// In the cache map, executions are identified by their executable
+// and arguments, to make lookup fast and increase the chances of
+// getting a hit.
+// Because we can have collisions (example: 2 programs with same executable and command line
+// args, but difference env vars), we map ExecCommand --> Vec<CachedExecution>
+// so we can figure out which cached exec this is.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ExecCommand(pub String, pub Vec<String>);
 
@@ -86,23 +86,25 @@ impl ExecCommand {
 }
 
 // Counts the number child subdirs a parent exec has in its cache subdir.
-// pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
-//     // Create the root exec's cache subdir path.
-//     let hashed_root_exec_command = hash_command(root_exec_command);
-//     let cache_dir = PathBuf::from("./cache");
-//     let root_exec_cache_subdir = cache_dir.join(hashed_root_exec_command.to_string());
+#[allow(dead_code)]
+pub fn number_of_child_cache_subdirs(root_exec_command: ExecCommand) -> u32 {
+    // Create the root exec's cache subdir path.
+    let hashed_root_exec_command = hash_command(root_exec_command);
+    let cache_dir = PathBuf::from("./cache");
+    let root_exec_cache_subdir = cache_dir.join(hashed_root_exec_command.to_string());
 
-//     let curr_entries = read_dir(root_exec_cache_subdir).unwrap();
-//     let mut count = 0;
-//     for entry in curr_entries {
-//         let entry = entry.unwrap();
-//         if entry.file_type().unwrap().is_dir() {
-//             count += 1;
-//         }
-//     }
-//     count
-// }
+    let curr_entries = read_dir(root_exec_cache_subdir).unwrap();
+    let mut count = 0;
+    for entry in curr_entries {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            count += 1;
+        }
+    }
+    count
+}
 
+// Function for creating directories if the postconditions call for it.
 pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     // We need to create dirs in order: shortest path to longest path.
     // Make a vector of paths to create. Then sort it by # of chars.
@@ -128,6 +130,7 @@ pub fn create_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 }
 
+// Function for deleting directories if the postconditions call for it.
 pub fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     // We need to delete dirs in order: longest path to shortest.
     // Same drill as above, but flip a and b in sort_by() basically.
@@ -153,6 +156,7 @@ pub fn delete_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 }
 
+// Function for renaming directories if the postconditions call for it.
 pub fn rename_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     let mut vec_of_paths: Vec<(PathBuf, HashSet<Fact>)> = Vec::new();
 
@@ -176,10 +180,10 @@ pub fn rename_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 }
 
+// Generate the hash of a file's contents.
+// Used when we use file hashing as our input
+// checking mechanism.
 pub fn generate_hash(path: PathBuf) -> Vec<u8> {
-    // let s = span!(Level::INFO, stringify!(generate_hash), pid=?caller_pid);
-    // let _ = s.enter();
-    // s.in_scope(|| info!("Made it to generate_hash for path: {}", path));
     if !path.is_dir() {
         let file = File::open(&path);
         if let Ok(mut f) = file {
@@ -192,6 +196,8 @@ pub fn generate_hash(path: PathBuf) -> Vec<u8> {
     }
 }
 
+// Generate the hash of the ExecCommand struct.
+// Used for cache subdir naming.
 pub fn hash_command(command: ExecCommand) -> u64 {
     let mut hasher = DefaultHasher::new();
     command.hash(&mut hasher);
@@ -218,22 +224,21 @@ fn process<D: Digest + Default, R: Read>(reader: &mut R) -> Vec<u8> {
     final_array.to_vec()
 }
 
-// Accessor, Parent Cache Subdir, Fact Set
+// This is the function that background threads that serve outputs from the cache call.
+// The tuple received is this:
+// (Accessor, Parent Cache Subdir, Fact Set)
+// Who accessed it? So we know if this is a child's file or the parent's and thus where
+// in the cache to look for the file (parent/file1 vs parent/child/file1).
+// The parent's cache subdirectory, and the fact set associated with the output file in question.
 pub fn background_thread_serving_outputs(recv_end: Receiver<(Accessor, PathBuf, HashSet<Fact>)>) {
     while let Ok((accessor, parent_cache_subdir, fact_set)) = recv_end.recv() {
         apply_file_transition_function(accessor, parent_cache_subdir, fact_set);
     }
-    // while let Ok((source, dest)) = recv_end.recv() {
-    //     match fs::copy(source.clone(), dest.clone()) {
-    //         Ok(_) => (),
-    //         Err(e) => panic!(
-    //             "Failed to serve file from cache source: {:?}, dest: {:?}, error: {:?}",
-    //             source, dest, e
-    //         ),
-    //     }
-    // }
 }
 
+// This is the function that background threads that serve stdout call.
+// The PathBuf returned is the full path to the stdout file in the cache we
+// want printed.
 pub fn background_thread_serving_stdout(recv_end: Receiver<PathBuf>) {
     while let Ok(stdout_file) = recv_end.recv() {
         // It's a stdout file just print it.
@@ -265,6 +270,8 @@ pub fn background_thread_serving_stdout(recv_end: Receiver<PathBuf>) {
 // vs.
 // rename /foo /bar
 // write /bar/file.txt
+
+// Function for applying transition for a single output file.
 pub fn apply_file_transition_function(
     accessor_and_file: Accessor,
     parents_cache_subdir: PathBuf,
@@ -323,8 +330,6 @@ pub fn apply_file_transition_function(
                                 panic!("can't get file name for: {:?}", file);
                             }
                         }
-
-                        // let file_name = file.file_name().unwrap();
                     }
                 }
             }

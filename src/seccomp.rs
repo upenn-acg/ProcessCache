@@ -59,7 +59,7 @@ impl RuleLoader {
 
     /// When on_debug is OnDebug::Intercept, if the debugging is on, the system call will
     /// be intercepted.
-    /// TODO: This function is unused for now. Use `let_pass` isntead. Is this useful?
+    /// TODO: This function is unused for now. Use `let_pass` instead. Is this useful?
     #[allow(dead_code)]
     pub fn let_pass_debug(&mut self, syscall: c_long, on_debug: OnDebug) -> Result<()> {
         if !self.rules_set.insert(syscall) {

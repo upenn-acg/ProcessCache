@@ -35,9 +35,6 @@ pub struct ExecMetadata {
     command: ExecCommand,
     cwd: PathBuf,
     env_vars: Vec<String>,
-    // Currently this is just the first argument to execve
-    // so I am not making sure it's the abosolute path.
-    // May want to do that in the future?
     starting_cwd: PathBuf,
     starting_umask: u32,
 }
@@ -95,6 +92,12 @@ impl ExecMetadata {
         self.env_vars.clone()
     }
 
+    // Checking if the current process we are tracing has NOT
+    // yet done an exec that
+    // 1. We allowed
+    // 2. We documented
+    // This is usually when we are going to skip the execution,
+    // or we don't want to cache the root execution.
     fn is_empty_root_exec(&self) -> bool {
         self.command.0.is_empty()
     }
@@ -103,11 +106,16 @@ impl ExecMetadata {
         self.starting_cwd.clone()
     }
 
+    // A process can change its cwd while its executing,
+    // and we must reflect the paths created going forward
+    // using the new cwd.
     fn update_cwd(&mut self, new_cwd: PathBuf) {
         self.cwd = new_cwd;
     }
 }
 
+// This struct houses all the info for a currently being traced execution.
+// It's where we store our in-progress info.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Execution {
     child_execs: ChildExecutions,
@@ -116,7 +124,6 @@ pub struct Execution {
     is_ignored: bool,
     is_root: bool,
     postconditions: Option<Postconditions>,
-    // stdout_duped_fd: Option<i32>,
     stdout_fd_map: HashMap<Pid, i32>,
     successful_exec: ExecMetadata,
 }
@@ -194,6 +201,8 @@ impl Execution {
         self.successful_exec.executable()
     }
 
+    // This function recursively updates the cache map we are creating from
+    // this execution we just traced.
     fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
         let command_key = ExecCommand(self.executable(), self.args());
 
@@ -217,11 +226,12 @@ impl Execution {
         );
 
         for child in children {
+            // Recursively add the generated cached execs of the children.
             child.generate_cached_exec(cache_map);
-            // new_cached_exec.add_child(RcCachedExec::new(child_exec));
         }
 
         if !self.is_ignored {
+            // Generate the preconditions.
             let preconditions = generate_preconditions(self.syscall_events.clone());
             new_cached_exec.add_preconditions(preconditions);
         }
@@ -277,6 +287,8 @@ impl Execution {
         self.syscall_events.clone()
     }
 
+    // Remove the duped stdout fd for this pid if the process
+    // has closed the stdout fd.
     fn remove_stdout_duped_fd(&mut self, pid: Pid) {
         if self.stdout_fd_map.remove(&pid).is_none() {
             panic!(
@@ -378,10 +390,6 @@ impl RcExecution {
     pub fn executable(&self) -> String {
         self.0.borrow().executable()
     }
-
-    // pub fn generate_cached_exec(&self, cache_map: &mut CacheMap) -> CachedExecution {
-    //     self.0.borrow().generate_cached_exec(cache_map)
-    // }
 
     pub fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
         self.0.borrow().generate_cached_exec(cache_map)
@@ -505,6 +513,11 @@ pub fn append_dir_events(
     }
 }
 
+// Combine the child's events with the parent's, so the parent
+// can just have all that info in its cached entry. Also, if the
+// parent and the child touched the same file, we can combine
+// the events in the correct order to have an accurate history
+// of what happened to the file over the execution.
 pub fn append_file_events(
     parent_events: &mut HashMap<Accessor, Vec<FileEvent>>,
     child_command: ExecCommand,
@@ -625,9 +638,6 @@ pub fn copy_output_files_to_cache(
     let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());
     let cache_stdout_file_path = cache_subdir_hashed_command.join(stdout_file_name);
 
-    // let new_stdout_file_path = cache_subdir_hash_and_idx.join(stdout_file_name);
-    // println!("Copy from: {:?}", stdout_file_path.clone());
-    // println!("Copy to: {:?}", cache_stdout_file_path.clone());
     if stdout_file_path.exists() {
         fs::copy(stdout_file_path.clone(), cache_stdout_file_path).unwrap();
         let mut f = File::open(stdout_file_path.clone()).unwrap();
@@ -661,6 +671,10 @@ pub fn copy_output_files_to_cache(
     }
 }
 
+// This function is for creating a vec of files to copy to the cache, so
+// that they can be sent to the background threads for copying.
+// If it is a child's file, we hardlink from their cache subdir to the parent's
+// cache subdir to save on space and speed.
 pub fn generate_list_of_files_to_copy_to_cache(
     curr_execution: &RcExecution,
     file_postconditions: HashMap<Accessor, HashSet<Fact>>,
@@ -745,16 +759,12 @@ pub fn generate_list_of_files_to_copy_to_cache(
         let hashed_child_command = hash_command(child_command);
         let child_subdir = cache_dir.join(hashed_child_command.to_string());
 
-        // if !child_subdir.exists() {
-        //     fs::create_dir(child_subdir.clone()).unwrap();
-        // }
         let childs_cached_stdout_file = format!("stdout_{:?}", child.pid().as_raw());
         let childs_cached_stdout_path = child_subdir.join(childs_cached_stdout_file.clone());
 
         let parents_spot_for_childs_stdout =
             cache_subdir_hashed_command.join(childs_cached_stdout_file);
         if childs_cached_stdout_path.exists() {
-            // fs::copy(childs_cached_stdout_path, parents_spot_for_childs_stdout).unwrap();
             list_of_files.push((
                 LinkType::Hardlink,
                 childs_cached_stdout_path,
