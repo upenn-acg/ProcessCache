@@ -59,6 +59,8 @@ impl CachedExecution {
         self.preconditions = Some(pres);
     }
 
+    // Apply all relevant directory transitions to skip the exec,
+    // if applicable.
     fn apply_all_dir_transitions(&self) {
         if !self.is_ignored {
             let posts = self.postconditions();
@@ -79,6 +81,8 @@ impl CachedExecution {
         }
     }
 
+    // Apply all file and dir transitions.
+    // We use this function for synchrnous output file copying.
     fn apply_all_transitions(&self) {
         if !self.is_ignored {
             let postconditions = self.postconditions();
@@ -123,8 +127,6 @@ impl CachedExecution {
                 debug!("Dir posts: {:?}", dir_postconditions);
                 // First create necessary dirs. And rename appropriately.
                 create_dirs(dir_postconditions.clone());
-
-                // TODO: I don't know if it is appropriate for me to rename the dirs next, but whatever.
                 rename_dirs(dir_postconditions.clone());
 
                 // Put files in the right places.
@@ -140,12 +142,14 @@ impl CachedExecution {
         }
     }
 
-    // TODO: this needs to work with the "ignored" stuff.
+    // Check all the preconditions of this execution.
+    // If any fails, return false immediately.
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
             // Create the exec's cache subdir path.
             if self.is_root {
-                // super special bioinfo crap.
+                // This is special stuff for the bioinformatics workflow benchmarks.
+                // You can move along and ignore this.
                 // return false;
                 // -------------------------------------
                 // let command = self.command();
@@ -165,7 +169,7 @@ impl CachedExecution {
                 // }
             }
             let my_preconds = self.preconditions.clone();
-            // TODO: actaully handle checking env vars x)
+            // TODO: actually handle checking env vars x)
             let vars = std::env::vars();
             let mut vec_vars = Vec::new();
             for (first, second) in vars {
@@ -204,37 +208,40 @@ impl CachedExecution {
 
     // This function will check ALL preconditions of the execution, even after it
     // has found one has failed. It is useful for debugging purposes.
-    // fn check_all_preconditions_regardless(&self) {
-    //     if !self.is_ignored {
-    //         debug!("CHECKING ALL PRECONDS REGARDLESS!!");
-    //         let my_preconds = self.preconditions.clone();
-    //         let vars = std::env::vars();
-    //         let mut vec_vars = Vec::new();
-    //         for (first, second) in vars {
-    //             vec_vars.push(format!("{}={}", first, second));
-    //         }
+    #[allow(dead_code)]
+    fn check_all_preconditions_regardless(&self) {
+        if !self.is_ignored {
+            debug!("CHECKING ALL PRECONDS REGARDLESS!!");
+            let my_preconds = self.preconditions.clone();
+            let vars = std::env::vars();
+            let mut vec_vars = Vec::new();
+            // TODO: actually handle checking env vars x)
+            for (first, second) in vars {
+                vec_vars.push(format!("{}={}", first, second));
+            }
 
-    //         let curr_cwd = std::env::current_dir().unwrap();
-    //         if self.cached_metadata.starting_cwd() != curr_cwd {
-    //             debug!("starting cwd doesn't match");
-    //             debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
-    //             debug!("new cwd: {:?}", curr_cwd);
-    //         }
+            let curr_cwd = std::env::current_dir().unwrap();
+            if self.cached_metadata.starting_cwd() != curr_cwd {
+                debug!("starting cwd doesn't match");
+                debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
+                debug!("new cwd: {:?}", curr_cwd);
+            }
 
-    //         if let Some(preconds) = my_preconds {
-    //             if !self.is_ignored {
-    //                 check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
-    //             } else {
-    //                 panic!("Trying to check preconditions of ignored cached execution!!")
-    //             }
-    //         }
-    //     }
-    // }
+            if let Some(preconds) = my_preconds {
+                if !self.is_ignored {
+                    check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
+                } else {
+                    panic!("Trying to check preconditions of ignored cached execution!!")
+                }
+            }
+        }
+    }
 
     // pub fn child_exec_count(&self) -> u32 {
     //     self.cached_metadata.child_exec_count()
     // }
 
+    // Get this execution's ExecCommand.
     pub fn command(&self) -> ExecCommand {
         self.cached_metadata.command()
     }
@@ -260,20 +267,20 @@ impl CachedExecution {
             }
         }
 
-        // sort this vec
+        // Sort this vec, because we want to print in order of smallest
+        // pid to largest. Smaller pids were spawned earlier.
         vec_of_stdout_files.sort();
         vec_of_stdout_files
     }
-
-    // fn preconditions(&self) -> Option<Preconditions> {
-    //     self.preconditions.clone()
-    // }
 
     pub fn postconditions(&self) -> Option<Postconditions> {
         self.postconditions.clone()
     }
 
     // (Precondition Count, Postcondition Count)
+    // An execution's cache entry contains all its children's and
+    // children's children's (and so on) preconditions and postconditions
+    // so we can just count the parent's and have the total.
     fn total_pre_and_post_count(&self) -> (u64, u64) {
         let mut total_preconditions = 0;
         let pres = self.preconditions.clone().unwrap();
@@ -313,6 +320,7 @@ impl CachedExecution {
     }
 }
 
+// A struct that wraps CachedExecution in a Reference Count (Rc)
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RcCachedExec(Rc<CachedExecution>);
 
@@ -333,29 +341,13 @@ impl RcCachedExec {
         self.0.apply_all_transitions()
     }
 
-    // pub fn caller_pid(&self) -> SessionId {
-    //     self.0.caller_pid()
-    // }
-
     pub fn check_all_preconditions(&self, pid: Pid) -> bool {
         self.0.check_all_preconditions(pid)
     }
 
-    // pub fn check_all_preconditions_regardless(&self) {
-    //     self.0.check_all_preconditions_regardless()
-    // }
-
-    // pub fn child_exec_count(&self) -> u32 {
-    //     self.0.child_exec_count()
-    // }
-
     pub fn list_stdout_files(&self) -> Vec<PathBuf> {
         self.0.list_stdout_files()
     }
-
-    // pub fn preconditions(&self) -> Option<Preconditions> {
-    //     self.0.preconditions()
-    // }
 
     pub fn postconditions(&self) -> Option<Postconditions> {
         self.0.postconditions()
@@ -375,6 +367,7 @@ pub fn serialize_execs_to_cache(exec_map: CacheMap) {
     fs::write(CACHE_LOCATION, serialized_exec_map).unwrap();
 }
 
+// Get the existing cache map, if it exists.
 pub fn retrieve_existing_cache() -> Option<CacheMap> {
     const CACHE_LOCATION: &str = "./cache/cache";
     let cache_path = PathBuf::from(CACHE_LOCATION);

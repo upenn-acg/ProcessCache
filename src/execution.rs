@@ -1,8 +1,5 @@
 use crossbeam::channel::{unbounded, Sender};
-use libc::{
-    c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, O_ACCMODE,
-    O_RDONLY, O_RDWR, O_WRONLY,
-};
+use libc::{c_char, AT_FDCWD, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
 use nix::{
     dir,
     fcntl::{readlink, AtFlags, OFlag},
@@ -13,7 +10,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{self},
+    fs::{canonicalize, create_dir, create_dir_all},
     path::PathBuf,
     rc::Rc,
     thread,
@@ -24,7 +21,10 @@ use crate::{
     cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
-    execution_utils::{background_thread_copying_outputs, get_total_syscall_event_count_for_root},
+    execution_utils::{
+        background_thread_copying_outputs, get_total_syscall_event_count_for_root,
+        getdents_file_type,
+    },
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
     syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
@@ -54,6 +54,14 @@ use tracing::{debug, error, info, span, trace, Level};
 use anyhow::{bail, Context, Result};
 
 // Toggle additional metrics.
+// Additional metrics include:
+// - Space consumed
+// - Total syscalls (intercepted)
+// - Syscalls / sec
+// - Total exec units
+// - Total SyscallEvents (fact generation)
+// - Total preconditions
+// - Total postconditions
 const ADDITIONAL_METRICS: bool = false;
 // These flags are optimizations to P$.
 // This one allows the user to skip caching the root execution
@@ -64,16 +72,17 @@ const DONT_CACHE_ROOT: bool = false;
 // end of execution.
 const BACKGROUND_THREADS: bool = true;
 // Toggle parallelism for skipping jobs.
+// This allows multiple threads to be spawned
+// to serve output files from the cache.
 const BACKGROUND_SERVING_THREADS: bool = true;
 
-// Flags for turning on and off different parts of process cache.
+// Flags for turning on and off different parts of ProcessCache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
 const FACT_GEN: bool = false;
 
-// TODO: Refactor this file
 pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
 
@@ -90,7 +99,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     first_execution.set_to_root();
 
     if !(PTRACE_ONLY || FACT_GEN) {
-        fs::create_dir_all(&cache_dir)
+        // Create the cache subdir for this execution.
+        create_dir_all(&cache_dir)
             .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
     }
 
@@ -100,9 +110,11 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     let (stdout_sender, stdout_receiver) = unbounded();
     let (serving_file_sender, serving_file_receiver) = unbounded();
 
+    // This is optional because the user may opt to not use
+    // background threads.
     let option_handle_vec = if BACKGROUND_THREADS {
         let mut handle_vec = Vec::new();
-        // HERE is where we can modify the number of background threads.
+        // Here is where we can modify the number of background threads.
         for _ in 0..5 {
             let r2 = caching_receiver.clone();
             let handle = thread::spawn(move || background_thread_copying_outputs(r2));
@@ -144,8 +156,11 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         (None, None)
     };
 
+    // This allows us to pass these in this execution and to child execution's
+    // to get accurate counts for total syscalls and total SyscallEvents.
     let total_intercepted_syscall_count = Rc::new(RefCell::new(0));
     let total_syscall_event_count = Rc::new(RefCell::new(0));
+
     let f = trace_process(
         async_runtime.clone(),
         Ptracer::new(first_proc),
@@ -161,13 +176,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         .run_task(first_proc, f)
         .with_context(|| context!("Program tracing failed. Task returned error."))?;
 
-    // Get existing cache if it exists.
-    // Call add_to_curr_cache() or whatever.
-    // Serialize the data structure and write it to the cache.
-    // Copy output files... carefully --> can't just do /cache/commandhash/yada
-    // because of potential collisions on the hash.
-    // TODO: decide what full_tracking_on *means* and actually implement it to do that lol.
-    // if !(full_tracking_on || first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
+    // If this is an empty root exec, we are probably skipping the exec.
+    // So we don't want to calculate additional metrics or populate
+    // the cache map and serialize it to the disk.
     if !(first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
         let mut cache_map = HashMap::new();
         first_execution.populate_cache_map(&mut cache_map);
@@ -186,9 +197,6 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
                 "TOTAL NUMBER OF SYSCALL EVENTS: {:?}",
                 total_syscall_event_count
             );
-            // ADDITIONAL METRICS: Count the number of preconditions.
-            // let mut total_preconditions = 0;
-            // let mut total_postconditions = 0;
 
             let first_command = first_execution.command();
             let first_cache_entry = cache_map.get(&first_command);
@@ -198,29 +206,13 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
                 println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
                 println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
             }
-            // for (_, entry) in cache_map.clone() {
-            //     let preconditions = entry.preconditions();
-            //     if let Some(pres) = preconditions {
-            //         let file_pres = pres.file_preconditions().len() as u64;
-            //         total_preconditions += file_pres;
-            //         let dir_pres = pres.dir_preconditions().len() as u64;
-            //         total_preconditions += dir_pres;
-            //     }
-
-            //     let postconditions = entry.postconditions();
-            //     if let Some(posts) = postconditions {
-            //         let file_posts = posts.file_postconditions().len() as u64;
-            //         total_postconditions += file_posts;
-            //         let dir_posts = posts.dir_postconditions().len() as u64;
-            //         total_postconditions += dir_posts;
-            //     }
-            // }
-            // println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
-            // println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
         }
+        // Here we serialize the cache map data structure to a file in the cache (/cache/cache).
         serialize_execs_to_cache(cache_map.clone());
     }
 
+    // Clean up the background threads (for copying outputs to the cache and
+    // serving from it) and their channels before we exit.
     if let Some(caching_sender) = option_caching_sender {
         drop(caching_sender);
     }
@@ -258,6 +250,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 /// So we actually can just ignore this event. This is actually what we want and how we handle the
 /// race between a ptrace::FORK_EVENT and this ptrace::STOPPED from the parent. Also relevant:
 /// https://stackoverflow.com/questions/29997244/occasionally-missing-ptrace-event-vfork-when-running-ptrace
+/// This may have a lot of arguments but it is *THE* main function in this whole system, so we let
+/// that slide.
 #[allow(clippy::too_many_arguments)]
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
@@ -303,6 +297,8 @@ pub async fn trace_process(
             TraceEvent::Prehook(_) => {
                 *total_intercepted_syscall_count.borrow_mut() += 1;
 
+                // PTRACE_ONLY = we just want to intercept the events, but
+                // do nothing at the event stops.
                 if !PTRACE_ONLY {
                     let e = s.enter();
 
@@ -355,8 +351,7 @@ pub async fn trace_process(
                     let mut nlinks_before = 0;
                     // We have a "CheckMechanism" for input files (including files you write to that depend upon
                     // the starting contents, such as O_RDONLY, O_WRONLY + O_APPEND, and also O_WRONLY w/o offset mode)
-                    // O_TRUNC idc about the contents. Opening for append does not change mtime.
-                    // TODO: Implement all check mechanisms fully.
+                    // O_TRUNC means we don't care about the contents (so don't have to hash the file / get its mtime)
 
                     // Special cases, we won't get a posthook event. Instead we will get
                     // an execve event or a posthook if execve returns failure. We don't
@@ -387,14 +382,15 @@ pub async fn trace_process(
                                 let cwd_path = readlink(cwd_link.as_str())
                                     .with_context(|| context!("Failed to readlink (cwd)"))?;
                                 let cwd = cwd_path.to_str().unwrap().to_owned();
+                                // Get the starting cwd for the process.
                                 let starting_cwd = PathBuf::from(cwd);
                                 debug!("Starting cwd: {:?}", starting_cwd);
 
+                                // Create the full path to the executable.
                                 let exec_path_buf = PathBuf::from(executable.clone());
                                 debug!("Raw executable: {:?}", exec_path_buf);
                                 debug!("args: {:?}", args);
                                 let exec_path_buf = if exec_path_buf.is_relative() {
-                                    // fs::canonicalize(exec_path_buf).unwrap()
                                     let file_name = exec_path_buf.file_name().unwrap();
                                     starting_cwd.join(file_name)
                                 } else {
@@ -402,6 +398,7 @@ pub async fn trace_process(
                                 };
                                 debug!("Execve event, executable: {:?}", exec_path_buf);
 
+                                // Create this execution's unique ExecCommand struct.
                                 let command = ExecCommand(
                                     exec_path_buf
                                         .clone()
@@ -410,11 +407,16 @@ pub async fn trace_process(
                                         .unwrap(),
                                     args.clone(),
                                 );
+                                // Hash this struct. We use this hash as the name of the exec's subdir
+                                // in the cache.
                                 let hashed_command = hash_command(command.clone());
                                 debug!(
                                     "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
                                     command, hashed_command
                                 );
+
+                                // If this flag is on, it means we want ptrace interception
+                                // and fact generation, but that's it. No checking the cache.
                                 if !FACT_GEN {
                                     // Check the cache for the thing
                                     if let Some(cache) = retrieve_existing_cache() {
@@ -531,8 +533,6 @@ pub async fn trace_process(
                                     starting_cwd,
                                 );
 
-                                // TODO: handle child execs
-                                // TODO: don't add 2 successful execs from same proc, panic instead.
                                 match next_event {
                                     TraceEvent::Exec(_) => {
                                         // The execve succeeded!
@@ -553,14 +553,13 @@ pub async fn trace_process(
                                                 curr_execution
                                                     .update_successful_exec(new_exec_metadata);
                                             }
+                                        // This is a child exec.
                                         } else if curr_execution.pid() != tracer.curr_proc {
                                             // Get the stdout fd from the current exec if it exists.
                                             let childs_stdout_fd = curr_execution
                                                 .get_stdout_duped_fd(tracer.curr_proc);
 
-                                            // New rc exec for the child exec.
-                                            // Add to parent's struct.
-                                            // set curr execution to the new one.
+                                            // New RcExecution for the child exec.
                                             let mut new_child_exec =
                                                 Execution::new(Proc(tracer.curr_proc));
                                             new_child_exec
@@ -576,19 +575,23 @@ pub async fn trace_process(
                                                 curr_execution
                                                     .remove_stdout_duped_fd(tracer.curr_proc)
                                             }
+                                            // Add to parent's struct.
                                             curr_execution
                                                 .add_child_execution(new_rc_child_exec.clone());
+                                            // Set curr execution to the new one.
                                             curr_execution = new_rc_child_exec;
                                         } else {
                                             panic!("Process already called successful execve and is trying to do another!!");
                                         }
                                     }
                                     TraceEvent::Posthook(_) => {
+                                        // If we get a posthook event after an Exec event, it means the exec
+                                        // failed.
                                         s.in_scope(|| {
                                             debug!("Execve failed!");
                                         });
                                         let regs = tracer.get_registers().with_context(|| {
-                                            context!("Failed to get regs in handle_stat()")
+                                            context!("Failed to get regs in posthook")
                                         })?;
                                         let ret_val = regs.retval::<i32>();
                                         let failed_exec = {
@@ -605,6 +608,8 @@ pub async fn trace_process(
                                                 ),
                                             }
                                         };
+
+                                        // We add this as a file event in the current exec, so we know to expect this exec to fail next time.
                                         curr_execution.add_new_file_event(
                                             tracer.curr_proc,
                                             failed_exec,
@@ -615,6 +620,9 @@ pub async fn trace_process(
                                 }
                                 continue;
                             }
+                            // Some events are special and we don't go to the posthook.
+                            // For more info, I invite you to subject yourself to the ptrace
+                            // man page :-)
                             "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2"
                             | "clone3" => {
                                 debug!("Special event: {}. Do not go to posthook.", name);
@@ -623,6 +631,9 @@ pub async fn trace_process(
                             "unlink" | "unlinkat" => {
                                 use std::os::unix::fs::MetadataExt;
                                 let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                                // We get the total number of hardlinks in the unlink prehook.
+                                // We need to get this value here because it may change by the
+                                // time we get the posthook event.
                                 if full_path.exists() {
                                     let meta = full_path.as_path().metadata().unwrap();
                                     nlinks_before = meta.nlink();
@@ -635,15 +646,18 @@ pub async fn trace_process(
                                     const STDOUT_FD: u32 = 1;
                                     // const STDERR_FD: u32 = 2;
                                     // TODO: Deal with PID recycling?
+
+                                    // We don't have to worry about creating a cache subdir for this
+                                    // exec if we are only doing ptrace or ptrace+factgen.
                                     if !(PTRACE_ONLY || FACT_GEN) {
                                         let exec = curr_execution.executable();
                                         let args = curr_execution.args();
                                         let comm_hash = hash_command(ExecCommand(exec, args));
-                                        let cache_subdir = fs::canonicalize("./cache").unwrap();
+                                        let cache_subdir = canonicalize("./cache").unwrap();
                                         let cache_subdir =
                                             cache_subdir.join(format!("{:?}", comm_hash));
                                         if !cache_subdir.exists() {
-                                            fs::create_dir(cache_subdir.clone()).unwrap();
+                                            create_dir(cache_subdir.clone()).unwrap();
                                         }
                                     }
 
@@ -662,7 +676,9 @@ pub async fn trace_process(
                                     //     .with_context(|| context!("Unable to redirect stderr."))?;
                                     // TODO: Add stderr redirection.
 
+                                    // So we know this has been done successfully.
                                     iostream_redirected = true;
+
                                     // Continue to let original system call run.
                                     continue;
                                 }
@@ -685,6 +701,7 @@ pub async fn trace_process(
 
                     span!(Level::INFO, "Posthook", ret_val).in_scope(|| info!(name));
 
+                    // Each syscall has its own handle_syscall() function in the posthook.
                     match name {
                         "access" => {
                             handle_access(&curr_execution, &tracer, &total_syscall_event_count)?
@@ -696,12 +713,14 @@ pub async fn trace_process(
                                 let fd = regs.arg1::<i32>();
                                 // They are closing stdout.
                                 // Weirdos.
+                                // But this means we must also close our stdout file
+                                // that we have been using to record the process'
+                                // stdout output.
                                 if fd == 1 {
                                     pls_close_stdout_fd = true;
                                 }
                             }
                         }
-                        // TODO?
                         "connect" | "pipe" | "pipe2" | "socket" => (),
                         "creat" | "openat" | "open" => handle_open(
                             &curr_execution,
@@ -717,15 +736,12 @@ pub async fn trace_process(
                             &tracer,
                             &total_syscall_event_count,
                         )?,
-                        "getdents64" => {
-                            // TODO: Kelly, you can use this variable to know what directories were read.
-                            handle_get_dents64(
-                                &curr_execution,
-                                &regs,
-                                &tracer,
-                                &total_syscall_event_count,
-                            )?
-                        }
+                        "getdents64" => handle_get_dents64(
+                            &curr_execution,
+                            &regs,
+                            &tracer,
+                            &total_syscall_event_count,
+                        )?,
                         "mkdir" | "mkdirat" => handle_mkdir(
                             &curr_execution,
                             name,
@@ -742,14 +758,9 @@ pub async fn trace_process(
                             handle_statfs(&curr_execution, &tracer, &total_syscall_event_count)?
                         }
                         "unlink" | "unlinkat" => {
+                            // If the number of links before was 1, then the file
+                            // will be deleted if this call is successful.
                             if nlinks_before == 1 {
-                                // before facts? (success)
-                                // - exists
-                                // - contents
-                                // - write access to dir
-                                // - x access to dir
-                                // after facts? (success)
-                                // - doesnt exist
                                 handle_unlink(
                                     &curr_execution,
                                     name,
@@ -763,37 +774,17 @@ pub async fn trace_process(
                 }
             }
             TraceEvent::Clone(_) => {
-                // We treat clone differently from fork because clone has the dangerous
-                // CLONE_THREAD flag. Well it's not dangerous, but we don't handle threads
-                // so we want to panic if we detect a program trying to clone one.
-
-                // From dettrace:
-                // kinda unsure why this is unsigned
-                // msg = "clone";
-                // unsigned long flags = (unsigned long)tracer.arg1();
-                // isThread = (flags & CLONE_THREAD) != 0;
-
-                // let regs = tracer
-                //     .get_registers()
-                //     .with_context(|| context!("Failed to get regs in handle_access()"))?;
-
-                // flags are the 3rd arg to clone.
-                // let flags = regs.arg3::<i32>();
-                // if (flags & CLONE_THREAD) != 0 {
-                //     panic!("THREADSSSSSSSSSS!");
-                // }
-
                 let child = Pid::from_raw(tracer.get_event_message()? as i32);
                 s.in_scope(|| {
                     debug!("Fork Event. Creating task for new child: {:?}", child);
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                // When a process forks, we pass the current execution struct to the
+                // When a process forks/clones, we pass the current execution struct to the
                 // child process' future as both the curr execution and the parent execution.
                 // If the child process then calls "execve",
                 // this new execution will replace the current execution for the child
-                // process' future and its parent execution
+                // process' future.
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
@@ -814,11 +805,11 @@ pub async fn trace_process(
                     debug!("Parent pid is: {}", tracer.curr_proc);
                 });
 
-                // When a process forks, we pass the current execution struct to the
+                // When a process forks/clones, we pass the current execution struct to the
                 // child process' future as both the curr execution and the parent execution.
                 // If the child process then calls "execve",
                 // this new execution will replace the current execution for the child
-                // process' future and its parent execution
+                // process' future.
                 let f = trace_process(
                     async_runtime.clone(),
                     Ptracer::new(child),
@@ -861,19 +852,19 @@ pub async fn trace_process(
             s.in_scope(|| debug!("Saw actual exit event for pid {}", pid));
             s.in_scope(|| debug!("Exit code: {}", exit_code));
 
-            // append file event lists
-            // update the event lists of this execution struct
-            // generate postconditions
-            // copy output files to /cache/hash_of_my_command_key/output_file_x
+            // This is what we must do because this process is exiting.
+            // - Append file event lists (between parent and children).
+            // - Update the event lists of this execution struct.
+            // - Generate postconditions.
+            // - Use postconditions and copy output files to /cache/hash_of_my_command_key/output_file_x.
 
-            // record postconditions in the execution struct?
-            // if the parent has no files in common with its child, then the parent
+            // A note on postconditions:
+            // If the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
-            // instead of recomputing the child's along with its own
+            // instead of recomputing the child's along with its own.
             if !(skip_execution || PTRACE_ONLY || FACT_GEN) {
                 // Add exit code to the exec struct, if this is the
                 // pid that exec'd the exec. execececececec.
-                // panic!("SHOULD NOT BE HERE");
                 if !curr_execution.is_ignored() {
                     curr_execution.add_exit_code(exit_code);
                 }
@@ -909,7 +900,7 @@ pub async fn trace_process(
                     ExecSyscallEvents::new(new_dir_events, new_file_events)
                 };
 
-                // ADDITIONAL METRICS: Here is  where we can count total number of syscalls in this whole
+                // ADDITIONAL METRICS: Here is where we can count total number of syscalls in this whole
                 // big execution.
                 if ADDITIONAL_METRICS && curr_execution.is_root() {
                     let total_syscall_event_count =
@@ -917,6 +908,8 @@ pub async fn trace_process(
                     println!("TOTAL SYSCALL EVENT COUNT: {:?}", total_syscall_event_count);
                 }
 
+                // Update the syscall events for the current exec with the newly combined
+                // events from parent and children.
                 curr_execution.update_syscall_events(new_events.clone());
 
                 // If the execution was set to "ignored", we don't want to
@@ -934,11 +927,13 @@ pub async fn trace_process(
                             file_postconditions,
                         );
 
-                        // Send each pair to across the channel.
+                        // Send each pair across the channel.
                         for pair in file_pairs {
                             caching_sender.send(pair).unwrap();
                         }
                     } else {
+                        // If we aren't using background threads to copy outputs, we have this function
+                        // with a single synchronous thread copying the outputs.
                         copy_output_files_to_cache(&curr_execution, file_postconditions);
                     }
                 }
@@ -949,12 +944,6 @@ pub async fn trace_process(
             other
         ),
     }
-    // if !skip_execution {
-    //     // Write stdout_file to stdout.
-    //     let contents = std::fs::read_to_string(stdout_file)
-    //         .with_context(|| context!("Unable to read stdout_file"))?;
-    //     print!("{}", contents);
-    // }
 
     Ok(())
 }
@@ -1172,9 +1161,6 @@ fn handle_open(
         let option_flags = OFlag::from_bits(flag_arg);
         let (creat_flag, excl_flag, offset_mode, access_mode) = if let Some(flags) = option_flags {
             let access_mode = match flag_arg & O_ACCMODE {
-                // PRANOTI: Why not skip a step and just not use these dumb OFlag things at all?
-                // flag_arg & O_ACCMODE gives us read, write, or both. We can just map that
-                // to our AccessMode enum.
                 O_RDONLY => AccessMode::Read,
                 O_RDWR => AccessMode::Both,
                 O_WRONLY => AccessMode::Write,
@@ -1514,26 +1500,4 @@ fn handle_unlink(
         *total_syscall_event_count.borrow_mut() += 1;
     }
     Ok(())
-}
-
-fn getdents_file_type(file_type: c_uchar) -> dir::Type {
-    use nix::dir::Type;
-
-    if file_type == DT_BLK {
-        Type::BlockDevice
-    } else if file_type == DT_CHR {
-        Type::CharacterDevice
-    } else if file_type == DT_DIR {
-        Type::Directory
-    } else if file_type == DT_FIFO {
-        Type::Fifo
-    } else if file_type == DT_LNK {
-        Type::Symlink
-    } else if file_type == DT_REG {
-        Type::File
-    } else if file_type == DT_SOCK {
-        Type::Socket
-    } else {
-        panic!("Unknown file type: {}", file_type);
-    }
 }

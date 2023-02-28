@@ -200,7 +200,6 @@ impl Execution {
         let children = self.child_execs.clone();
         let child_exec_count = children.len();
 
-        // let preconditions = generate_preconditions(file_events);
         let cached_metadata = CachedExecMetadata::new(
             self.pid().as_raw(),
             child_exec_count as u32,

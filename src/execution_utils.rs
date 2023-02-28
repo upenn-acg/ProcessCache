@@ -4,12 +4,12 @@ use std::{
     fs::{self, metadata},
     os::linux::fs::MetadataExt,
     path::PathBuf,
-    // sync::mpsc::Receiver,
 };
 
 use anyhow::Context;
-use libc::{c_char, AT_FDCWD};
+use libc::{c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK};
 use nix::{
+    dir,
     fcntl::{readlink, OFlag},
     unistd::Pid,
 };
@@ -29,9 +29,12 @@ use crate::{
 
 // This used to be "don't hash files" but I think what
 // we want is for it to be "don't hash or mtime".
-// const DONT_HASH_FILES: bool = false;
+// Because the input checking mechanism isn't necessarily
+// hashing.
 const DONT_HASH_OR_MTIME: bool = false;
 
+// Our background threads use this function to wait for (source, dest) file path pairs
+// to be sent to them, so that they may copy the output files to the cache.
 pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, PathBuf)>) {
     while let Ok((link_type, source, dest)) = recv_end.recv() {
         if link_type == LinkType::Copy {
@@ -63,6 +66,11 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
     }
 }
 
+// This function creates SyscallEvents for open, openat, and
+// creat. Because there are so many combinations of syscall
+// and flags that fall under this category, we have a function
+// that handles them all in one place.
+// Note:
 // "Create" designates that O_CREAT was used.
 // This doesn't mean it succeeded to create, just
 // that the flag was used.
@@ -208,6 +216,32 @@ pub fn generate_open_syscall_file_event(
     }
 }
 
+// Helper function to get a readable file type from the
+// nastiness that is getdents.
+pub fn getdents_file_type(file_type: c_uchar) -> dir::Type {
+    use nix::dir::Type;
+
+    if file_type == DT_BLK {
+        Type::BlockDevice
+    } else if file_type == DT_CHR {
+        Type::CharacterDevice
+    } else if file_type == DT_DIR {
+        Type::Directory
+    } else if file_type == DT_FIFO {
+        Type::Fifo
+    } else if file_type == DT_LNK {
+        Type::Symlink
+    } else if file_type == DT_REG {
+        Type::File
+    } else if file_type == DT_SOCK {
+        Type::Socket
+    } else {
+        panic!("Unknown file type: {}", file_type);
+    }
+}
+
+// Helper function for copying an input file to the cache, if you choose "diff files"
+// as your input checking mechanism.
 fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathBuf) {
     const CACHE_LOCATION: &str = "./cache";
     let cache_dir = PathBuf::from(CACHE_LOCATION);
@@ -229,10 +263,7 @@ fn copy_input_file_to_cache(curr_execution: &RcExecution, input_file_path: PathB
     }
 }
 
-// TODO: clean this up
-// We consider these syscalls to be inputs.
-// Well the files they are acting upon anyway!
-// TODO: handle rename(at) - pass in path arg instead of... syscall_name?
+// Generate the full path of the file the system call is acting upon.
 pub fn get_full_path(
     curr_execution: &RcExecution,
     syscall_name: &str,
@@ -299,6 +330,9 @@ pub fn get_full_path(
     Ok(full_path)
 }
 
+// Get the total system call event count for the root execution. It contains
+// all the events of its progeny, so this counts all the system call events
+// for the entire execution.
 pub fn get_total_syscall_event_count_for_root(events: ExecSyscallEvents) -> u64 {
     let mut total_syscall_count = 0;
 
@@ -319,6 +353,8 @@ pub fn get_total_syscall_event_count_for_root(events: ExecSyscallEvents) -> u64 
     total_syscall_count
 }
 
+// Get the starting umask for the process.
+// This is considered an input to the execution.
 pub fn get_umask(pid: &Pid) -> u32 {
     let status_file = format!("/proc/{}/status", pid.as_raw());
     let umask: u32 = fs::read_to_string(&status_file)
@@ -333,6 +369,7 @@ pub fn get_umask(pid: &Pid) -> u32 {
     umask
 }
 
+// Get the path of a file associated with this particular fd for this pid.
 pub fn path_from_fd(pid: Pid, fd: i32) -> anyhow::Result<PathBuf> {
     debug!("In path_from_fd()");
     let proc_path = format!("/proc/{}/fd/{}", pid, fd);
