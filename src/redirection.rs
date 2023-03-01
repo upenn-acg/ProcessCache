@@ -8,7 +8,8 @@ use tracing::{debug, info};
 /// The process closed stdout.
 /// So we must close the fd we duped stdout to.
 /// 1) Inject close system call (ensure it succeeds)
-///
+/// 2) Restore the registers to the original system call.
+/// 3) Replay the original system call and continue with execution.
 pub async fn close_stdout_duped_fd(
     current_execution: &RcExecution,
     tracer: &mut Ptracer,

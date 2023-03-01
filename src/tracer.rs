@@ -24,14 +24,14 @@ pub enum TraceEvent {
 impl From<WaitStatus> for TraceEvent {
     fn from(w: WaitStatus) -> TraceEvent {
         match w {
-            WaitStatus::PtraceEvent(pid, _, status) => match status as i32 {
+            WaitStatus::PtraceEvent(pid, _, status) => match status {
                 libc::PTRACE_EVENT_EXEC => TraceEvent::Exec(pid),
                 libc::PTRACE_EVENT_EXIT => TraceEvent::PreExit(pid),
                 libc::PTRACE_EVENT_SECCOMP => TraceEvent::Prehook(pid),
                 libc::PTRACE_EVENT_FORK => TraceEvent::Fork(pid),
                 libc::PTRACE_EVENT_CLONE => TraceEvent::Clone(pid),
                 libc::PTRACE_EVENT_VFORK => TraceEvent::VFork(pid),
-                _ => panic!("Unknown status from PtraceEven: {:?}", status as i32),
+                _ => panic!("Unknown status from PtraceEven: {:?}", status),
             },
             WaitStatus::PtraceSyscall(pid) => TraceEvent::Posthook(pid),
             WaitStatus::Exited(pid, exit_code) => TraceEvent::ProcessExited(pid, exit_code),

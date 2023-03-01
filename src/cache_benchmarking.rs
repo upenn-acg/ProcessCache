@@ -6,11 +6,18 @@ use crate::{
     condition_utils::Fact,
 };
 
+// This function serves to remove bwa build entries from the
+// cache for benchmarking purposes. It does the following:
+// 1) Depending on percent_to_remove, calculates how many jobs to remove from the cache.
+// 2) Get the existing cache, then construct a list of child exec keys to remove from the cache.
+// 3) Remove those keys from the cache, and serialize the updated cache map to disk.
+// 4) Remove the cache subdirs associated with the keys removed from the cache.
 #[allow(dead_code)]
 pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
-    // exec: "/usr/bin/gcc", arg count: 11.
+    // Child execs are of this form: "/usr/bin/gcc", arg count: 11.
     let child_exec_count = 31;
+    // Calculate the total number of child execs to remove.
     let num_to_remove_from_cache = match percent_to_remove {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
@@ -100,11 +107,18 @@ pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
     }
 }
 
+// This function serves to remove raxml build entries from the
+// cache for benchmarking purposes. It does the following:
+// 1) Depending on percent_to_remove, calculates how many jobs to remove from the cache.
+// 2) Get the existing cache, then construct a list of child exec keys to remove from the cache.
+// 3) Remove those keys from the cache, and serialize the updated cache map to disk.
+// 4) Remove the cache subdirs associated with the keys removed from the cache.
 #[allow(dead_code)]
 pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
-    // exec: "/usr/bin/gcc", arg count: 10
+    // Child execs are of the form: "/usr/bin/gcc", arg count: 10
     let child_exec_count = 24;
+    // Calculate the number of child execs to remove.
     let num_to_remove_from_cache = match percent_to_remove {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
@@ -193,11 +207,18 @@ pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
     }
 }
 
+// This function serves to remove minigraph build entries from the
+// cache for benchmarking purposes. It does the following:
+// 1) Depending on percent_to_remove, calculates how many jobs to remove from the cache.
+// 2) Get the existing cache, then construct a list of child exec keys to remove from the cache.
+// 3) Remove those keys from the cache, and serialize the updated cache map to disk.
+// 4) Remove the cache subdirs associated with the keys removed from the cache.
 #[allow(dead_code)]
 pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
     // exec: "/usr/bin/gcc", arg count: 11.
     let child_exec_count = 28;
+    // Calculate the number of child execs to remove.
     let num_to_remove_from_cache = match percent_to_remove {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
@@ -286,8 +307,16 @@ pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32)
     }
 }
 
+// This function serves to remove bioinformatics workflow entries from the
+// cache for benchmarking purposes. It does the following:
+// 1) Depending on percent_to_remove, calculates how many jobs to remove from the cache.
+// 2) Get the existing cache, then construct a list of child exec keys to remove from the cache.
+// 3) Remove those keys from the cache, and serialize the updated cache map to disk.
+// 4) Remove the cache subdirs associated with the keys removed from the cache.
 pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
     let child_exec_count = 905;
+    // Calculate number of child jobs to remove from the cache.
+    // Most common number of jobs is 905 but can be changed obviously.
     let num_to_remove_from_cache = match percent_to_remove {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
@@ -301,13 +330,13 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
         e => panic!("Unrecognized skip option: {:?}", e),
     };
 
-    // ROOT: ExecCommand("/home/kship/kship/bioinformatics-workflows/all_hmmer_jobs", ["./target/release/all_hmmer_jobs"])
+    // The root execution's ExecCommand struct for hmmer: ExecCommand("/home/kship/kship/bioinformatics-workflows/all_hmmer_jobs", ["./target/release/all_hmmer_jobs"])
     if let Some(mut existing_cache) = retrieve_existing_cache() {
         let mut curr_count = 0;
         let mut list_to_remove: Vec<ExecCommand> = Vec::new();
         let mut vec_of_dirs_to_remove: Vec<u64> = Vec::new();
 
-        // Get a list of gcc job keys to remove from the cache.
+        // Get a list of job keys to remove from the cache.
         for key in existing_cache.keys() {
             if curr_count < num_to_remove_from_cache {
                 let exec = key.exec();
@@ -329,7 +358,6 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
         // Remove from the cache, and add hash to a list of dirs to remove
         // from /cache.
         for exec_command in list_to_remove {
-            // TODO
             let existing_hmmer_job = hash_command(exec_command.clone());
             vec_of_dirs_to_remove.push(existing_hmmer_job);
             existing_cache.remove(&exec_command);
