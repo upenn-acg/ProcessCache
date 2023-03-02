@@ -13,6 +13,11 @@ use crate::{
     syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, Stat, SyscallFailure, SyscallOutcome},
 };
 
+// Struct to house preconditions of an execution.
+// A set of preconditions is a map:
+// Full path to the resource --> set of precondition facts for the resource.
+// We separate directory preconditions and file preconditions and handle them
+// separately.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Preconditions {
     dir: HashMap<PathBuf, HashSet<Fact>>,
@@ -35,9 +40,26 @@ impl Preconditions {
         self.file.clone()
     }
 }
-// Postconditions are a little different. We need to know
-// if the accessor was the child, so we can just link
-// that file baby. No copyin' required.
+
+// Struct to house postconditions of an execution.
+// A set of postconditions is a map, but it is a little different from
+// preconditions.
+// The key is:
+// pub enum Accessor {
+//     // String = hash of the child's command.
+//     // We know hashing is slow, let's do it one time,
+//     // and just pass the results around.
+//     ChildProc(String, PathBuf),
+//     CurrProc(PathBuf),
+// }
+// We need the Accessor enum so that we know when we can just hardlink
+// files (ex: hardlink a child's output file from the child's cache subdir
+// to the parent's cache, like this
+// /cache/child/foo.txt --> /cache/parent/child/foo.txt)
+// So the map is:
+// Accessor --> set of postconditions facts for the resource.
+// We separate directory postconditions and file postconditions and handle them
+// separately.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Postconditions {
     dir: HashMap<Accessor, HashSet<Fact>>,
@@ -61,6 +83,8 @@ impl Postconditions {
     }
 }
 
+// Handy enum for representing the different types of files we handle:
+// Directories, files, and symlinks.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum FileType {
     Dir,
@@ -68,6 +92,16 @@ pub enum FileType {
     Symlink,
 }
 
+// In the precondition generator, we use multiple pieces of state
+// to iteratively generate the preconditions (in a state machine type fashion),
+// for each resource:
+// - the first state (enum State)
+// - the current state of the resource (i.e. the last modification) (enum Mod)
+// - whether the resource has been deleted (useful for rename)
+
+// Mod = Modification.
+// This is the last modification (current state) of the resource.
+// It starts as None and is updated as events on a resource are processed.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Mod {
     Created,
@@ -77,6 +111,7 @@ pub enum Mod {
     None,
 }
 
+// The struct that wraps the Mod enum so we can make updates to it easily.
 pub struct LastMod(pub Mod);
 
 impl LastMod {
@@ -129,27 +164,55 @@ impl LastMod {
     }
 }
 
+// A catch-all for facts that can be true about a file or directory,
+// in either the context of preconditions or postconditions.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Fact {
+    // The directory has the same entries.
     DirEntriesMatch(Vec<(String, FileType)>),
+    // Resource doesn't exist.
     DoesntExist,
+    // Resource exists.
     Exists,
+    // Resource's postconditions depend upon its final contents after
+    // it has been modified during execution.
     FinalContents,
-    // Then we can have one fact holding all the perms we need to check for?
-    // c_int = AccessFlags
-    HasDirPermission(c_int, Option<PathBuf>), // Optionally supply a root dir, otherwise assume parent dir
+    // c_int = nix::unistd::AccessFlags
+    // Has directory permissions.
+    // Optionally supply a root dir, otherwise assume parent dir of resource.
+    HasDirPermission(c_int, Option<PathBuf>),
+    // c_int = nix::unistd::AccessFlags
+    // Has file permissions.
     HasPermission(c_int),
+    // Cached and current input files match based on diffing.
     InputFilesMatch,
+    // Cached and current input files match based on mtime.
     Mtime(i64),
+    // c_int = nix::unistd::AccessFlags
+    // Does NOT have directory permissions.
+    // Optionally supply a root dir, otherwise assume parent dir of resource.
     NoDirPermission(c_int, Option<PathBuf>),
+    // c_int = nix::unistd::AccessFlags
+    // Does NOT have file permissions
     NoPermission(c_int),
+    // One or both of these facts do NOT hold.
+    // i.e. they can't both hold. Used for permissions checking.
     Or(Box<Fact>, Box<Fact>),
+    // This resource has been renamed.
+    // (Old full path, new full path)
     Renamed(PathBuf, PathBuf),
+    // Hash of contents of cached input file and current input file match.
     StartingContents(Vec<u8>),
+    // The statfs struct returned for the current file system matches
+    // the cached statfs struct for this resource.
     StatFsStructMatches(MyStatFs),
+    // The stat struct returned for the current file matches the cached
+    // state struct for this resource.
     StatStructMatches(Stat),
 }
 
+// This is the state (well, the first state, when used) of the resource.
+// It starts as None and is updated as events on a resource are processed.
 #[derive(Clone, Eq, PartialEq)]
 pub enum State {
     DoesntExist,
@@ -157,6 +220,7 @@ pub enum State {
     None,
 }
 
+// The struct that wraps the State enum so we can make updates to it easily.
 #[derive(Eq, PartialEq)]
 pub struct FirstState(pub State);
 
@@ -310,7 +374,7 @@ impl FirstState {
                         // TODO: The new path could have already existed. If they use NOREPLACE,
                         // and it fails for EEXIST we know that new path already existed.
                         // Otherwise, we don't really know it's true state, and idk how to handle
-                        // that lol.
+                        // that lol. Haven't seen it in practice yet.
                         self.0 = State::DoesntExist;
                     }
                 }
@@ -339,6 +403,8 @@ impl FirstState {
     }
 }
 
+// Helper function that returns true if the directory
+// was indeed created by this exec.
 pub fn dir_created_by_exec(
     dir_path: PathBuf,
     dir_preconds: HashMap<PathBuf, HashSet<Fact>>,
@@ -350,6 +416,12 @@ pub fn dir_created_by_exec(
     }
 }
 
+// Helper function that returns true if a set of preconditions
+// already contains a Fact::StatStructMatches fact
+// A program may call stat more than once on a resource (and trust me,
+// they do, all the time, for some reason...) and we only want to record
+// the first one in the preconditions, and not overwrite the first one
+// with subsequent calls.
 pub fn preconditions_contain_stat_fact(fact_set: HashSet<Fact>) -> bool {
     for fact in fact_set {
         if let Fact::StatStructMatches(_) = fact {
@@ -359,33 +431,9 @@ pub fn preconditions_contain_stat_fact(fact_set: HashSet<Fact>) -> bool {
     false
 }
 
-// pub fn no_mods_before_file_rename(file_name_list: Vec<FileEvent>) -> bool {
-//     let mut no_mods = true;
-//     for event in file_name_list {
-//         match event {
-//             SyscallEvent::Access(_, _) => (),
-//             //Not sure if O_RDONLY was used to specify Read access mode or
-//             //None offset mode here
-//             SyscallEvent::Open(AccessMode::Read, _, _, _) => (),
-//             SyscallEvent::Stat(_, _) => (),
-//             SyscallEvent::Create(_, SyscallOutcome::Success)
-//             | SyscallEvent::Delete(SyscallOutcome::Success)
-//             | SyscallEvent::Open(
-//                 _,
-//                 Some(OffsetMode::Append) | Some(OffsetMode::Trunc),
-//                 _,
-//                 SyscallOutcome::Success,
-//             )
-//             | SyscallEvent::Rename(_, _, SyscallOutcome::Success) => {
-//                 no_mods = false;
-//                 break;
-//             }
-//             _ => (),
-//         }
-//     }
-//     no_mods
-// }
-
+// A process could rename a directory, changing the final full
+// paths of other accessed resources in the process. So we must update
+// their paths if appropriate.
 pub fn update_file_posts_with_renamed_dirs(
     file_posts: HashMap<Accessor, HashSet<Fact>>,
     renamed_dirs: HashMap<PathBuf, PathBuf>,
@@ -412,19 +460,3 @@ pub fn update_file_posts_with_renamed_dirs(
 
     updated_file_postconds
 }
-
-// pub fn no_mods_before_dir_rename(dir_list: Vec<DirEvent>) -> bool {
-//     let mut no_mods = true;
-//     for event in dir_list {
-//         match event {
-//             DirEvent::Create(_, SyscallOutcome::Success)
-//             | DirEvent::Delete(SyscallOutcome::Success)
-//             | DirEvent::Rename(_, _, SyscallOutcome::Success) => {
-//                 no_mods = false;
-//                 break;
-//             }
-//             _ => (),
-//         }
-//     }
-//     no_mods
-// }

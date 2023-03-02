@@ -12,6 +12,10 @@ use crate::{
 // 2) Get the existing cache, then construct a list of child exec keys to remove from the cache.
 // 3) Remove those keys from the cache, and serialize the updated cache map to disk.
 // 4) Remove the cache subdirs associated with the keys removed from the cache.
+// Note: We don't need to remove the child subdirectories within the parent's cache subdirectory
+// because the files are hardlinked, and when we delete the child's cache subdir (ex: /cache/child),
+// the link is broken in the child's subdir within the parent's cache subdir
+// (ex: /cache/parent/child/foo.txt)
 #[allow(dead_code)]
 pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
