@@ -2360,84 +2360,117 @@ pub fn generate_file_postconditions(
     curr_file_postconditions
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     // These tests assume you have test.txt, foo.txt, and bar.txt
-//     // on your computer and you have priveleges to them.
-//     // Because I am lazy right now.
-//     #[test]
-//     fn test_failed_access_then_create() {
-//         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
-//         exec_file_events.add_new_file_event(
-//             Pid::from_raw(0),
-//             FileEvent::Access(
-//                 (AccessFlags::W_OK).bits(),
-//                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-//             ),
-//             PathBuf::from("test.txt"),
-//         );
-//         exec_file_events.add_new_file_event(
-//             Pid::from_raw(0),
-//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
-//             PathBuf::from("test.txt"),
-//         );
+    #[test]
+    fn test_failed_access_then_create() {
+        // Doesn't matter for this test, so I am just using "test".
+        let path = PathBuf::from("test");
+        // These are the two events we are going to add.
+        // A failed Access (FileDoesntExist)
+        // and a successful File create.
+        let access_fail_event = FileEvent::Access(
+            AccessFlags::W_OK.bits(),
+            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+        );
+        let create_success_event = FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success);
 
-//         let preconditions = generate_preconditions(exec_file_events.clone());
-//         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
-//         let mut flags = AccessFlags::empty();
-//         flags.insert(AccessFlags::W_OK);
-//         flags.insert(AccessFlags::X_OK);
-//         let correct_preconditions =
-//             HashSet::from([Fact::DoesntExist, Fact::HasDirPermission(flags.bits())]);
-//         assert_eq!(preconditions_set, &correct_preconditions);
+        let mut exec_syscall_events = ExecSyscallEvents::new(HashMap::new(), HashMap::new());
+        // Add these two events to the file events.
+        exec_syscall_events.add_new_file_event(Pid::from_raw(0), access_fail_event, path.clone());
+        exec_syscall_events.add_new_file_event(
+            Pid::from_raw(0),
+            create_success_event,
+            path.clone(),
+        );
 
-//         let postconditions = generate_postconditions(exec_file_events);
-//         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
+        // Preconditions our state machine generates.
+        let generated_preconditions = generate_preconditions(exec_syscall_events.clone());
+        let generated_file_preconds = generated_preconditions.file_preconditions();
+        let generated_file_preconds = generated_file_preconds.get(&path).unwrap();
+        println!("Generated preconditions: {:?}", generated_file_preconds);
 
-//         let correct_postconditions = HashSet::from([Fact::FinalContents]);
-//         assert_eq!(postconditions_set, &correct_postconditions);
-//     }
+        let mut flags = AccessFlags::empty();
+        flags.insert(AccessFlags::W_OK);
+        flags.insert(AccessFlags::X_OK);
+        // Correct preconds.
+        let correct_preconditions = HashSet::from([
+            Fact::DoesntExist,
+            Fact::HasDirPermission(flags.bits(), None),
+        ]);
+        // Be sure the sets are equal.
+        assert_eq!(generated_file_preconds, &correct_preconditions);
 
-//     #[test]
-//     fn test_stat_open_create() {
-//         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
-//         exec_file_events.add_new_file_event(
-//             Pid::from_raw(0),
-//             FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
-//             PathBuf::from("test.txt"),
-//         );
-//         exec_file_events.add_new_file_event(
-//             Pid::from_raw(0),
-//             FileEvent::Open(
-//                 OFlag::O_RDONLY,
-//                 Some(Vec::new()), // TODO
-//                 SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
-//             ),
-//             PathBuf::from("test.txt"),
-//         );
-//         exec_file_events.add_new_file_event(
-//             Pid::from_raw(0),
-//             FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success),
-//             PathBuf::from("test.txt"),
-//         );
-//         let preconditions = generate_preconditions(exec_file_events.clone());
-//         let preconditions_set = preconditions.get(&PathBuf::from("test.txt")).unwrap();
-//         let mut flags = AccessFlags::empty();
-//         flags.insert(AccessFlags::W_OK);
-//         flags.insert(AccessFlags::X_OK);
+        // Postconditions our state machine generates.
+        let postconditions = generate_postconditions(exec_syscall_events);
+        let generated_file_postconditions = postconditions.file_postconditions();
+        let generated_file_postconditions = generated_file_postconditions
+            .get(&Accessor::CurrProc(PathBuf::from("test")))
+            .unwrap();
 
-//         let correct_preconditions =
-//             HashSet::from([Fact::DoesntExist, Fact::HasDirPermission(flags.bits())]);
-//         assert_eq!(preconditions_set, &correct_preconditions);
+        // The correct postconditions.
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
+        // Be sure the sets are equal.
+        assert_eq!(generated_file_postconditions, &correct_postconditions);
+    }
 
-//         let postconditions = generate_postconditions(exec_file_events);
-//         let postconditions_set = postconditions.get(&PathBuf::from("test.txt")).unwrap();
-//         let correct_postconditions = HashSet::from([Fact::FinalContents]);
-//         assert_eq!(postconditions_set, &correct_postconditions);
-//     }
+    #[test]
+    fn test_stat_open_create() {
+        let path = PathBuf::from("test");
 
+        // Create three events to add:
+        // A failed stat.
+        let failed_stat_event =
+            FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist));
+        // A failed open.
+        let open_fail_event = FileEvent::Open(
+            AccessMode::Read,
+            None,
+            None,
+            SyscallOutcome::Fail(SyscallFailure::FileDoesntExist),
+        );
+        // And a successful create file event.
+        let successful_create_event = FileEvent::Create(OFlag::O_CREAT, SyscallOutcome::Success);
+        let mut exec_syscall_events = ExecSyscallEvents::new(HashMap::new(), HashMap::new());
+
+        // Add the events.
+        exec_syscall_events.add_new_file_event(Pid::from_raw(0), failed_stat_event, path.clone());
+        exec_syscall_events.add_new_file_event(Pid::from_raw(0), open_fail_event, path.clone());
+        exec_syscall_events.add_new_file_event(Pid::from_raw(0), successful_create_event, path);
+
+        // Generate the file preconditions with our state machine.
+        let preconditions = generate_preconditions(exec_syscall_events.clone());
+        let generated_file_preconditions = preconditions.file_preconditions();
+        let generated_file_preconditions = generated_file_preconditions
+            .get(&PathBuf::from("test"))
+            .unwrap();
+
+        // Create a set of the known correct preconditions.
+        let mut flags = AccessFlags::empty();
+        flags.insert(AccessFlags::W_OK);
+        flags.insert(AccessFlags::X_OK);
+        let correct_preconditions = HashSet::from([
+            Fact::DoesntExist,
+            Fact::HasDirPermission(flags.bits(), None),
+        ]);
+        // Ensure these two sets match.
+        assert_eq!(generated_file_preconditions, &correct_preconditions);
+
+        // Generate the file postconditions with our state machine.
+        let postconditions = generate_postconditions(exec_syscall_events);
+        let generated_file_postconditions = postconditions.file_postconditions();
+        let generated_file_postconditions = generated_file_postconditions
+            .get(&Accessor::CurrProc(PathBuf::from("test")))
+            .unwrap();
+
+        // Create a set of the correct postconditions.
+        let correct_postconditions = HashSet::from([Fact::FinalContents]);
+        // Ensure the sets are equal.
+        assert_eq!(generated_file_postconditions, &correct_postconditions);
+    }
+}
 //     #[test]
 //     fn test_open_open_access() {
 //         let mut exec_file_events = ExecFileEvents::new(HashMap::new());
