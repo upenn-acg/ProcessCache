@@ -35,9 +35,13 @@ use crate::{
     syscalls::{AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallFailure, SyscallOutcome},
 };
 
+// For benchmarking purposes. Flag to turn off file hashing.
+// Helped us realize how much time hashing was taking up!
 const DONT_HASH_FILES: bool = false;
 
 // Who done the accessin'?
+// This enum helps us keep track of who actually did the resource
+// access when we combine fact sets from children and parent.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Accessor {
     // String = hash of the child's command.
@@ -65,8 +69,10 @@ impl Accessor {
 
 // Actual accesses to the file system performed by
 // a successful execution.
-// Full path mapped to
-// TODO: Handle stderr and stdout.
+// Accessor (i.e. WHO did it + WHAT resource we are talking about)
+// to an ordered list of either directory events (if the resource is
+// a directory) or file events
+// (if the resource is a file).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecSyscallEvents {
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
@@ -84,6 +90,7 @@ impl ExecSyscallEvents {
         }
     }
 
+    // Add new directory access to the struct.
     pub fn add_new_dir_event(&mut self, caller_pid: Pid, dir_event: DirEvent, full_path: PathBuf) {
         let s = span!(Level::INFO, stringify!(add_new_dir_event), pid=?caller_pid);
         let _ = s.enter();
@@ -104,7 +111,7 @@ impl ExecSyscallEvents {
         }
     }
 
-    // Add new access to the struct.
+    // Add new file access to the struct.
     pub fn add_new_file_event(
         &mut self,
         caller_pid: Pid,
@@ -135,6 +142,9 @@ impl ExecSyscallEvents {
         }
     }
 
+    // A parent process needs to know if and when a child process calls
+    // execve successfully because we need to fold the child's events into
+    // the parent's events if they access the same resource.
     pub fn add_new_fork_exec(&mut self, child_pid: Pid) {
         for (_, list) in self.dir_events.iter_mut() {
             list.push(DirEvent::ChildExec(child_pid));
@@ -145,25 +155,33 @@ impl ExecSyscallEvents {
         }
     }
 
+    // Get the directory events.
     pub fn dir_events(&self) -> HashMap<Accessor, Vec<DirEvent>> {
         self.dir_events.clone()
     }
 
+    // Get the file events.
     pub fn file_events(&self) -> HashMap<Accessor, Vec<FileEvent>> {
         self.file_events.clone()
     }
 }
 
+// This function is for checking that a given Fact holds.
+// We call it to check each precondition.
 fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
     debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
     if path_name.starts_with("/proc") {
         true
     } else {
         match fact {
+            // Check that the cached entries match the current
+            // entries for a given directory.
             Fact::DirEntriesMatch(entries) => {
                 let mut curr_dir_entries = HashSet::new();
 
                 let curr_entries = read_dir(path_name).unwrap();
+                // Create a set of current directory entries and their file
+                // types.
                 for entry in curr_entries {
                     let entry = entry.unwrap();
                     let file_name = entry.file_name();
@@ -189,21 +207,38 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 old_set.remove(&(up_one, FileType::Dir));
                 old_set.remove(&(curr, FileType::Dir));
                 old_set.remove(&(stdout_file, FileType::File));
-                // let diff = old_set.difference(&curr_dir_entries);
-                // let other_diff = curr_dir_entries.difference(&old_set);
-                // println!("Diff: {:?}", diff);
-                // println!("Other diff: {:?}", other_diff);
 
                 let sets_are_equal = old_set == curr_dir_entries;
                 let proper_subset = old_set.is_subset(&curr_dir_entries);
+                // This fact is true if the old set of directory entries matches the new one
+                // or it is a proper subset ( has to do with funny files like "."  and "..")
                 sets_are_equal || proper_subset
             }
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
+            // This fact shouldn't be checked as a precondition, because it is a
+            // postcondition.
             Fact::FinalContents => panic!("Final contents should not be a precondition!!"),
-            // TODO: Actually implement this for file diffing
-            // Also maybe rename InputFilesMatch --> DiffInputFiles
-            Fact::InputFilesMatch => todo!(),
+            // TODO: Implement this.
+            // Would be nice for dissertation eval. We found out quickly that copying the
+            // entire input file over to the cache was slow and took up a lot of space,
+            // thus I didn't bother implementing the checking mechanism for it.
+            Fact::InputFileDiffsMatch => todo!(),
+            // When we cached the execution, we got the hash of this input file.
+            // We check this cached hash against the hash of the existing file.
+            Fact::InputFileHashesMatch(old_hash) => {
+                // Getdents: First the process will open the dir for reading,
+                // but we don't handle checking this stuff here, we handle it
+                // when they call getdents.
+                if !old_hash.is_empty() {
+                    let new_hash = generate_hash(path_name);
+                    old_hash == new_hash
+                } else {
+                    true
+                }
+            }
+            // Check that this process has the same permissions it had before on either
+            // a passed in directory, or just the parent dir of the path we are checking.
             Fact::HasDirPermission(flags, optional_root_dir) => {
                 debug!("Dir perm flags: {:?}", flags);
                 let dir = if let Some(root_dir) = optional_root_dir {
@@ -215,6 +250,13 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
 
                 access(&dir, AccessFlags::from_bits(flags).unwrap()).is_ok()
             }
+            // Check that this process has the same permissions on this file as it had
+            // during its caching run.
+            Fact::HasPermission(flags) => {
+                debug!("Perm flags: {:?}", flags);
+                access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
+            }
+            // Check the cached mtime against the current mtime.
             Fact::Mtime(old_mtime) => {
                 debug!("Old mtime: {:?}", old_mtime);
                 let curr_metadata = fs::metadata(&path_name).unwrap();
@@ -222,6 +264,9 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 debug!("New mtime: {:?}", curr_mtime);
                 curr_mtime == old_mtime
             }
+            // Check that this process still lacks the specified permissions it had before
+            // on either a passed in directory, or just the parent dir of the path we are
+            // checking.
             Fact::NoDirPermission(flags, optional_root_dir) => {
                 let dir = if let Some(root_dir) = optional_root_dir {
                     root_dir
@@ -232,19 +277,17 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 debug!("Dir no perm flags: {:?}", flags);
                 access(&dir, AccessFlags::from_bits(flags).unwrap()).is_err()
             }
-            Fact::HasPermission(flags) => {
-                debug!("Perm flags: {:?}", flags);
-                access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
-                // if path_name.as_os_str() == "/lib/x86_64-linux-gnu/libdl.so.2" {
-                //     true
-                // } else {
-                //     access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
-                // }
-            }
+            // Check that this process still lacks the specified permissions on this file
+            // that it also lacked during its caching run.
             Fact::NoPermission(flags) => {
                 debug!("No perm flags: {:?}", flags);
                 access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
             }
+            // Check that at least one of these Facts fails.
+            // This should be only when we need to check permissions of the directory
+            // and permissions of the file.
+            // Example is open append failing for permissions:
+            // Write access OR exec dir access is missing. Or both!
             Fact::Or(first, second) => {
                 // This should be only when we need to check perms
                 // of the dir and perms of the file.
@@ -268,22 +311,11 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 // They just can't both succeed.
                 !(first_perms_hold && second_perms_hold)
             }
-            // We don't actually need to check anything here.
+            // This is a postcondition, not a precondition. So nothing needs to checked here.
             Fact::Renamed(_, _) => true,
-            Fact::StartingContents(old_hash) => {
-                // Getdents: First the process will open the dir for reading,
-                // but we don't handle checking this stuff here, we handle it
-                // when they call getdents.
-                if !old_hash.is_empty() {
-                    let new_hash = generate_hash(path_name);
-                    old_hash == new_hash
-                } else {
-                    true
-                }
-            }
+            // We get the current stat struct by calling stat() or lstat() if appropriate.
+            // We check this against our cached stat struct.
             Fact::StatStructMatches(old_stat) => {
-                // let metadata = fs::metadata(&path_name).unwrap();
-                // let metadata_result = fs::metadata(&path_name);
                 let (old_stat, new_metadata) = match old_stat {
                     Stat::Stat(stat) => {
                         // let metadata = fs::metadata(&path_name).unwrap();
@@ -337,13 +369,15 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
     }
 }
 
-// TODO: check env vars and starting cwd
+// Checks file preconditions and directory preconditions for the given
+// execution.
 pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     let dir_preconds = conditions.dir_preconditions();
     let file_preconds = conditions.file_preconditions();
 
     for (path_name, fact_set) in dir_preconds {
         for fact in fact_set {
+            // We short circuit on the first failing file Fact, and report it.
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
                 debug!(
                     "Dir fact that doesn't hold: {:?}, path: {:?}",
@@ -355,6 +389,7 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     }
     for (path_name, fact_set) in file_preconds {
         for fact in fact_set {
+            // We short circuit on the first failing directory Fact, and report it.
             if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
                 debug!(
                     "File fact that doesn't hold: {:?}, path: {:?}",
@@ -367,6 +402,8 @@ pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
     true
 }
 
+// Function that takes ExecSyscallEvents and generates the file preconditions
+// and file postconditions. It returns a new Preconditions struct.
 pub fn generate_preconditions(events: ExecSyscallEvents) -> Preconditions {
     let dir_events = events.dir_events();
     let file_events = events.file_events();
@@ -377,8 +414,10 @@ pub fn generate_preconditions(events: ExecSyscallEvents) -> Preconditions {
     Preconditions::new(dir_preconds, file_preconds)
 }
 
-// TODO: Don't add root dir or parent dir permissions preconditions
-// if it is a dir we made.
+// Function that takes in the directory events map (Resource --> List of Events)
+// and genenerates a directory preconditions map (Resource --> Set of Facts)
+// It iterates through each Resource's List of Events, like a state machine.
+// Once a directory is modified, there are no more preconditions to learn.
 pub fn generate_dir_preconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> HashMap<PathBuf, HashSet<Fact>> {
@@ -386,27 +425,39 @@ pub fn generate_dir_preconditions(
     let _ = sys_span.enter();
     let mut curr_dir_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
 
+    // Set the map up with all the resources from the dir events map.
     for accessor in dir_events.keys() {
-        // For preconditions, I am not concerned with with who accessed.
+        // For preconditions, I am not concerned with who accessed it (child or
+        // parent) because I only care about that for outputs and deciding whether
+        // to copy or hardlink.
         let path = accessor.path();
         curr_dir_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
+    // Main state machine loop.
     for (accessor, event_list) in &dir_events {
         let full_path = &accessor.path();
 
+        // 3 pieces of state help us to add / remove / update the preconditions
+        // of a resource on each iteration.
+        // First state = did the resource exist at the start?
+        // Last mod = what was the last modification to happen to the resource?
+        // (None, Renamed, Created, etc.)
+        // Has been deleted = just that, has the resource been deleted at some point?
         let mut first_state_struct = FirstState(State::None);
-        let mut curr_state_struct = LastMod(Mod::None);
+        let mut last_mod_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
 
         for event in event_list {
             let first_state = first_state_struct.state();
-            let curr_state = curr_state_struct.state();
+            let last_mod = last_mod_struct.state();
 
-            match (event.clone(), first_state, curr_state, has_been_deleted) {
+            match (event.clone(), first_state, last_mod, has_been_deleted) {
                 (_, _, Mod::Modified, _) => {
                     panic!("Dirs don't use last mod: modified!!");
                 }
+                // Used to nest events from progeny to parent process, not used
+                // to generate preconditions or postconditions.
                 (DirEvent::ChildExec(_), _, _, _) => (),
                 // For create: if we have MODIFIED the dir in some way,
                 // we aren't going to get more info out of it for the preconditions.
@@ -441,6 +492,7 @@ pub fn generate_dir_preconditions(
                         panic!("First state is none but last mod was: {:?}!!", last_mod);
                     }
                 }
+                // The last mod wsa created, so this won't succeed.
                 (DirEvent::Create(_, _), State::DoesntExist, Mod::Created, false) => (),
                 (DirEvent::Create(_, _), State::DoesntExist, Mod::Deleted, false) => {
                     panic!("Last mod deleted but has_been_deleted = false??");
@@ -569,7 +621,6 @@ pub fn generate_dir_preconditions(
                     match outcome {
                         SyscallOutcome::Success => {
                             // W + X access to the parent dir.
-                            // I think that's it.
                             let curr_set = curr_dir_preconditions.get_mut(full_path).unwrap();
                             let mut flags = AccessFlags::empty();
                             flags.insert(AccessFlags::W_OK);
@@ -638,7 +689,6 @@ pub fn generate_dir_preconditions(
                         _ => panic!("Unexpected outcome for directory read! {:?}", outcome),
                     }
                 }
-                // TODO: Rename handle new path
                 (DirEvent::Rename(_, _, _), _, Mod::None, true) => {
                     panic!("Last mod none but has_been_deleted = true??");
                 }
@@ -743,7 +793,9 @@ pub fn generate_dir_preconditions(
                         panic!("First state is none but last mod was: {:?}!!", last_mod);
                     }
                 }
+                // This directory was deleted, so the statfs will fail.
                 (DirEvent::Statfs(_, _), _, _, true) => (),
+                // Dir doesn't exist, this statfs will fail.
                 (DirEvent::Statfs(_, _), State::DoesntExist, _, _) => (),
                 (DirEvent::Statfs(option_statfs, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
@@ -777,12 +829,6 @@ pub fn generate_dir_preconditions(
                 (DirEvent::Statfs(_, _), State::Exists, Mod::Deleted, false) => {
                     panic!("Existed at start, last mod deleted, but hasn't been marked has_been_deleted??");
                 }
-                // We won't see this for new_path because we aren't actually adding 2 events, only adding one for old path.
-                // So, because old_path was just renamed, we cannot stat it.
-                // TODO: 2 events for rename to properly handle old path and new path.
-                // If we rename(old, new) and then have stat(new), we don't want this stat as part of the precondition.
-                // BUT we will see DirEvet::Statfs(new), State::None, Mod::None.
-                // So we will add the statfs incorrectly to the preconditions.
                 (DirEvent::Statfs(_, _), State::Exists, Mod::Renamed(_, _), false) => (),
                 (DirEvent::Statfs(option_statfs, outcome), State::None, last_mod, false) => {
                     let curr_set = curr_dir_preconditions.get(full_path).unwrap().clone();
@@ -824,15 +870,14 @@ pub fn generate_dir_preconditions(
             }
             // This function will only change the first_state if it is None.
             first_state_struct.update_based_on_dir_event(full_path, event.clone());
-            curr_state_struct.update_based_on_dir_event(event.clone());
+            last_mod_struct.update_based_on_dir_event(event.clone());
         }
     }
     curr_dir_preconditions
 }
 
-// File Preconditions
-// Takes in all the events for ONE RESOURCE and generates its preconditions.
-// TODO: when we do the preconditions checking, take the FIRST stat only.
+// Takes in all file events (and also dir preconditions, which are used
+// to compute file preconditions) and computes all file preconditions.
 pub fn generate_file_preconditions(
     dir_preconditions: HashMap<PathBuf, HashSet<Fact>>,
     file_events: HashMap<Accessor, Vec<FileEvent>>,
@@ -840,12 +885,15 @@ pub fn generate_file_preconditions(
     let sys_span = span!(Level::INFO, "generate_file_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
+
+    // Prep the new map by inserting all the keys into it.
     for accessor in file_events.keys() {
         // For preconditions, I am not concerned with with who accessed.
         let path = accessor.path();
         curr_file_preconditions.insert(path.to_path_buf(), HashSet::new());
     }
 
+    // Main loop to iterate over events and generate preconditions.
     for (accessor, event_list) in &file_events {
         let full_path = accessor.path();
 
@@ -854,22 +902,16 @@ pub fn generate_file_preconditions(
         let parent_dir = full_path.parent().unwrap();
         let parent_dir_was_created_by_exec =
             dir_created_by_exec(PathBuf::from(parent_dir), dir_preconditions.clone());
+        // Initialize our state variables so we can compute the preconditions.
         let mut first_state_struct = FirstState(State::None);
-        let mut curr_state_struct = LastMod(Mod::None);
+        let mut last_mod_struct = LastMod(Mod::None);
         let mut has_been_deleted = false;
-
-        // println!("Full path: {:?}", full_path);
-        // println!("Events:");
-        // for event in event_list.clone() {
-        //     println!("{:?}", event);
-        // }
-        // let curr_set = curr_file_preconditions.get_mut(full_path).unwrap();
 
         for event in event_list {
             let first_state = first_state_struct.state();
-            let curr_state = curr_state_struct.state();
+            let last_mod = last_mod_struct.state();
 
-            match (event.clone(), first_state, curr_state, has_been_deleted) {
+            match (event.clone(), first_state, last_mod, has_been_deleted) {
                 (_, _, Mod::None, true) => {
                     panic!("Last mod was none but was deleted is true??");
                 }
@@ -879,7 +921,6 @@ pub fn generate_file_preconditions(
                 (_, _, Mod::Deleted, false) => {
                     panic!("Last mod was deleted, but was deleted is false??, path: {:?}", full_path);
                 }
-
                 (FileEvent::Access(_, _), State::DoesntExist, _, _) => {
                     // Didn't exist, was created, this access depends on a file that was created during execution,
                     // does not contribute to preconditions.
@@ -1226,11 +1267,7 @@ pub fn generate_file_preconditions(
                 (FileEvent::Open(_, _, _, _), State::DoesntExist, Mod::None, false) => {
                     // We know this doesn't exist, we know we haven't created it.
                     // This will just fail.
-                    // if outcome != SyscallOutcome::Fail(SyscallFailure::FileDoesntExist) {
-                    //     panic!("Unexpected outcome open event, doesn't exist, no mods: {:?}", outcome);
-                    // }
                 }
-
                 (FileEvent::Open(_, _, _, _), State::Exists, _, true) => {
                     // We know it existed at the start, so we have accessed it in some way.
                     // It has been deleted. Anything we do to it now is based on
@@ -1248,7 +1285,7 @@ pub fn generate_file_preconditions(
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
                                     CheckMechanism::DiffFiles => {
-                                        curr_set.insert(Fact::InputFilesMatch);
+                                        curr_set.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
@@ -1256,7 +1293,7 @@ pub fn generate_file_preconditions(
                                         } else {
                                             hash
                                         };
-                                        curr_set.insert(Fact::StartingContents(hash));
+                                        curr_set.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
                                         curr_set.insert(Fact::Mtime(mtime));
@@ -1284,7 +1321,6 @@ pub fn generate_file_preconditions(
                         f => panic!("Unexpected open append failure, file existed, {:?}", f),
                     }
                 }
-                //TODO: What about reading with RW mode?
                 (FileEvent::Open(access_mode, None, optional_check_mech, outcome), State::Exists, Mod::None, false) => {
                     let curr_set = curr_file_preconditions.get_mut(&full_path).unwrap();
                     match outcome {
@@ -1292,7 +1328,7 @@ pub fn generate_file_preconditions(
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
                                     CheckMechanism::DiffFiles => {
-                                        curr_set.insert(Fact::InputFilesMatch);
+                                        curr_set.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
@@ -1300,7 +1336,7 @@ pub fn generate_file_preconditions(
                                         } else {
                                             hash
                                         };
-                                        curr_set.insert(Fact::StartingContents(hash));
+                                        curr_set.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
                                         curr_set.insert(Fact::Mtime(mtime));
@@ -1358,7 +1394,6 @@ pub fn generate_file_preconditions(
                         }
                     }
                 }
-                // START HERE!
                 (FileEvent::Open(_, _,  _,_), State::None, Mod::Created, _) => {
                     panic!("First state none but last mod created??");
                 }
@@ -1379,7 +1414,7 @@ pub fn generate_file_preconditions(
                                     if let Some(check_mech) = optional_check_mech {
                                         match check_mech {
                                             CheckMechanism::DiffFiles => {
-                                                curr_set_mut.insert(Fact::InputFilesMatch);
+                                                curr_set_mut.insert(Fact::InputFileDiffsMatch);
                                             }
                                             CheckMechanism::Hash(hash) => {
                                                 let hash = if DONT_HASH_FILES {
@@ -1387,7 +1422,7 @@ pub fn generate_file_preconditions(
                                                 } else {
                                                     hash
                                                 };
-                                                curr_set_mut.insert(Fact::StartingContents(hash));
+                                                curr_set_mut.insert(Fact::InputFileHashesMatch(hash));
                                             }
                                             CheckMechanism::Mtime(mtime) => {
                                                 curr_set_mut.insert(Fact::Mtime(mtime));
@@ -1433,8 +1468,6 @@ pub fn generate_file_preconditions(
                         mode => {
                             match outcome {
                                 SyscallOutcome::Success => {
-                                    // TODO also write access to the file? but the program
-                                    // doesn't know whether it exists..
                                     if !curr_set.contains(&Fact::DoesntExist) {
                                         let mut flags = AccessFlags::empty();
                                         flags.insert(AccessFlags::W_OK);
@@ -1477,7 +1510,7 @@ pub fn generate_file_preconditions(
                             if let Some(check_mech) = optional_check_mech {
                                 match check_mech {
                                     CheckMechanism::DiffFiles => {
-                                        curr_set_mut.insert(Fact::InputFilesMatch);
+                                        curr_set_mut.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
                                         let hash = if DONT_HASH_FILES {
@@ -1485,7 +1518,7 @@ pub fn generate_file_preconditions(
                                         } else {
                                             hash
                                         };
-                                        curr_set_mut.insert(Fact::StartingContents(hash));
+                                        curr_set_mut.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
                                         curr_set_mut.insert(Fact::Mtime(mtime));
@@ -1704,11 +1737,6 @@ pub fn generate_file_preconditions(
                         SyscallOutcome::Success => {
                             let curr_set = curr_file_preconditions.get(&full_path).unwrap().clone();
                             let curr_set_mut = curr_file_preconditions.get_mut(&full_path).unwrap();
-                            // KELLY START HERE
-                            // TODO: don't add if there's already a stat struct, they'll conflict.
-                            // Just going to check for duplicates in check_preconditions()?
-                            // But they aren't ordered so this won't work.
-                            // TODO: Before adding stat struct fact to the set, check if one is already there.
 
                             if !curr_set.contains(&Fact::DoesntExist) {
                                 if !parent_dir_was_created_by_exec {
@@ -1776,29 +1804,36 @@ pub fn generate_file_preconditions(
 
             // This function will only change the first_state if it is None.
             first_state_struct.update_based_on_file_event(&full_path, event.clone());
-            curr_state_struct.update_based_on_file_event(event.clone());
+            last_mod_struct.update_based_on_file_event(event.clone());
         }
     }
     curr_file_preconditions
 }
 
+// Function that takes ExecSyscallEvents and generates the file postconditions
+// and file postconditions. It returns a new Postconditions struct.
+// Note: Only syscalls that produce side effects contribute to postconditions.
 pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
     let dir_events = events.dir_events();
     let file_events = events.file_events();
 
+    // We need to know which directories have been renamed...
     let (dir_postconds, renamed_dirs) = generate_dir_postconditions(dir_events);
     let file_postconds = generate_file_postconditions(file_events);
 
+    // ...so our postconditions can reflect the correct, updated full paths!
     let updated_file_postconds: HashMap<Accessor, HashSet<Fact>> =
         update_file_posts_with_renamed_dirs(file_postconds, renamed_dirs);
 
     Postconditions::new(dir_postconds, updated_file_postconds)
 }
 
-// TODO: rename in the case where we have two events: one for old path and one for new path
+// Generates the directory postconditions from the provided directory
+// events.
 // The only postconditions are: exists or doesn't exist for dirs.
-// (HashMap<Accessor, HashSet<Fact>>, HashMap<PathBuf, PathBuf>)
-// (Dir postconditions, renamed dirs)
+// Returns: (HashMap<Accessor, HashSet<Fact>>, HashMap<PathBuf, PathBuf>)
+// Which are: (Dir postconditions, renamed dirs)
+// Note: Only system calls that produce side effects contribute to postconditions.
 pub fn generate_dir_postconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> (HashMap<Accessor, HashSet<Fact>>, HashMap<PathBuf, PathBuf>) {
@@ -1811,10 +1846,13 @@ pub fn generate_dir_postconditions(
     for accessor in dir_events.keys() {
         curr_dir_postconditions.insert(accessor.clone(), HashSet::new());
     }
+
+    // Main loop of state machine to produce dir postconditions.
     for (accessor, event_list) in dir_events {
+        // Initialize state variables.
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);
-        // Option cmd is used in rename
+        // Option cmd in accessor is used in rename.
         let full_path = accessor.path();
 
         for event in event_list {
@@ -1822,7 +1860,9 @@ pub fn generate_dir_postconditions(
             let last_mod = last_mod_struct.state();
 
             match (event.clone(), first_state, last_mod) {
+                // "Modified" is not a possible Mod for dirs.
                 (_, _, Mod::Modified) => (),
+                // We don't use this event in postcondition generation.
                 (DirEvent::ChildExec(_), _, _) => (),
                 // Last mod created. We already know it exists.
                 (DirEvent::Create(_, _), State::DoesntExist, Mod::Created) => (),
@@ -1890,7 +1930,6 @@ pub fn generate_dir_postconditions(
                 (DirEvent::Delete(_), State::DoesntExist, Mod::Deleted) => (),
                 // if full path is old path, then we can't delete this.
                 // No info gained.
-                // TODO: handle new_path
                 (DirEvent::Delete(_), State::DoesntExist, Mod::Renamed(_, _)) => (),
                 // It doesn't exist, and we haven't created it. So, yeah, not a
                 // lot to do here.
@@ -1907,7 +1946,6 @@ pub fn generate_dir_postconditions(
                 // We just deleted it. Can't do that again.
                 (DirEvent::Delete(_), State::Exists, Mod::Deleted) => (),
                 // If full path is old path, we can't delete this. No info gained.
-                // TODO: handle new_path
                 (DirEvent::Delete(_), State::Exists, Mod::Renamed(_, _)) => (),
                 // It exists. Maybe we can even delete it.
                 (DirEvent::Delete(outcome), State::Exists, Mod::None) => {
@@ -1954,21 +1992,6 @@ pub fn generate_dir_postconditions(
                     Mod::Renamed(_, _last_new_path),
                 ) => {
                     panic!("Renamed dir and renaming it again!")
-                    // let new_accessor = if let Some(cmd) = option_cmd.clone() {
-                    //     Accessor::ChildProc(cmd, new_path.clone())
-                    // } else {
-                    //     Accessor::CurrProc(new_path.clone())
-                    // };
-
-                    // if outcome == SyscallOutcome::Success && old_path == *last_new_path {
-                    //     curr_dir_postconditions.remove(&accessor).unwrap();
-
-                    //     curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
-                    //     curr_dir_postconditions
-                    //         .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-
-                    //     renamed_dirs.insert(old_path, new_path);
-                    // }
                 }
                 // It doesn't exist and hasn't been created. I am doubtful this is going to give us
                 // anything. Actually, I am positive it will not give us anything.
@@ -1993,39 +2016,10 @@ pub fn generate_dir_postconditions(
                     Mod::Renamed(_, _last_new_path),
                 ) => {
                     panic!("Renamed dir and renaming it again!")
-                    // let new_accessor = if let Some(cmd) = option_cmd.clone() {
-                    //     Accessor::ChildProc(cmd, new_path.clone())
-                    // } else {
-                    //     Accessor::CurrProc(new_path.clone())
-                    // };
-
-                    // if outcome == SyscallOutcome::Success && old_path == *last_new_path {
-                    //     curr_dir_postconditions.remove(&accessor).unwrap();
-
-                    //     curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
-                    //     curr_dir_postconditions
-                    //         .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-
-                    //     renamed_dirs.insert(old_path, new_path);
-                    // }
                 }
                 // We know it exists. We might be able to rename it.
                 (DirEvent::Rename(_old_path, _new_path, _outcome), State::Exists, Mod::None) => {
                     panic!("Renamed dir and renaming it again!")
-                    // if outcome == SyscallOutcome::Success {
-                    //     let new_accessor = if let Some(cmd) = option_cmd.clone() {
-                    //         Accessor::ChildProc(cmd, new_path.clone())
-                    //     } else {
-                    //         Accessor::CurrProc(new_path.clone())
-                    //     };
-
-                    //     curr_dir_postconditions.remove(&accessor).unwrap();
-                    //     curr_dir_postconditions.insert(new_accessor, HashSet::from([Fact::Exists]));
-                    //     curr_dir_postconditions
-                    //         .insert(accessor.clone(), HashSet::from([Fact::DoesntExist]));
-
-                    //     renamed_dirs.insert(old_path, new_path);
-                    // }
                 }
                 (DirEvent::Rename(old_path, new_path, outcome), State::None, last_mod) => {
                     if *last_mod == Mod::None {
@@ -2053,7 +2047,8 @@ pub fn generate_dir_postconditions(
     (curr_dir_postconditions, renamed_dirs)
 }
 
-// REMEMBER: SIDE EFFECT FREE SYSCALLS CONTRIBUTE NOTHING TO THE POSTCONDITIONS.
+// Note: Only system calls that produce side effects contribute to postconditions.
+// Takes in all file events and computes all file postconditions.
 pub fn generate_file_postconditions(
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 ) -> HashMap<Accessor, HashSet<Fact>> {
@@ -2066,6 +2061,8 @@ pub fn generate_file_postconditions(
     for accessor in file_events.keys() {
         curr_file_postconditions.insert(accessor.clone(), HashSet::new());
     }
+
+    // Main loop to generate postconditions.
     for (accessor, event_list) in file_events {
         let mut first_state_struct = FirstState(State::None);
         let mut last_mod_struct = LastMod(Mod::None);

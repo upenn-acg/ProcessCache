@@ -129,6 +129,8 @@ pub enum SyscallFailure {
     PermissionDenied,
 }
 
+// Enum for the outcome of a syscall. It can be successful,
+// or a failure that wraps the type of failure (SyscallFailure)
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SyscallOutcome {
     Fail(SyscallFailure),

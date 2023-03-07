@@ -185,7 +185,7 @@ pub enum Fact {
     // Has file permissions.
     HasPermission(c_int),
     // Cached and current input files match based on diffing.
-    InputFilesMatch,
+    InputFileDiffsMatch,
     // Cached and current input files match based on mtime.
     Mtime(i64),
     // c_int = nix::unistd::AccessFlags
@@ -202,7 +202,7 @@ pub enum Fact {
     // (Old full path, new full path)
     Renamed(PathBuf, PathBuf),
     // Hash of contents of cached input file and current input file match.
-    StartingContents(Vec<u8>),
+    InputFileHashesMatch(Vec<u8>),
     // The statfs struct returned for the current file system matches
     // the cached statfs struct for this resource.
     StatFsStructMatches(MyStatFs),
