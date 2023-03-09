@@ -44,6 +44,8 @@ jobs:
        displayName: cargo check
      - script: cargo doc --no-deps
        displayName: cargo doc
+     - script: cargo test
+       displayName: cargo test
 
 resources:
   repositories:
