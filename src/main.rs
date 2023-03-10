@@ -53,10 +53,14 @@ pub struct Opt {
     /// Executable to run. Will use $PATH.
     pub exe: String,
     /// Print system calls when they return -1, off by default.
+    /// Note: This was from the early days of this project and has not been updated
+    /// in some time! It probably doesn't work. I have made a note to fix it.
     #[structopt(short, long)]
     pub print_syscalls_on_error: bool,
     /// Write ProcessCache info to this file, if the name of the file is specified.
     /// If not specified, it'll write to "output.txt"
+    /// Note: This was from the early days of this project and has not been updated
+    /// in some time! It probably doesn't work. I have made a note to fix it.
     #[structopt(short, long, default_value = "output.txt")]
     pub output_file: String,
     /// Arguments to executable.

@@ -19,10 +19,5 @@ tracing = "0.1.25"
 tracing-subscriber = "0.2"
 
 [dev-dependencies]
-# sha2 = "0.9"
 rmp-serde = "0.15.5"
 serde = { version = "1.0", features = ["derive", "rc"] }
-
-# [[bin]]
-# name = "get_all_syscalls_called_by_gcc"
-# path = "./src/get_all_syscalls_called_by_gcc.rs"
