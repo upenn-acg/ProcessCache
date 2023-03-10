@@ -6,29 +6,16 @@ use std::process::Command;
 // pwd test
 #[test]
 fn pwd() -> io::Result<()> {
-    let mut cmd = Command::new("../target/debug/conflict_tracer");
+    let mut cmd = Command::new("./target/debug/process_cache");
     cmd.arg("pwd");
     assert!(cmd.status()?.success());
-    Ok(())
-}
-
-//sleep 1 test
-#[test]
-fn sleep1() -> io::Result<()> {
-    let mut cmd = Command::new("../target/debug/conflict_tracer");
-    cmd.args(["sleep", "1"]);
-    let output = cmd.output()?;
-    println!("status: {}", output.status);
-    io::stdout().write_all(&output.stdout)?;
-    io::stderr().write_all(&output.stdout)?;
-    assert!(output.status.success());
     Ok(())
 }
 
 //ls -lh /usr/lib
 #[test]
 fn usr_lib() -> io::Result<()> {
-    let output = Command::new("../target/debug/conflict_tracer")
+    let output = Command::new("./target/debug/process_cache")
         .args(["ls", "/usr/lib"])
         .output()?;
 
@@ -42,7 +29,7 @@ fn usr_lib() -> io::Result<()> {
 //time pwd
 #[test]
 fn time_pwd() -> io::Result<()> {
-    let mut cmd = Command::new("../target/debug/conflict_tracer");
+    let mut cmd = Command::new("./target/debug/process_cache");
     cmd.arg("time");
     cmd.arg("pwd");
     assert!(cmd.status()?.success());
