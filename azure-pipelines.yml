@@ -40,6 +40,10 @@ jobs:
        parameters:
          rust: $(rust)
      # Run any user-specific setup steps
+     - script: |
+         sudo apt-get update
+         sudo apt-get install -y -q seccomp
+       displayName: seccomp
      - script: cargo check
        displayName: cargo check
      - script: cargo doc --no-deps
