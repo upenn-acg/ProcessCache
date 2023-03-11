@@ -42,7 +42,7 @@ jobs:
      # Run any user-specific setup steps
      - script: |
          sudo apt-get update
-         sudo apt-get install -y -q seccomp
+         sudo apt-get install -y -q seccomp libseccomp-dev
        displayName: seccomp
      - script: cargo check
        displayName: cargo check
