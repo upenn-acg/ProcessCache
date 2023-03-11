@@ -37,7 +37,7 @@ Postconditions:
 - `file.txt` has certain final contents
 
 ## System Components
-TODO: component diagram coming ASAP!
+Component diagram coming soon!
 
 ## Installation
 Given a proper cargo set up. `cargo build` works using rustc 1.67.0. It should work for any newer version though.
@@ -89,7 +89,7 @@ If a user needs to input something in the middle of a program, ProcessCache cann
 ProcessCache cannot cache processes that use sockets or otherwise perform networking. ProcessCache must check the inputs of process at the start of execution, but sockets are constantly receiving new inputs, and ProcessCache cannot jump to these points in the program and then continue easily and correctly.
 
 ## Benchmarks
-We have run ProcessCache under a variety of benchmarks, which can be found in this repository.
+Link to our benchmarking suite coming soon!
 
 ## Contributing
 Please see: [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to the project.
