@@ -3,7 +3,7 @@
 This is the implementation of ProcessCache: a system for automatic caching of arbitrary Linux programs at the process level. It traces your process and its inputs and outputs for potential skipping later.
 
 ProcessCache achieves multiple goals:
-- **Easy to use.** Just pull it down and run `./process_cache your_program`
+- **Easy to use.** Just pull it down, build it, and run `cargo run your_program`
 - **Agnostic / general.** Because ProcessCache works at the system call level caching processes, it can work with most programs.
 - **Improves performance.** Skipping your process saves you on computation time, and caching your process doesn't introduce egregious overheads.
 
