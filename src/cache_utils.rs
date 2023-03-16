@@ -53,6 +53,10 @@ impl CachedExecMetadata {
         self.command.clone()
     }
 
+    pub fn env_vars(&self) -> Vec<String> {
+        self.env_vars.clone()
+    }
+
     pub fn starting_cwd(&self) -> PathBuf {
         self.starting_cwd.clone()
     }

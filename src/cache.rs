@@ -11,9 +11,10 @@ use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 // use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, read_dir, File},
     io::{self, Read, Write},
+    iter::FromIterator,
     path::PathBuf,
     rc::Rc,
 };
@@ -146,35 +147,36 @@ impl CachedExecution {
     // If any fails, return false immediately.
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
-            // Create the exec's cache subdir path.
-            if self.is_root {
-                // This is special stuff for the bioinformatics workflow benchmarks.
-                // You can move along and ignore this.
-                // return false;
-                // -------------------------------------
-                // let command = self.command();
-                // let hashed_command = hash_command(command);
-                // let cache_dir = PathBuf::from("./cache");
-                // let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
-                // if root_exec_cache_subdir.exists() {
-                //     if self.cached_metadata.child_exec_count()
-                //         != number_of_child_cache_subdirs(self.command())
-                //     {
-                //         debug!("Precondition that failed: diff number of child cache subdirs");
-                //         return false;
-                //     }
-                // } else {
-                //     // If it doesn't exist we certainly can't serve from it ;)
-                //     return false;
-                // }
-            }
+            // if self.is_root {
+            // This is special stuff for the bioinformatics workflow benchmarks.
+            // You can move along and ignore this.
+            // return false;
+            // -------------------------------------
+            // let command = self.command();
+            // let hashed_command = hash_command(command);
+            // let cache_dir = PathBuf::from("./cache");
+            // let root_exec_cache_subdir = cache_dir.join(hashed_command.to_string());
+            // if root_exec_cache_subdir.exists() {
+            //     if self.cached_metadata.child_exec_count()
+            //         != number_of_child_cache_subdirs(self.command())
+            //     {
+            //         debug!("Precondition that failed: diff number of child cache subdirs");
+            //         return false;
+            //     }
+            // } else {
+            //     // If it doesn't exist we certainly can't serve from it ;)
+            //     return false;
+            // }
+            // }
+
+            // Check:
+            // Mtime/hash/diff of the binary
+            // Cwd
+            // Env vars
+            // Umask
+            // We already check the path of the binary and the command line args because
+            // that's the key for the cache entry.
             let my_preconds = self.preconditions.clone();
-            // TODO: actually handle checking env vars x)
-            let vars = std::env::vars();
-            let mut vec_vars = Vec::new();
-            for (first, second) in vars {
-                vec_vars.push(format!("{}={}", first, second));
-            }
 
             let curr_cwd = std::env::current_dir().unwrap();
             if self.cached_metadata.starting_cwd() != curr_cwd {
@@ -182,6 +184,25 @@ impl CachedExecution {
                 debug!("old cwd: {:?}", self.cached_metadata.starting_cwd());
                 debug!("new cwd: {:?}", curr_cwd);
                 // panic!("cwd");
+                return false;
+            }
+
+            let vars = std::env::vars();
+            let mut vec_vars = Vec::new();
+            for (first, second) in vars {
+                vec_vars.push(format!("{}={}", first, second));
+            }
+            let cached_env_vars = self.cached_metadata.env_vars();
+            if vec_vars != cached_env_vars {
+                debug!("Env vars mismatch");
+                debug!("Cached env vars: {:?}", cached_env_vars);
+                debug!("Current env vars: {:?}", vec_vars);
+                let cached_env_vars_set: HashSet<String> = HashSet::from_iter(cached_env_vars);
+                let env_vars_set: HashSet<String> = HashSet::from_iter(vec_vars);
+                let only_cached_has = cached_env_vars_set.difference(&env_vars_set);
+                let only_curr_has = env_vars_set.difference(&cached_env_vars_set);
+                debug!("Only cached has: {:?}", only_cached_has);
+                debug!("Only curr has: {:?}", only_curr_has);
                 return false;
             }
 
