@@ -21,6 +21,8 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
+// Toggle this to handle stdout for this execution or ignore it.
+const NO_STDOUT: bool = false;
 // TODO:
 // pub type CacheMap = HashMap<Command, Vec<RcCachedExec>>;
 pub type CacheMap = HashMap<ExecCommand, RcCachedExec>;
@@ -94,28 +96,30 @@ impl CachedExecution {
             debug!("cache_subdir: {:?}", cache_subdir);
             let dir = read_dir(cache_subdir.clone()).unwrap();
 
-            // Parent has all the stdouts of the whole tree below it.
-            // Get vec of all files that contain "stdout" in their file name
-            let mut vec_of_stdout_files = Vec::new();
-            for file in dir {
-                let file = file.unwrap();
-                let path = file.path();
-                let file_name = file.file_name();
-                let file_name = file_name.into_string().unwrap();
-                if file_name.contains("stdout") {
-                    vec_of_stdout_files.push(path);
+            if !NO_STDOUT {
+                // Parent has all the stdouts of the whole tree below it.
+                // Get vec of all files that contain "stdout" in their file name
+                let mut vec_of_stdout_files = Vec::new();
+                for file in dir {
+                    let file = file.unwrap();
+                    let path = file.path();
+                    let file_name = file.file_name();
+                    let file_name = file_name.into_string().unwrap();
+                    if file_name.contains("stdout") {
+                        vec_of_stdout_files.push(path);
+                    }
                 }
-            }
 
-            // sort this vec
-            vec_of_stdout_files.sort();
-            // print in this order
-            for stdout_file_path in vec_of_stdout_files {
-                let mut f = File::open(stdout_file_path).unwrap();
-                let mut buf = Vec::new();
-                let bytes = f.read_to_end(&mut buf).unwrap();
-                if bytes != 0 {
-                    io::stdout().write_all(&buf).unwrap();
+                // sort this vec
+                vec_of_stdout_files.sort();
+                // print in this order
+                for stdout_file_path in vec_of_stdout_files {
+                    let mut f = File::open(stdout_file_path).unwrap();
+                    let mut buf = Vec::new();
+                    let bytes = f.read_to_end(&mut buf).unwrap();
+                    if bytes != 0 {
+                        io::stdout().write_all(&buf).unwrap();
+                    }
                 }
             }
 
