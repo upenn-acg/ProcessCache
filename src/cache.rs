@@ -171,12 +171,16 @@ impl CachedExecution {
 
             // Check:
             // Mtime/hash/diff of the binary
-            // Cwd
-            // Env vars
-            // Umask
+            debug!("Checking executable!");
+            if !self.cached_metadata.executable_check_passes() {
+                debug!("Executable check failed!!");
+                return false;
+            }
+            // Cwd - done
+            // Env vars - done
+            // Umask - done
             // We already check the path of the binary and the command line args because
             // that's the key for the cache entry.
-            let my_preconds = self.preconditions.clone();
 
             let curr_cwd = std::env::current_dir().unwrap();
             if self.cached_metadata.starting_cwd() != curr_cwd {
@@ -216,7 +220,7 @@ impl CachedExecution {
 
             // Preconditions are recursively created now
             // so we only have to check the root.
-
+            let my_preconds = self.preconditions.clone();
             if let Some(preconds) = my_preconds {
                 check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()))
             } else {

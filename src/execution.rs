@@ -10,7 +10,8 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{canonicalize, create_dir, create_dir_all},
+    fs::{canonicalize, create_dir, create_dir_all, metadata},
+    os::linux::fs::MetadataExt,
     path::PathBuf,
     rc::Rc,
     thread,
@@ -27,7 +28,7 @@ use crate::{
     },
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
-    syscalls::{AccessMode, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
+    syscalls::{AccessMode, CheckMechanism, DirEvent, FileEvent, MyStatFs, OffsetMode, OpenFlags},
 };
 use crate::{
     cache::{retrieve_existing_cache, serialize_execs_to_cache},
@@ -520,19 +521,34 @@ pub async fn trace_process(
                                     tracer.get_next_syscall().await.with_context(|| {
                                         context!("Unable to get posthook after execve prehook.")
                                     })?;
-                                let mut new_exec_metadata =
-                                    ExecMetadata::new(Proc(tracer.curr_proc));
-                                new_exec_metadata.add_identifiers(
+                                // let mut new_exec_metadata =
+                                //     ExecMetadata::new(Proc(tracer.curr_proc));
+                                // new_exec_metadata.add_identifiers(
+                                //     args,
+                                //     envp,
+                                //     exec_path_buf
+                                //         .clone()
+                                //         .into_os_string()
+                                //         .into_string()
+                                //         .unwrap(),
+                                //     starting_cwd,
+                                // );
+                                let exec_path_buf_string = exec_path_buf
+                                    .clone()
+                                    .into_os_string()
+                                    .into_string()
+                                    .unwrap();
+                                // MTIME
+                                let curr_metadata = metadata(&exec_path_buf).unwrap();
+                                let exec_check = CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                let new_exec_metadata = ExecMetadata::new(
+                                    Proc(tracer.curr_proc),
+                                    starting_cwd,
                                     args,
                                     envp,
-                                    exec_path_buf
-                                        .clone()
-                                        .into_os_string()
-                                        .into_string()
-                                        .unwrap(),
-                                    starting_cwd,
+                                    exec_path_buf_string,
+                                    exec_check,
                                 );
-
                                 match next_event {
                                     TraceEvent::Exec(_) => {
                                         // The execve succeeded!

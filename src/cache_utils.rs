@@ -4,16 +4,17 @@ use tracing::debug;
 
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    fs::{self, create_dir, read_dir, remove_dir, rename, File},
+    fs::{self, create_dir, metadata, read_dir, remove_dir, rename, File},
     hash::{Hash, Hasher},
     io::{self, Read, Write},
+    os::linux::fs::MetadataExt,
     path::PathBuf,
 };
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{condition_generator::Accessor, condition_utils::Fact};
+use crate::{condition_generator::Accessor, condition_utils::Fact, syscalls::CheckMechanism};
 
 // Struct housing the metadata associated with a unique execution.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -22,6 +23,7 @@ pub struct CachedExecMetadata {
     child_exec_count: u32,
     command: ExecCommand,
     env_vars: Vec<String>,
+    executable_check: CheckMechanism,
     starting_cwd: PathBuf,
     starting_umask: u32,
 }
@@ -32,6 +34,7 @@ impl CachedExecMetadata {
         child_exec_count: u32,
         command: ExecCommand,
         env_vars: Vec<String>,
+        executable_check: CheckMechanism,
         starting_cwd: PathBuf,
         starting_umask: u32,
     ) -> CachedExecMetadata {
@@ -40,6 +43,7 @@ impl CachedExecMetadata {
             child_exec_count,
             command,
             env_vars,
+            executable_check,
             starting_cwd,
             starting_umask,
         }
@@ -51,6 +55,25 @@ impl CachedExecMetadata {
 
     pub fn command(&self) -> ExecCommand {
         self.command.clone()
+    }
+
+    pub fn executable_check_passes(&self) -> bool {
+        let check_mech = self.executable_check.clone();
+        match check_mech {
+            CheckMechanism::DiffFiles => panic!(
+                "Diffing files not handled as a CheckMechanism, can't use it check executable!!"
+            ),
+            CheckMechanism::Mtime(cached_mtime) => {
+                // Get current mtime of the executable.
+                let executable_path = self.command.0.clone();
+                let curr_metadata = metadata(executable_path).unwrap();
+                let curr_mtime = curr_metadata.st_mtime();
+                curr_mtime == cached_mtime
+            }
+            CheckMechanism::Hash(_) => panic!(
+                "Hashing files not handled as a CheckMechanism, can't use it check executable!!"
+            ),
+        }
     }
 
     pub fn env_vars(&self) -> Vec<String> {

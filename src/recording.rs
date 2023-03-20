@@ -4,7 +4,7 @@ use crate::{
     condition_generator::{generate_preconditions, Accessor, ExecSyscallEvents},
     condition_utils::{Fact, Postconditions},
     execution_utils::get_umask,
-    syscalls::{DirEvent, FileEvent},
+    syscalls::{CheckMechanism, DirEvent, FileEvent},
 };
 use nix::unistd::Pid;
 use std::{
@@ -35,37 +35,46 @@ pub struct ExecMetadata {
     command: ExecCommand,
     cwd: PathBuf,
     env_vars: Vec<String>,
+    executable_check: CheckMechanism,
     starting_cwd: PathBuf,
     starting_umask: u32,
 }
 
 impl ExecMetadata {
-    pub fn new(caller_pid: Proc) -> ExecMetadata {
+    pub fn new(
+        caller_pid: Proc,
+        cwd: PathBuf,
+        args: Vec<String>,
+        env_vars: Vec<String>,
+        executable: String,
+        executable_check: CheckMechanism,
+    ) -> ExecMetadata {
         let pid = caller_pid.0;
         ExecMetadata {
             caller_pid,
-            command: ExecCommand(String::new(), Vec::new()),
-            cwd: PathBuf::new(),
-            env_vars: Vec::new(),
-            starting_cwd: PathBuf::new(),
+            command: ExecCommand(executable, args),
+            cwd: cwd.clone(),
+            env_vars,
+            executable_check,
+            starting_cwd: cwd,
             starting_umask: get_umask(&pid),
         }
     }
 
-    pub fn add_identifiers(
-        &mut self,
-        args: Vec<String>,
-        env_vars: Vec<String>,
-        executable: String,
-        starting_cwd: PathBuf,
-    ) {
-        self.command.1 = args;
-        self.env_vars = env_vars;
-        self.command.0 = executable;
-        // These are the same to start.
-        self.cwd = starting_cwd.clone();
-        self.starting_cwd = starting_cwd;
-    }
+    // pub fn add_identifiers(
+    //     &mut self,
+    //     args: Vec<String>,
+    //     env_vars: Vec<String>,
+    //     executable: String,
+    //     starting_cwd: PathBuf,
+    // ) {
+    //     self.command.1 = args;
+    //     self.env_vars = env_vars;
+    //     self.command.0 = executable;
+    //     // These are the same to start.
+    //     self.cwd = starting_cwd.clone();
+    //     self.starting_cwd = starting_cwd;
+    // }
 
     fn args(&self) -> Vec<String> {
         self.command.1.clone()
@@ -84,22 +93,8 @@ impl ExecMetadata {
         self.cwd.clone()
     }
 
-    fn executable(&self) -> String {
-        self.command.0.clone()
-    }
-
     fn env_vars(&self) -> Vec<String> {
         self.env_vars.clone()
-    }
-
-    // Checking if the current process we are tracing has NOT
-    // yet done an exec that
-    // 1. We allowed
-    // 2. We documented
-    // This is usually when we are going to skip the execution,
-    // or we don't want to cache the root execution.
-    fn is_empty_root_exec(&self) -> bool {
-        self.command.0.is_empty()
     }
 
     fn starting_cwd(&self) -> PathBuf {
@@ -118,6 +113,8 @@ impl ExecMetadata {
 // It's where we store our in-progress info.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Execution {
+    // Could be different than the pid in the successful exec metadata.
+    calling_pid: Proc,
     child_execs: ChildExecutions,
     exit_code: Option<i32>,
     syscall_events: ExecSyscallEvents,
@@ -125,12 +122,13 @@ pub struct Execution {
     is_root: bool,
     postconditions: Option<Postconditions>,
     stdout_fd_map: HashMap<Pid, i32>,
-    successful_exec: ExecMetadata,
+    successful_exec: Option<ExecMetadata>,
 }
 
 impl Execution {
     pub fn new(calling_pid: Proc) -> Execution {
         Execution {
+            calling_pid,
             child_execs: Vec::new(),
             exit_code: None,
             syscall_events: ExecSyscallEvents::new(HashMap::new(), HashMap::new()),
@@ -138,7 +136,7 @@ impl Execution {
             is_root: false,
             postconditions: None,
             stdout_fd_map: HashMap::new(),
-            successful_exec: ExecMetadata::new(calling_pid),
+            successful_exec: None,
         }
     }
 
@@ -178,7 +176,11 @@ impl Execution {
     }
 
     fn args(&self) -> Vec<String> {
-        self.successful_exec.args()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.args()
+        } else {
+            panic!("Trying to get args for process that has not yet called execve!!");
+        }
     }
 
     fn children(&self) -> Vec<RcExecution> {
@@ -186,21 +188,44 @@ impl Execution {
     }
 
     fn command(&self) -> ExecCommand {
-        self.successful_exec.command()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.command()
+        } else {
+            panic!("Trying to get command for process that has not yet called execve!!");
+        }
     }
 
     fn cwd(&self) -> PathBuf {
-        self.successful_exec.cwd()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.cwd()
+        } else {
+            panic!("Trying to get cwd for process that has not yet called execve!!");
+        }
     }
 
     fn env_vars(&self) -> Vec<String> {
-        self.successful_exec.env_vars()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.env_vars()
+        } else {
+            panic!("Trying to get env vars for process that has not yet called execve!!");
+        }
     }
 
     fn executable(&self) -> String {
-        self.successful_exec.executable()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.command.0
+        } else {
+            panic!("Trying to get command for process that has not yet called execve!!");
+        }
     }
 
+    fn executable_check(&self) -> CheckMechanism {
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.executable_check
+        } else {
+            panic!("Trying to get executable check for process that has not yet called execve!!");
+        }
+    }
     // This function recursively updates the cache map we are creating from
     // this execution we just traced.
     fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
@@ -214,6 +239,7 @@ impl Execution {
             child_exec_count as u32,
             command_key.clone(),
             self.env_vars(),
+            self.executable_check(),
             self.starting_cwd(),
             self.starting_umask(),
         );
@@ -245,7 +271,8 @@ impl Execution {
     }
 
     fn is_empty_root_exec(&self) -> bool {
-        self.successful_exec.is_empty_root_exec() && self.is_root
+        // self.successful_exec.is_empty_root_exec() && self.is_root
+        self.successful_exec.is_none() && self.is_root
     }
 
     fn is_ignored(&self) -> bool {
@@ -257,7 +284,11 @@ impl Execution {
     }
 
     fn pid(&self) -> Pid {
-        self.successful_exec.caller_pid()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.caller_pid()
+        } else {
+            panic!("Trying to get pid for process that has not yet called execve!!");
+        }
     }
 
     pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
@@ -269,18 +300,26 @@ impl Execution {
     }
 
     pub fn starting_cwd(&self) -> PathBuf {
-        self.successful_exec.starting_cwd()
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.starting_cwd()
+        } else {
+            panic!("Trying to get starting cwd for process that has not yet called execve!!")
+        }
     }
 
     pub fn starting_umask(&self) -> u32 {
-        self.successful_exec.starting_umask
+        if let Some(exec) = self.successful_exec.clone() {
+            exec.starting_umask
+        } else {
+            panic!("Trying to get starting cwd for process that has not yet called execve!!")
+        }
     }
 
     fn set_to_ignored(&mut self, exec_metadata: ExecMetadata) {
         self.is_ignored = true;
         self.exit_code = None;
         self.postconditions = None;
-        self.successful_exec = exec_metadata;
+        self.successful_exec = Some(exec_metadata);
     }
 
     fn syscall_events(&self) -> ExecSyscallEvents {
@@ -303,7 +342,10 @@ impl Execution {
     }
 
     fn update_cwd(&mut self, new_cwd: PathBuf) {
-        self.successful_exec.update_cwd(new_cwd.clone());
+        if let Some(exec) = &mut self.successful_exec {
+            exec.update_cwd(new_cwd.clone());
+        }
+        // self.successful_exec.update_cwd(new_cwd.clone());
         let children = self.child_execs.clone();
         for child in children {
             child.update_cwd(new_cwd.clone());
@@ -315,7 +357,7 @@ impl Execution {
     }
 
     pub fn update_successful_exec(&mut self, exec_metadata: ExecMetadata) {
-        self.successful_exec = exec_metadata;
+        self.successful_exec = Some(exec_metadata);
     }
 
     fn update_syscall_events(&mut self, syscall_events: ExecSyscallEvents) {

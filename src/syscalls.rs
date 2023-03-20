@@ -97,7 +97,7 @@ pub enum Stat {
 // DiffFiles = Very strong correctness guarantees. Not great for space or for speed.
 // Mtime = Basic correctness guarantees. Grate for space AND speed.
 // Hash = Very strong correctness guarantees. Not great for speed, but good for space.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[allow(dead_code)]
 pub enum CheckMechanism {
     DiffFiles,
