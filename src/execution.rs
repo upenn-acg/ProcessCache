@@ -76,7 +76,8 @@ const BACKGROUND_THREADS: bool = true;
 // This allows multiple threads to be spawned
 // to serve output files from the cache.
 const BACKGROUND_SERVING_THREADS: bool = true;
-
+// Toggle this to handle stdout for this execution or ignore it.
+const NO_STDOUT: bool = false;
 // Flags for turning on and off different parts of ProcessCache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.
@@ -332,17 +333,19 @@ pub async fn trace_process(
                     let sys_span = span!(Level::INFO, "Syscall", name);
                     let ee = sys_span.enter();
 
-                    // If close_stdout_fd == true, then we need to close our "stdout" fd.
-                    // Whatever stdout is duped to.
-                    // We only want to do this if we have NOT already done this.
-                    if pls_close_stdout_fd && !stdout_fd_has_been_closed {
-                        close_stdout_duped_fd(&curr_execution, &mut tracer)
-                            .await
-                            .with_context(|| context!("Unable to close stdout duped fd."))?;
-                        pls_close_stdout_fd = false;
-                        stdout_fd_has_been_closed = true;
-                        // Continue to let original system call run.
-                        continue;
+                    if !NO_STDOUT {
+                        // If close_stdout_fd == true, then we need to close our "stdout" fd.
+                        // Whatever stdout is duped to.
+                        // We only want to do this if we have NOT already done this.
+                        if pls_close_stdout_fd && !stdout_fd_has_been_closed {
+                            close_stdout_duped_fd(&curr_execution, &mut tracer)
+                                .await
+                                .with_context(|| context!("Unable to close stdout duped fd."))?;
+                            pls_close_stdout_fd = false;
+                            stdout_fd_has_been_closed = true;
+                            // Continue to let original system call run.
+                            continue;
+                        }
                     }
 
                     // For file creation type events (creat, open, openat), we want to know if the file already existed
@@ -572,8 +575,14 @@ pub async fn trace_process(
                                         // This is a child exec.
                                         } else if curr_execution.pid() != tracer.curr_proc {
                                             // Get the stdout fd from the current exec if it exists.
-                                            let childs_stdout_fd = curr_execution
-                                                .get_stdout_duped_fd(tracer.curr_proc);
+                                            // let childs_stdout_fd = curr_execution
+                                            //     .get_stdout_duped_fd(tracer.curr_proc);
+
+                                            let childs_stdout_fd = if NO_STDOUT {
+                                                None
+                                            } else {
+                                                curr_execution.get_stdout_duped_fd(tracer.curr_proc)
+                                            };
 
                                             // New RcExecution for the child exec.
                                             let mut new_child_exec =
@@ -658,7 +667,9 @@ pub async fn trace_process(
                                 }
                             }
                             _ => {
-                                if !iostream_redirected {
+                                if NO_STDOUT {
+                                    iostream_redirected = true;
+                                } else if !iostream_redirected {
                                     const STDOUT_FD: u32 = 1;
                                     // const STDERR_FD: u32 = 2;
                                     // TODO: Deal with PID recycling?
@@ -732,7 +743,7 @@ pub async fn trace_process(
                                 // But this means we must also close our stdout file
                                 // that we have been using to record the process'
                                 // stdout output.
-                                if fd == 1 {
+                                if !NO_STDOUT && fd == 1 {
                                     pls_close_stdout_fd = true;
                                 }
                             }
