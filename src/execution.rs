@@ -395,8 +395,7 @@ pub async fn trace_process(
                                 debug!("Raw executable: {:?}", exec_path_buf);
                                 debug!("args: {:?}", args);
                                 let exec_path_buf = if exec_path_buf.is_relative() {
-                                    let file_name = exec_path_buf.file_name().unwrap();
-                                    starting_cwd.join(file_name)
+                                    canonicalize(exec_path_buf).unwrap()
                                 } else {
                                     exec_path_buf
                                 };
