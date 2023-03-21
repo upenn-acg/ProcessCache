@@ -6,12 +6,13 @@ use nix::{
     sys::{stat::FileStat, statfs::Statfs},
     unistd::Pid,
 };
+
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{canonicalize, create_dir, create_dir_all, metadata},
-    os::linux::fs::MetadataExt,
+    fs::{canonicalize, create_dir, create_dir_all /*metadata*/},
+    // os::linux::fs::MetadataExt,
     path::PathBuf,
     rc::Rc,
     thread,
@@ -19,7 +20,9 @@ use std::{
 
 use crate::{
     async_runtime::AsyncRuntime,
-    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
+    cache_utils::{
+        background_thread_serving_outputs, background_thread_serving_stdout, generate_hash,
+    },
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
     execution_utils::{
@@ -541,8 +544,11 @@ pub async fn trace_process(
                                     .into_string()
                                     .unwrap();
                                 // MTIME
-                                let curr_metadata = metadata(&exec_path_buf).unwrap();
-                                let exec_check = CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                // let curr_metadata = metadata(&exec_path_buf).unwrap();
+                                // let exec_check = CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                // HASHING
+                                let exec_check =
+                                    CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
                                 let new_exec_metadata = ExecMetadata::new(
                                     Proc(tracer.curr_proc),
                                     starting_cwd,
