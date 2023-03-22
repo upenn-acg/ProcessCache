@@ -80,7 +80,7 @@ const BACKGROUND_THREADS: bool = true;
 // to serve output files from the cache.
 const BACKGROUND_SERVING_THREADS: bool = true;
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = false;
+const NO_STDOUT: bool = true;
 // Flags for turning on and off different parts of ProcessCache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.

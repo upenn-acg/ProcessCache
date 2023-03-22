@@ -18,7 +18,7 @@ use std::{
 };
 
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = false;
+const NO_STDOUT: bool = true;
 
 pub type ChildExecutions = Vec<RcExecution>;
 
