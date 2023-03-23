@@ -11,7 +11,8 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{canonicalize, create_dir, create_dir_all /*metadata*/},
+    fs::{canonicalize, create_dir, create_dir_all, metadata /*metadata*/},
+    os::linux::fs::MetadataExt,
     // os::linux::fs::MetadataExt,
     path::PathBuf,
     rc::Rc,
@@ -80,7 +81,7 @@ const BACKGROUND_THREADS: bool = true;
 // to serve output files from the cache.
 const BACKGROUND_SERVING_THREADS: bool = true;
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = true;
+const NO_STDOUT: bool = false;
 // Flags for turning on and off different parts of ProcessCache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.
@@ -538,31 +539,54 @@ pub async fn trace_process(
                                 //         .unwrap(),
                                 //     starting_cwd,
                                 // );
-                                let exec_path_buf_string = exec_path_buf
-                                    .clone()
-                                    .into_os_string()
-                                    .into_string()
-                                    .unwrap();
-                                // MTIME
+                                // let exec_path_buf_string = exec_path_buf
+                                //     .clone()
+                                //     .into_os_string()
+                                //     .into_string()
+                                //     .unwrap();
+                                // // MTIME
+                                // debug!("EXEC PATH BUF: {:?}", exec_path_buf);
                                 // let curr_metadata = metadata(&exec_path_buf).unwrap();
                                 // let exec_check = CheckMechanism::Mtime(curr_metadata.st_mtime());
-                                // HASHING
-                                let exec_check =
-                                    CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
-                                let new_exec_metadata = ExecMetadata::new(
-                                    Proc(tracer.curr_proc),
-                                    starting_cwd,
-                                    args,
-                                    envp,
-                                    exec_path_buf_string,
-                                    exec_check,
-                                );
+                                // // HASHING
+                                // // let exec_check =
+                                // //     CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
+                                // let new_exec_metadata = ExecMetadata::new(
+                                //     Proc(tracer.curr_proc),
+                                //     starting_cwd,
+                                //     args,
+                                //     envp,
+                                //     exec_path_buf_string,
+                                //     exec_check,
+                                // );
                                 match next_event {
                                     TraceEvent::Exec(_) => {
                                         // The execve succeeded!
                                         s.in_scope(|| {
                                             debug!("Execve succeeded!");
                                         });
+
+                                        let exec_path_buf_string = exec_path_buf
+                                            .clone()
+                                            .into_os_string()
+                                            .into_string()
+                                            .unwrap();
+                                        // MTIME
+                                        debug!("EXEC PATH BUF: {:?}", exec_path_buf);
+                                        let curr_metadata = metadata(&exec_path_buf).unwrap();
+                                        let exec_check =
+                                            CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                        // HASHING
+                                        // let exec_check =
+                                        //     CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
+                                        let new_exec_metadata = ExecMetadata::new(
+                                            Proc(tracer.curr_proc),
+                                            starting_cwd,
+                                            args,
+                                            envp,
+                                            exec_path_buf_string,
+                                            exec_check,
+                                        );
 
                                         if curr_execution.is_empty_root_exec() {
                                             if DONT_CACHE_ROOT {
@@ -1086,13 +1110,27 @@ fn handle_get_dents64(
         dirp = unsafe { dirp.add(record_length as usize) };
 
         let file_type = getdents_file_type(file_type);
-        let file_type = match file_type {
-            dir::Type::Directory => FileType::Dir,
-            dir::Type::File => FileType::File,
-            dir::Type::Symlink => FileType::Symlink,
-            _ => panic!("what kind of file is this??"),
-        };
-        entries.push((file_name.into_string().unwrap(), file_type));
+        // let file_type = match file_type {
+        //     dir::Type::Directory => FileType::Dir,
+        //     dir::Type::File => FileType::File,
+        //     dir::Type::Symlink => FileType::Symlink,
+        //     t => panic!("what kind of file is this??: {:?}", t),
+        // };
+        // entries.push((file_name.into_string().unwrap(), file_type));
+
+        match file_type {
+            dir::Type::Directory => {
+                entries.push((file_name.into_string().unwrap(), FileType::Dir));
+            }
+            dir::Type::File => {
+                entries.push((file_name.into_string().unwrap(), FileType::File));
+            }
+            dir::Type::Symlink => {
+                entries.push((file_name.into_string().unwrap(), FileType::Symlink));
+            }
+            // Otherwise do nothing.
+            _ => (),
+        }
     }
 
     let outcome = if ret_val >= 0 {

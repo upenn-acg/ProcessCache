@@ -1,7 +1,8 @@
 use crossbeam::channel::Receiver;
 
 use std::{
-    fs::{self /*metadata*/},
+    fs::{self, metadata /*metadata*/},
+    os::linux::fs::MetadataExt,
     /*os::linux::fs::MetadataExt,*/
     path::PathBuf,
 };
@@ -33,7 +34,7 @@ use crate::{
 // hashing.
 const DONT_HASH_OR_MTIME: bool = false;
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = true;
+const NO_STDOUT: bool = false;
 
 // Our background threads use this function to wait for (source, dest) file path pairs
 // to be sent to them, so that they may copy the output files to the cache.
@@ -114,10 +115,10 @@ pub fn generate_open_syscall_file_event(
         // TODO: Copy the input file to the cache for later checking.
         // Some(CheckMechanism::DiffFiles)
         // HASH
-        Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+        // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
         // MTIME
-        // let curr_metadata = metadata(&full_path).unwrap();
-        // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+        let curr_metadata = metadata(&full_path).unwrap();
+        Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
     } else {
         None
     };

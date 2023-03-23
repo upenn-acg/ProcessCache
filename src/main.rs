@@ -217,6 +217,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_chmod)?;
     loader.let_pass(libc::SYS_chown)?;
     loader.let_pass(libc::SYS_connect)?;
+    loader.let_pass(libc::SYS_epoll_create1)?;
     loader.let_pass(libc::SYS_fadvise64)?;
     loader.let_pass(libc::SYS_fsync)?;
     loader.let_pass(libc::SYS_getegid)?;

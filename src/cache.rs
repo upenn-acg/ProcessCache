@@ -22,7 +22,7 @@ use std::{
 use tracing::{debug, error, info, span, trace, Level};
 
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = true;
+const NO_STDOUT: bool = false;
 // TODO:
 // pub type CacheMap = HashMap<Command, Vec<RcCachedExec>>;
 pub type CacheMap = HashMap<ExecCommand, RcCachedExec>;
