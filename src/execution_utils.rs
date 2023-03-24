@@ -105,23 +105,30 @@ pub fn generate_open_syscall_file_event(
     // - HASHING
     // - MTIME
     // - COPYING FILES
-    let optional_checking_mech = if DONT_HASH_OR_MTIME {
-        None
-    } else if syscall_outcome.is_ok()
-        && (open_flags.offset_mode == Some(OffsetMode::Append)
-            || open_flags.access_mode == AccessMode::Read)
-    {
-        // DIFF FILES
-        // TODO: Copy the input file to the cache for later checking.
-        // Some(CheckMechanism::DiffFiles)
-        // HASH
-        // Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
-        // MTIME
-        let curr_metadata = metadata(&full_path).unwrap();
-        Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
-    } else {
-        None
-    };
+    // let optional_checking_mech = if DONT_HASH_OR_MTIME {
+    //     None
+    // } else if syscall_outcome.is_ok()
+    //     && (open_flags.offset_mode == Some(OffsetMode::Append)
+    //         || open_flags.access_mode == AccessMode::Read)
+    // {
+    //     // DIFF FILES
+    //     // TODO: Copy the input file to the cache for later checking.
+    //     // Some(CheckMechanism::DiffFiles)
+    //     // HASH
+    //     Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+    //     // MTIME
+    //     // let curr_metadata = metadata(&full_path).unwrap();
+    //     // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+    // } else {
+    //     None
+    // };
+
+    let optional_checking_mech =
+        if syscall_outcome.is_ok() && open_flags.offset_mode == Some(OffsetMode::Append) {
+            Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+        } else {
+            None
+        };
 
     if open_flags.creat_flag {
         if open_flags.excl_flag {

@@ -527,23 +527,7 @@ pub async fn trace_process(
                                     tracer.get_next_syscall().await.with_context(|| {
                                         context!("Unable to get posthook after execve prehook.")
                                     })?;
-                                // let mut new_exec_metadata =
-                                //     ExecMetadata::new(Proc(tracer.curr_proc));
-                                // new_exec_metadata.add_identifiers(
-                                //     args,
-                                //     envp,
-                                //     exec_path_buf
-                                //         .clone()
-                                //         .into_os_string()
-                                //         .into_string()
-                                //         .unwrap(),
-                                //     starting_cwd,
-                                // );
-                                // let exec_path_buf_string = exec_path_buf
-                                //     .clone()
-                                //     .into_os_string()
-                                //     .into_string()
-                                //     .unwrap();
+
                                 // // MTIME
                                 // debug!("EXEC PATH BUF: {:?}", exec_path_buf);
                                 // let curr_metadata = metadata(&exec_path_buf).unwrap();
@@ -573,12 +557,14 @@ pub async fn trace_process(
                                             .unwrap();
                                         // MTIME
                                         debug!("EXEC PATH BUF: {:?}", exec_path_buf);
-                                        let curr_metadata = metadata(&exec_path_buf).unwrap();
-                                        let exec_check =
-                                            CheckMechanism::Mtime(curr_metadata.st_mtime());
-                                        // HASHING
+                                        // let curr_metadata = metadata(&exec_path_buf).unwrap();
                                         // let exec_check =
-                                        //     CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
+                                        //     CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                        // HASHING
+                                        // let exec_check = CheckMechanism::Hash(generate_hash(
+                                        //     exec_path_buf.clone(),
+                                        // ));
+                                        let exec_check = CheckMechanism::Hash(Vec::new());
                                         let new_exec_metadata = ExecMetadata::new(
                                             Proc(tracer.curr_proc),
                                             starting_cwd,
