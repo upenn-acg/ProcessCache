@@ -1446,6 +1446,8 @@ fn handle_stat_family(
                 }
             }
             -2 => FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::FileDoesntExist)),
+            // Bad fd error - Idc
+            -9 => return Ok(()),
             -13 => FileEvent::Stat(None, SyscallOutcome::Fail(SyscallFailure::PermissionDenied)),
             e => panic!("Unexpected error returned by stat syscall!: {}", e),
         }

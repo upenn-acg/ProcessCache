@@ -219,6 +219,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_chown)?;
     loader.let_pass(libc::SYS_connect)?;
     loader.let_pass(libc::SYS_epoll_create1)?;
+    loader.let_pass(libc::SYS_epoll_ctl)?;
+    loader.let_pass(libc::SYS_epoll_wait)?;
     loader.let_pass(libc::SYS_fadvise64)?;
     loader.let_pass(libc::SYS_fsync)?;
     loader.let_pass(libc::SYS_getegid)?;
@@ -239,11 +241,13 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_pipe)?;
     loader.let_pass(libc::SYS_pipe2)?;
     loader.let_pass(libc::SYS_prlimit64)?;
+    loader.let_pass(libc::SYS_recvfrom)?;
     loader.let_pass(libc::SYS_rseq)?;
     loader.let_pass(libc::SYS_rt_sigaction)?;
     loader.let_pass(libc::SYS_rt_sigprocmask)?;
     loader.let_pass(libc::SYS_rt_sigreturn)?;
     loader.let_pass(libc::SYS_sched_getaffinity)?;
+    loader.let_pass(libc::SYS_sendto)?;
     loader.let_pass(libc::SYS_set_tid_address)?;
     loader.let_pass(libc::SYS_set_robust_list)?;
     loader.let_pass(libc::SYS_socket)?;
@@ -271,6 +275,8 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_readlink)?;
     loader.let_pass(libc::SYS_sysinfo)?;
     loader.let_pass(libc::SYS_statx)?;
+    loader.let_pass(libc::SYS_timerfd_create)?;
+    loader.let_pass(libc::SYS_timerfd_settime)?;
     loader.let_pass(libc::SYS_times)?;
     loader.let_pass(libc::SYS_umask)?;
     loader.let_pass(libc::SYS_uname)?;
