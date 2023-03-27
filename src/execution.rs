@@ -11,9 +11,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{canonicalize, create_dir, create_dir_all, metadata /*metadata*/},
-    os::linux::fs::MetadataExt,
-    // os::linux::fs::MetadataExt,
+    fs::{canonicalize, create_dir, create_dir_all},
     path::PathBuf,
     rc::Rc,
     thread,
@@ -21,9 +19,8 @@ use std::{
 
 use crate::{
     async_runtime::AsyncRuntime,
-    cache_utils::{
-        background_thread_serving_outputs, background_thread_serving_stdout, generate_hash,
-    },
+    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
+    computed_hashes::RcComputedHashes,
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
     execution_utils::{
@@ -162,6 +159,9 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         (None, None)
     };
 
+    // Instantiate the ComputedHashes map at the beginning before the execution starts.
+    let computed_hashes = RcComputedHashes::new();
+
     // This allows us to pass these in this execution and to child execution's
     // to get accurate counts for total syscalls and total SyscallEvents.
     let total_intercepted_syscall_count = Rc::new(RefCell::new(0));
@@ -173,6 +173,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         first_execution.clone(),
         Rc::new(cache_dir.clone()),
         option_caching_sender.clone(),
+        computed_hashes,
         option_file_sender.clone(),
         option_stdout_sender.clone(),
         total_intercepted_syscall_count.clone(),
@@ -259,12 +260,14 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 /// This may have a lot of arguments but it is *THE* main function in this whole system, so we let
 /// that slide.
 #[allow(clippy::too_many_arguments)]
+// TODO: This is kind of a laughable number of arguments at this point :P
 pub async fn trace_process(
     async_runtime: AsyncRuntime,
     mut tracer: Ptracer,
     mut curr_execution: RcExecution,
     cache_dir: Rc<PathBuf>, // TODO: what is this??
     caching_send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
+    computed_hashes: RcComputedHashes,
     file_send_end: Option<Sender<(Accessor, PathBuf, HashSet<Fact>)>>,
     stdout_send_end: Option<Sender<PathBuf>>,
     total_intercepted_syscall_count: Rc<RefCell<u64>>,
@@ -561,10 +564,17 @@ pub async fn trace_process(
                                         // let exec_check =
                                         //     CheckMechanism::Mtime(curr_metadata.st_mtime());
                                         // HASHING
+                                        // Here we only generate the hash of the executable if we have
+                                        // never seen this executable before in this execution.
+                                        let exec_check = CheckMechanism::Hash(
+                                            computed_hashes.get_computed_hash(exec_path_buf),
+                                        );
+                                        // This option always hashes the executable.
                                         // let exec_check = CheckMechanism::Hash(generate_hash(
                                         //     exec_path_buf.clone(),
                                         // ));
-                                        let exec_check = CheckMechanism::Hash(Vec::new());
+                                        // This does no check at all.
+                                        // let exec_check = CheckMechanism::Hash(Vec::new());
                                         let new_exec_metadata = ExecMetadata::new(
                                             Proc(tracer.curr_proc),
                                             starting_cwd,
@@ -833,6 +843,7 @@ pub async fn trace_process(
                     curr_execution.clone(),
                     cache_dir.clone(),
                     caching_send_end.clone(),
+                    computed_hashes.clone(),
                     file_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),
@@ -858,6 +869,7 @@ pub async fn trace_process(
                     curr_execution.clone(),
                     cache_dir.clone(),
                     caching_send_end.clone(),
+                    computed_hashes.clone(),
                     file_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),

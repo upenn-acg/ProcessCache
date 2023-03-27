@@ -13,6 +13,7 @@ mod async_runtime;
 mod cache;
 mod cache_benchmarking;
 mod cache_utils;
+mod computed_hashes;
 mod condition_generator;
 mod condition_utils;
 mod execution;
