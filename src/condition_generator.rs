@@ -226,15 +226,20 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
             Fact::InputFileDiffsMatch => todo!(),
             // When we cached the execution, we got the hash of this input file.
             // We check this cached hash against the hash of the existing file.
-            Fact::InputFileHashesMatch(old_hash) => {
+            Fact::InputFileHashesMatch(option_old_hash) => {
                 // Getdents: First the process will open the dir for reading,
                 // but we don't handle checking this stuff here, we handle it
                 // when they call getdents.
-                if !old_hash.is_empty() {
-                    let new_hash = generate_hash(path_name);
-                    old_hash == new_hash
+
+                if let Some(old_hash) = option_old_hash {
+                    if !old_hash.is_empty() {
+                        let new_hash = generate_hash(path_name);
+                        old_hash == new_hash
+                    } else {
+                        true
+                    }
                 } else {
-                    true
+                    panic!("Cannot check fact for Hash(None)!!");
                 }
             }
             // Check that this process has the same permissions it had before on either

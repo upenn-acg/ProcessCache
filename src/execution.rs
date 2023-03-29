@@ -233,6 +233,23 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
                 println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
             }
         }
+
+        // Join on the read only hasher threads, combining their maps into
+        // one big one.
+        // TODO: Move this into its own function in another file.
+        let mut aggregated_map = HashMap::new();
+        for handle in read_only_handle_vec {
+            let map = handle.join();
+            let map = map.unwrap();
+            for (full_path, hash) in map {
+                aggregated_map.entry(full_path).or_insert(hash);
+            }
+        }
+
+        // TODO: Update the cache map. For each entry, go through its preconditions,
+        // look for Fact::InputFileHashesMatch(None). Fill these in.
+        // Must be done before serializing the cache map to disk.
+
         // Here we serialize the cache map data structure to a file in the cache (/cache/cache).
         serialize_execs_to_cache(cache_map.clone());
     }
@@ -797,6 +814,7 @@ pub async fn trace_process(
                         "creat" | "openat" | "open" => handle_open(
                             &curr_execution,
                             file_existed_at_start,
+                            read_only_send_end.clone(),
                             name,
                             &tracer,
                             &total_syscall_event_count,
@@ -1213,6 +1231,7 @@ fn handle_mkdir(
 fn handle_open(
     execution: &RcExecution,
     file_existed_at_start: bool,
+    read_only_send_end: Sender<PathBuf>,
     syscall_name: &str,
     tracer: &Ptracer,
     total_syscall_event_count: &Rc<RefCell<u64>>,
@@ -1305,8 +1324,13 @@ fn handle_open(
         access_mode,
     };
 
-    let open_syscall_event =
-        generate_open_syscall_file_event(execution, full_path.clone(), open_flags, syscall_outcome);
+    let open_syscall_event = generate_open_syscall_file_event(
+        execution,
+        full_path.clone(),
+        open_flags,
+        read_only_send_end,
+        syscall_outcome,
+    );
 
     if let Some(event) = open_syscall_event {
         *total_syscall_event_count.borrow_mut() += 1;

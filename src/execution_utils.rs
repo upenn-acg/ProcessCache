@@ -1,4 +1,4 @@
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 
 use std::{fs, path::PathBuf};
 
@@ -74,6 +74,7 @@ pub fn generate_open_syscall_file_event(
     curr_execution: &RcExecution,
     full_path: PathBuf,
     open_flags: OpenFlags,
+    read_only_send_end: Sender<PathBuf>,
     syscall_outcome: Result<i32, i32>,
 ) -> Option<FileEvent> {
     if open_flags.excl_flag && !open_flags.creat_flag {
@@ -95,21 +96,46 @@ pub fn generate_open_syscall_file_event(
     // - HASHING
     // - MTIME
     // - COPYING FILES
-    let optional_checking_mech = if syscall_outcome.is_ok()
-        && (open_flags.offset_mode == Some(OffsetMode::Append)
-            || open_flags.access_mode == AccessMode::Read)
-    {
-        // DIFF FILES
-        // TODO: Copy the input file to the cache for later checking.
-        // Some(CheckMechanism::DiffFiles)
-        // HASH
-        Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
-        // MTIME
-        // let curr_metadata = metadata(&full_path).unwrap();
-        // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
-    } else {
-        None
-    };
+    let optional_checking_mech =
+        if syscall_outcome.is_ok() && open_flags.offset_mode == Some(OffsetMode::Append) {
+            // DIFF FILES
+            // TODO: Copy the input file to the cache for later checking.
+            // Some(CheckMechanism::DiffFiles)
+            // HASH
+            Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+            // MTIME
+            // let curr_metadata = metadata(&full_path).unwrap();
+            // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+        } else if syscall_outcome.is_ok() && open_flags.access_mode == AccessMode::Read {
+            // DIFF FILES
+            // TODO: Copy the input file to the cache for later checking.
+            // Some(CheckMechanism::DiffFiles)
+            // HASH
+            // TODO: send to the thingy
+            None
+            // MTIME
+            // let curr_metadata = metadata(&full_path).unwrap();
+            // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+        } else {
+            None
+        };
+    // let optional_checking_mech = if DONT_HASH_OR_MTIME {
+    //     None
+    // } else if syscall_outcome.is_ok()
+    //     && (open_flags.offset_mode == Some(OffsetMode::Append)
+    //         || open_flags.access_mode == AccessMode::Read)
+    // {
+    //     // DIFF FILES
+    //     // TODO: Copy the input file to the cache for later checking.
+    //     // Some(CheckMechanism::DiffFiles)
+    //     // HASH
+    //     Some(CheckMechanism::Hash(generate_hash(full_path.clone())))
+    //     // MTIME
+    //     // let curr_metadata = metadata(&full_path).unwrap();
+    //     // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+    // } else {
+    //     None
+    // };
 
     // This option only generates a hash if the input file is going to be written to.
     // let optional_checking_mech =

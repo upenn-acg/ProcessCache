@@ -202,7 +202,9 @@ pub enum Fact {
     // (Old full path, new full path)
     Renamed(PathBuf, PathBuf),
     // Hash of contents of cached input file and current input file match.
-    InputFileHashesMatch(Vec<u8>),
+    // It is an option because if it is a read only file we will delay
+    // generating the hash (moving it off the critical path).
+    InputFileHashesMatch(Option<Vec<u8>>),
     // The statfs struct returned for the current file system matches
     // the cached statfs struct for this resource.
     StatFsStructMatches(MyStatFs),
