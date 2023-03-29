@@ -28,12 +28,13 @@ use crate::{
 // Because the input checking mechanism isn't necessarily
 // hashing.
 const DONT_HASH_OR_MTIME: bool = true;
-// Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = false;
 
 // Our background threads use this function to wait for (source, dest) file path pairs
 // to be sent to them, so that they may copy the output files to the cache.
-pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, PathBuf)>) {
+pub fn background_thread_copying_outputs(
+    recv_end: Receiver<(LinkType, PathBuf, PathBuf)>,
+    no_stdout: bool,
+) {
     while let Ok((link_type, source, dest)) = recv_end.recv() {
         if link_type == LinkType::Copy {
             // fs::copy(source.clone(), dest).unwrap();
@@ -45,7 +46,7 @@ pub fn background_thread_copying_outputs(recv_end: Receiver<(LinkType, PathBuf, 
                 ),
             }
 
-            if !NO_STDOUT {
+            if !no_stdout {
                 let source_str = source.clone().into_os_string().into_string().unwrap();
                 // The thread removes the old stdout files once they have been moved to the cache.
                 // We don't want to do this if we are hardlinking the child's stdout file from

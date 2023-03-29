@@ -17,9 +17,6 @@ use std::{
     rc::Rc,
 };
 
-// Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = false;
-
 pub type ChildExecutions = Vec<RcExecution>;
 
 #[derive(Clone, Eq, PartialEq, PartialOrd, Ord)]
@@ -723,6 +720,7 @@ pub fn copy_output_files_to_cache(
 pub fn generate_list_of_files_to_copy_to_cache(
     curr_execution: &RcExecution,
     file_postconditions: HashMap<Accessor, HashSet<Fact>>,
+    no_stdout: bool,
 ) -> Vec<(LinkType, PathBuf, PathBuf)> {
     let mut list_of_files: Vec<(LinkType, PathBuf, PathBuf)> = Vec::new();
 
@@ -774,7 +772,7 @@ pub fn generate_list_of_files_to_copy_to_cache(
         }
     }
 
-    if !NO_STDOUT {
+    if !no_stdout {
         // The current proc's stdout file.
         let stdout_file_name = format!("stdout_{:?}", curr_execution.pid().as_raw());
         let stdout_file_path = curr_execution.starting_cwd().join(stdout_file_name.clone());

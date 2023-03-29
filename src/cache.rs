@@ -21,8 +21,6 @@ use std::{
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
 
-// Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = false;
 // TODO:
 // pub type CacheMap = HashMap<Command, Vec<RcCachedExec>>;
 pub type CacheMap = HashMap<ExecCommand, RcCachedExec>;
@@ -86,7 +84,7 @@ impl CachedExecution {
 
     // Apply all file and dir transitions.
     // We use this function for synchrnous output file copying.
-    fn apply_all_transitions(&self) {
+    fn apply_all_transitions(&self, no_stdout: bool) {
         if !self.is_ignored {
             let postconditions = self.postconditions();
 
@@ -96,7 +94,7 @@ impl CachedExecution {
             debug!("cache_subdir: {:?}", cache_subdir);
             let dir = read_dir(cache_subdir.clone()).unwrap();
 
-            if !NO_STDOUT {
+            if !no_stdout {
                 // Parent has all the stdouts of the whole tree below it.
                 // Get vec of all files that contain "stdout" in their file name
                 let mut vec_of_stdout_files = Vec::new();
@@ -366,8 +364,8 @@ impl RcCachedExec {
         self.0.apply_all_dir_transitions()
     }
 
-    pub fn apply_all_transitions(&self) {
-        self.0.apply_all_transitions()
+    pub fn apply_all_transitions(&self, no_stdout: bool) {
+        self.0.apply_all_transitions(no_stdout)
     }
 
     pub fn check_all_preconditions(&self, pid: Pid) -> bool {

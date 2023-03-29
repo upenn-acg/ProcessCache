@@ -120,7 +120,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         // Here is where we can modify the number of background threads.
         for _ in 0..5 {
             let r2 = caching_receiver.clone();
-            let handle = thread::spawn(move || background_thread_copying_outputs(r2));
+            let handle = thread::spawn(move || background_thread_copying_outputs(r2, NO_STDOUT));
             handle_vec.push(handle);
         }
         Some(handle_vec)
@@ -499,7 +499,7 @@ pub async fn trace_process(
                                                     }
                                                 } else {
                                                     // Normal serving, single threaded.
-                                                    entry.apply_all_transitions();
+                                                    entry.apply_all_transitions(NO_STDOUT);
                                                 }
 
                                                 let regs =
@@ -979,6 +979,7 @@ pub async fn trace_process(
                         let file_pairs = generate_list_of_files_to_copy_to_cache(
                             &curr_execution,
                             file_postconditions,
+                            NO_STDOUT,
                         );
 
                         // Send each pair across the channel.
