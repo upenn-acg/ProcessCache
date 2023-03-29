@@ -19,6 +19,7 @@ use std::{
 
 use crate::{
     async_runtime::AsyncRuntime,
+    background_threads::background_thread_read_only_hashing,
     cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
     computed_hashes::RcComputedHashes,
     condition_generator::{Accessor, ExecSyscallEvents},
@@ -114,7 +115,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     let (serving_file_sender, serving_file_receiver) = unbounded();
 
     // This is optional because the user may opt to not use
-    // background threads.
+    // background caching threads.
     let option_handle_vec = if BACKGROUND_THREADS {
         let mut handle_vec = Vec::new();
         // Here is where we can modify the number of background threads.
@@ -134,6 +135,8 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         None
     };
 
+    // This is optional because the user may opt to not use
+    // background serving threads.
     let (option_stdout_vec, option_file_serving_vec) = if BACKGROUND_SERVING_THREADS {
         let mut stdout_handle_vec = Vec::new();
         let mut file_handle_vec = Vec::new();
@@ -159,6 +162,21 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         (None, None)
     };
 
+    // TODO: We could do this for executables too... idk if it would actually
+    // help any of the benchmarks. Maybe builds? If the different jobs are
+    // using executables? I think pash is all calling bash, and the bioinfo all
+    // call their respective /bin/hmmer or whatever executable.
+
+    // Initialize the read only file channel.
+    let (read_only_sender, read_only_receiver) = unbounded();
+    let mut read_only_handle_vec = Vec::new();
+    // Set up background thread pool for offline READ ONLY file hashing.
+    for _ in 0..5 {
+        let r2 = read_only_receiver.clone();
+        let handle = thread::spawn(move || background_thread_read_only_hashing(r2));
+        read_only_handle_vec.push(handle);
+    }
+
     // Instantiate the ComputedHashes map at the beginning before the execution starts.
     let computed_hashes = RcComputedHashes::new();
 
@@ -175,6 +193,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         option_caching_sender.clone(),
         computed_hashes,
         option_file_sender.clone(),
+        read_only_sender.clone(),
         option_stdout_sender.clone(),
         total_intercepted_syscall_count.clone(),
         total_syscall_event_count.clone(),
@@ -269,6 +288,7 @@ pub async fn trace_process(
     caching_send_end: Option<Sender<(LinkType, PathBuf, PathBuf)>>,
     computed_hashes: RcComputedHashes,
     file_send_end: Option<Sender<(Accessor, PathBuf, HashSet<Fact>)>>,
+    read_only_send_end: Sender<PathBuf>,
     stdout_send_end: Option<Sender<PathBuf>>,
     total_intercepted_syscall_count: Rc<RefCell<u64>>,
     total_syscall_event_count: Rc<RefCell<u64>>,
@@ -845,6 +865,7 @@ pub async fn trace_process(
                     caching_send_end.clone(),
                     computed_hashes.clone(),
                     file_send_end.clone(),
+                    read_only_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),
                     total_syscall_event_count.clone(),
@@ -871,6 +892,7 @@ pub async fn trace_process(
                     caching_send_end.clone(),
                     computed_hashes.clone(),
                     file_send_end.clone(),
+                    read_only_send_end.clone(),
                     stdout_send_end.clone(),
                     total_intercepted_syscall_count.clone(),
                     total_syscall_event_count.clone(),

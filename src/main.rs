@@ -10,6 +10,7 @@ use cache_utils::ExecCommand;
 use tracing_subscriber::filter::EnvFilter;
 
 mod async_runtime;
+mod background_threads;
 mod cache;
 mod cache_benchmarking;
 mod cache_utils;
