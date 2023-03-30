@@ -102,7 +102,7 @@ pub enum Stat {
 pub enum CheckMechanism {
     DiffFiles,
     Mtime(i64),
-    Hash(Vec<u8>),
+    Hash(Option<Vec<u8>>),
 }
 
 // Nicer enum to use than c_int's or whatever it is at the OS level.

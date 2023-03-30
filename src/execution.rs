@@ -603,9 +603,9 @@ pub async fn trace_process(
                                         // HASHING
                                         // Here we only generate the hash of the executable if we have
                                         // never seen this executable before in this execution.
-                                        let exec_check = CheckMechanism::Hash(
+                                        let exec_check = CheckMechanism::Hash(Some(
                                             computed_hashes.get_computed_hash(exec_path_buf),
-                                        );
+                                        ));
                                         // This option always hashes the executable.
                                         // let exec_check = CheckMechanism::Hash(generate_hash(
                                         //     exec_path_buf.clone(),

@@ -35,10 +35,6 @@ use crate::{
     syscalls::{AccessMode, CheckMechanism, MyStat, OffsetMode, SyscallFailure, SyscallOutcome},
 };
 
-// For benchmarking purposes. Flag to turn off file hashing.
-// Helped us realize how much time hashing was taking up!
-const DONT_HASH_FILES: bool = false;
-
 // Who done the accessin'?
 // This enum helps us keep track of who actually did the resource
 // access when we combine fact sets from children and parent.
@@ -1293,11 +1289,6 @@ pub fn generate_file_preconditions(
                                         curr_set.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
-                                        let hash = if DONT_HASH_FILES {
-                                            Vec::new()
-                                        } else {
-                                            hash
-                                        };
                                         curr_set.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
@@ -1336,11 +1327,6 @@ pub fn generate_file_preconditions(
                                         curr_set.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
-                                        let hash = if DONT_HASH_FILES {
-                                            Vec::new()
-                                        } else {
-                                            hash
-                                        };
                                         curr_set.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
@@ -1422,11 +1408,6 @@ pub fn generate_file_preconditions(
                                                 curr_set_mut.insert(Fact::InputFileDiffsMatch);
                                             }
                                             CheckMechanism::Hash(hash) => {
-                                                let hash = if DONT_HASH_FILES {
-                                                    Vec::new()
-                                                } else {
-                                                    hash
-                                                };
                                                 curr_set_mut.insert(Fact::InputFileHashesMatch(hash));
                                             }
                                             CheckMechanism::Mtime(mtime) => {
@@ -1518,11 +1499,6 @@ pub fn generate_file_preconditions(
                                         curr_set_mut.insert(Fact::InputFileDiffsMatch);
                                     }
                                     CheckMechanism::Hash(hash) => {
-                                        let hash = if DONT_HASH_FILES {
-                                            Vec::new()
-                                        } else {
-                                            hash
-                                        };
                                         curr_set_mut.insert(Fact::InputFileHashesMatch(hash));
                                     }
                                     CheckMechanism::Mtime(mtime) => {
