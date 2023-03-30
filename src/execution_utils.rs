@@ -23,12 +23,6 @@ use crate::{
     Ptracer,
 };
 
-// This used to be "don't hash files" but I think what
-// we want is for it to be "don't hash or mtime".
-// Because the input checking mechanism isn't necessarily
-// hashing.
-const DONT_HASH_OR_MTIME: bool = true;
-
 // Our background threads use this function to wait for (source, dest) file path pairs
 // to be sent to them, so that they may copy the output files to the cache.
 pub fn background_thread_copying_outputs(
@@ -101,9 +95,7 @@ pub fn generate_open_syscall_file_event(
     // - HASHING
     // - MTIME
     // - COPYING FILES
-    let optional_checking_mech = if DONT_HASH_OR_MTIME {
-        None
-    } else if syscall_outcome.is_ok()
+    let optional_checking_mech = if syscall_outcome.is_ok()
         && (open_flags.offset_mode == Some(OffsetMode::Append)
             || open_flags.access_mode == AccessMode::Read)
     {
