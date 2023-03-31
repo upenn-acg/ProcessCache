@@ -249,9 +249,13 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         // TODO: Update the cache map. For each entry, go through its preconditions,
         // look for Fact::InputFileHashesMatch(None). Fill these in.
         // Must be done before serializing the cache map to disk.
+        // Cache map: HashMap<ExecCommand, RcCachedExec>
+        for (_, cached_exec) in cache_map.clone() {
+            cached_exec.add_read_only_input_file_hashes();
+        }
 
         // Here we serialize the cache map data structure to a file in the cache (/cache/cache).
-        serialize_execs_to_cache(cache_map.clone());
+        serialize_execs_to_cache(cache_map);
     }
 
     // Clean up the background threads (for copying outputs to the cache and
