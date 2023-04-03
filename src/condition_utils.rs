@@ -405,6 +405,39 @@ impl FirstState {
     }
 }
 
+// Takes in current file preconditions and fills in
+// the hashes of read only input files where the fact is
+// Fact::InputFileHashesMatch(None) and returns updated
+// file preconditions.
+pub fn add_read_only_input_file_hashes(
+    curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>>,
+    aggregated_hashes: HashMap<PathBuf, Vec<u8>>,
+) -> HashMap<PathBuf, HashSet<Fact>> {
+    let mut updated_file_preconditions = HashMap::new();
+    // Case 1: It's not InputFileHashesMatch(None), and we just add it to the new
+    // set.
+    // Case 2: It IS InputFileHashesMatch(None) and we get the hash and put
+    // Fact::InputFileHashesMatch(Some(offline_hash)).
+
+    for (full_path, fact_set) in curr_file_preconditions {
+        let mut new_fact_set = HashSet::new();
+        for fact in fact_set {
+            if fact == Fact::InputFileHashesMatch(None) {
+                if let Some(offline_hash) = aggregated_hashes.get(&full_path) {
+                    new_fact_set.insert(Fact::InputFileHashesMatch(Some(offline_hash.clone())));
+                } else {
+                    panic!("No offline hash calculated for: {:?}", full_path)
+                }
+            } else {
+                new_fact_set.insert(fact);
+            }
+        }
+        updated_file_preconditions.insert(full_path, new_fact_set);
+    }
+
+    updated_file_preconditions
+}
+
 // Helper function that returns true if the directory
 // was indeed created by this exec.
 pub fn dir_created_by_exec(

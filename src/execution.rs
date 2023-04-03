@@ -206,8 +206,20 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // So we don't want to calculate additional metrics or populate
     // the cache map and serialize it to the disk.
     if !(first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
+        // Join on the read only hasher threads, combining their maps into
+        // one big one.
+        // TODO: Move this into its own function in another file.
+        let mut aggregated_hashes = HashMap::new();
+        for handle in read_only_handle_vec {
+            let map = handle.join();
+            let map = map.unwrap();
+            for (full_path, hash) in map {
+                aggregated_hashes.entry(full_path).or_insert(hash);
+            }
+        }
+
         let mut cache_map = HashMap::new();
-        first_execution.populate_cache_map(&mut cache_map);
+        first_execution.populate_cache_map(aggregated_hashes, &mut cache_map);
         // ADDITIONAL METRICS: The total number of exec units for this execution
         // is the number of keys in this map!
         if ADDITIONAL_METRICS {
@@ -232,26 +244,6 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
                 println!("TOTAL PRECONDITIONS: {:?}", total_preconditions);
                 println!("TOTAL POSTCONDITIONS: {:?}", total_postconditions);
             }
-        }
-
-        // Join on the read only hasher threads, combining their maps into
-        // one big one.
-        // TODO: Move this into its own function in another file.
-        let mut aggregated_map = HashMap::new();
-        for handle in read_only_handle_vec {
-            let map = handle.join();
-            let map = map.unwrap();
-            for (full_path, hash) in map {
-                aggregated_map.entry(full_path).or_insert(hash);
-            }
-        }
-
-        // TODO: Update the cache map. For each entry, go through its preconditions,
-        // look for Fact::InputFileHashesMatch(None). Fill these in.
-        // Must be done before serializing the cache map to disk.
-        // Cache map: HashMap<ExecCommand, RcCachedExec>
-        for (_, cached_exec) in cache_map.clone() {
-            cached_exec.add_read_only_input_file_hashes();
         }
 
         // Here we serialize the cache map data structure to a file in the cache (/cache/cache).
@@ -997,6 +989,7 @@ pub async fn trace_process(
                     }
                     ExecSyscallEvents::new(new_dir_events, new_file_events)
                 };
+                // HERE!!! ADD READ ONLY INPUT FILE HASHES.
 
                 // ADDITIONAL METRICS: Here is where we can count total number of syscalls in this whole
                 // big execution.

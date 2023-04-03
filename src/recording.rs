@@ -228,7 +228,11 @@ impl Execution {
     }
     // This function recursively updates the cache map we are creating from
     // this execution we just traced.
-    fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
+    fn generate_cached_exec(
+        &self,
+        aggregated_hashes: HashMap<PathBuf, Vec<u8>>,
+        cache_map: &mut HashMap<ExecCommand, RcCachedExec>,
+    ) {
         let command_key = ExecCommand(self.executable(), self.args());
 
         let children = self.child_execs.clone();
@@ -253,12 +257,13 @@ impl Execution {
 
         for child in children {
             // Recursively add the generated cached execs of the children.
-            child.generate_cached_exec(cache_map);
+            child.generate_cached_exec(aggregated_hashes.clone(), cache_map);
         }
 
         if !self.is_ignored {
             // Generate the preconditions.
-            let preconditions = generate_preconditions(self.syscall_events.clone());
+            let preconditions =
+                generate_preconditions(aggregated_hashes, self.syscall_events.clone());
             new_cached_exec.add_preconditions(preconditions);
         }
 
@@ -291,8 +296,12 @@ impl Execution {
         }
     }
 
-    pub fn populate_cache_map(&self, cache_map: &mut CacheMap) {
-        self.generate_cached_exec(cache_map);
+    pub fn populate_cache_map(
+        &self,
+        aggregated_hashes: HashMap<PathBuf, Vec<u8>>,
+        cache_map: &mut CacheMap,
+    ) {
+        self.generate_cached_exec(aggregated_hashes, cache_map);
     }
 
     fn postconditions(&self) -> Option<Postconditions> {
@@ -433,8 +442,14 @@ impl RcExecution {
         self.0.borrow().executable()
     }
 
-    pub fn generate_cached_exec(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
-        self.0.borrow().generate_cached_exec(cache_map)
+    pub fn generate_cached_exec(
+        &self,
+        aggregated_hashes: HashMap<PathBuf, Vec<u8>>,
+        cache_map: &mut HashMap<ExecCommand, RcCachedExec>,
+    ) {
+        self.0
+            .borrow()
+            .generate_cached_exec(aggregated_hashes, cache_map)
     }
 
     pub fn get_stdout_duped_fd(&self, pid: Pid) -> Option<i32> {
@@ -458,8 +473,14 @@ impl RcExecution {
         self.0.borrow().pid()
     }
 
-    pub fn populate_cache_map(&self, cache_map: &mut HashMap<ExecCommand, RcCachedExec>) {
-        self.0.borrow().populate_cache_map(cache_map)
+    pub fn populate_cache_map(
+        &self,
+        aggregated_hashes: HashMap<PathBuf, Vec<u8>>,
+        cache_map: &mut HashMap<ExecCommand, RcCachedExec>,
+    ) {
+        self.0
+            .borrow()
+            .populate_cache_map(aggregated_hashes, cache_map)
     }
 
     pub fn remove_stdout_duped_fd(&self, pid: Pid) {

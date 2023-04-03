@@ -360,10 +360,6 @@ impl RcCachedExec {
         self.0.command()
     }
 
-    pub fn add_read_only_input_file_hashes(&self) {
-        todo!();
-    }
-
     pub fn apply_all_dir_transitions(&self) {
         self.0.apply_all_dir_transitions()
     }
