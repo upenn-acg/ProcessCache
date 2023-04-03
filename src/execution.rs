@@ -25,8 +25,8 @@ use crate::{
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
     execution_utils::{
-        background_thread_copying_outputs, get_total_syscall_event_count_for_root,
-        getdents_file_type,
+        background_thread_copying_outputs, check_cache_map_for_missing_input_file_hashes,
+        get_total_syscall_event_count_for_root, getdents_file_type,
     },
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
@@ -209,6 +209,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
         // Join on the read only hasher threads, combining their maps into
         // one big one.
         // TODO: Move this into its own function in another file.
+        drop(read_only_sender);
         let mut aggregated_hashes = HashMap::new();
         for handle in read_only_handle_vec {
             let map = handle.join();
@@ -220,6 +221,10 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
 
         let mut cache_map = HashMap::new();
         first_execution.populate_cache_map(aggregated_hashes, &mut cache_map);
+
+        // Test to ensure all the hashes have been filled in.
+        // check_cache_map_for_missing_input_file_hashes(cache_map.clone());
+
         // ADDITIONAL METRICS: The total number of exec units for this execution
         // is the number of keys in this map!
         if ADDITIONAL_METRICS {

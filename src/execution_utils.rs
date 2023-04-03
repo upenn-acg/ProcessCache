@@ -1,6 +1,6 @@
 use crossbeam::channel::{Receiver, Sender};
 
-use std::{fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use anyhow::Context;
 use libc::{c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK};
@@ -12,6 +12,7 @@ use nix::{
 use tracing::debug;
 
 use crate::{
+    cache::RcCachedExec,
     cache_utils::{generate_hash, hash_command, ExecCommand},
     condition_generator::ExecSyscallEvents,
     context,
@@ -59,6 +60,14 @@ pub fn background_thread_copying_outputs(
                 ),
             }
         }
+    }
+}
+
+pub fn check_cache_map_for_missing_input_file_hashes(
+    cache_map: HashMap<ExecCommand, RcCachedExec>,
+) {
+    for (_, cached_exec) in cache_map {
+        cached_exec.check_cached_exec_for_missing_input_file_hashes()
     }
 }
 
