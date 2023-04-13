@@ -85,6 +85,7 @@ pub fn generate_open_syscall_file_event(
     open_flags: OpenFlags,
     read_only_send_end: Sender<PathBuf>,
     syscall_outcome: Result<i32, i32>,
+    fact_gen_only: bool,
 ) -> Option<FileEvent> {
     if open_flags.excl_flag && !open_flags.creat_flag {
         panic!("Do not support for now. Also excl_flag but not creat_flag, baby what is you doin?");
@@ -112,7 +113,12 @@ pub fn generate_open_syscall_file_event(
             // TODO: Copy the input file to the cache for later checking.
             // Some(CheckMechanism::DiffFiles)
             // HASH
-            Some(CheckMechanism::Hash(Some(generate_hash(full_path.clone()))))
+            let hash = if !fact_gen_only {
+                generate_hash(full_path.clone())
+            } else {
+                Vec::new()
+            };
+            Some(CheckMechanism::Hash(Some(hash)))
             // MTIME
             // let curr_metadata = metadata(&full_path).unwrap();
             // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
@@ -121,7 +127,9 @@ pub fn generate_open_syscall_file_event(
             // TODO: Copy the input file to the cache for later checking.
             // Some(CheckMechanism::DiffFiles)
             // HASH
-            read_only_send_end.send(full_path.clone()).unwrap();
+            if !fact_gen_only {
+                read_only_send_end.send(full_path.clone()).unwrap();
+            }
             Some(CheckMechanism::Hash(None))
             // MTIME
             // let curr_metadata = metadata(&full_path).unwrap();

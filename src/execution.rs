@@ -86,7 +86,11 @@ const NO_STDOUT: bool = false;
 const PTRACE_ONLY: bool = false;
 // Run P$ with only ptrace system call interception and fact generation.
 const FACT_GEN: bool = false;
-
+// Does fact gen and input and exec hashing. Does not copy outputs or
+// generation pre/postconditions.
+const FG_AND_HASHING: bool = false;
+// Does everything but copy the outputs to the cache.
+const DONT_COPY_OUTPUTS: bool = false;
 pub fn trace_program(first_proc: Pid) -> Result<()> {
     info!("Running whole program");
 
@@ -102,7 +106,7 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     let first_execution = RcExecution::new(Execution::new(Proc(first_proc)));
     first_execution.set_to_root();
 
-    if !(PTRACE_ONLY || FACT_GEN) {
+    if !(PTRACE_ONLY || FACT_GEN || FG_AND_HASHING) {
         // Create the cache subdir for this execution.
         create_dir_all(&cache_dir)
             .with_context(|| context!("Failed to create cache dir: {:?}", cache_dir))?;
@@ -205,11 +209,12 @@ pub fn trace_program(first_proc: Pid) -> Result<()> {
     // If this is an empty root exec, we are probably skipping the exec.
     // So we don't want to calculate additional metrics or populate
     // the cache map and serialize it to the disk.
-    if !(first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN) {
+    drop(read_only_sender);
+    if !(first_execution.is_empty_root_exec() || PTRACE_ONLY || FACT_GEN || FG_AND_HASHING) {
         // Join on the read only hasher threads, combining their maps into
         // one big one.
         // TODO: Move this into its own function in another file.
-        drop(read_only_sender);
+        // drop(read_only_sender);
         let mut aggregated_hashes = HashMap::new();
         for handle in read_only_handle_vec {
             let map = handle.join();
@@ -315,7 +320,6 @@ pub async fn trace_process(
     s.in_scope(|| info!("Starting Process"));
     let mut signal = None;
     let mut iostream_redirected = false;
-    let caching_off = false;
     let mut skip_execution = false;
     let mut pls_close_stdout_fd = false;
     let mut stdout_fd_has_been_closed = false;
@@ -407,375 +411,351 @@ pub async fn trace_process(
                     // bother handling it, let the main loop take care of it.
                     // TODO: Handle them properly...
 
-                    if !caching_off {
-                        match name {
-                            // "close" | "connect" | "pipe" | "pipe2" | "socket" => (),
-                            "creat" | "open" | "openat" => {
-                                // Get the full path and check if the file exists.
-                                let full_path = get_full_path(&curr_execution, name, &tracer)?;
-                                file_existed_at_start = full_path.exists();
-                            }
-                            "execve" => {
-                                let regs = tracer.get_registers().with_context(|| {
-                                    context!("Failed to get regs in exec event")
-                                })?;
-                                let arg = regs.arg1();
-                                let executable = tracer.read_c_string(arg)?;
+                    match name {
+                        // "close" | "connect" | "pipe" | "pipe2" | "socket" => (),
+                        "creat" | "open" | "openat" => {
+                            // Get the full path and check if the file exists.
+                            let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                            file_existed_at_start = full_path.exists();
+                        }
+                        "execve" => {
+                            let regs = tracer
+                                .get_registers()
+                                .with_context(|| context!("Failed to get regs in exec event"))?;
+                            let arg = regs.arg1();
+                            let executable = tracer.read_c_string(arg)?;
 
-                                let args = tracer
-                                    .read_c_string_array(regs.arg2())
-                                    .with_context(|| context!("Reading arguments to execve"))?;
-                                let envp = tracer.read_c_string_array(regs.arg3())?;
+                            let args = tracer
+                                .read_c_string_array(regs.arg2())
+                                .with_context(|| context!("Reading arguments to execve"))?;
+                            let envp = tracer.read_c_string_array(regs.arg3())?;
 
-                                let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
-                                let cwd_path = readlink(cwd_link.as_str())
-                                    .with_context(|| context!("Failed to readlink (cwd)"))?;
-                                let cwd = cwd_path.to_str().unwrap().to_owned();
-                                // Get the starting cwd for the process.
-                                let starting_cwd = PathBuf::from(cwd);
-                                debug!("Starting cwd: {:?}", starting_cwd);
+                            let cwd_link = format!("/proc/{}/cwd", tracer.curr_proc);
+                            let cwd_path = readlink(cwd_link.as_str())
+                                .with_context(|| context!("Failed to readlink (cwd)"))?;
+                            let cwd = cwd_path.to_str().unwrap().to_owned();
+                            // Get the starting cwd for the process.
+                            let starting_cwd = PathBuf::from(cwd);
+                            debug!("Starting cwd: {:?}", starting_cwd);
 
-                                // Create the full path to the executable.
-                                let exec_path_buf = PathBuf::from(executable.clone());
-                                debug!("Raw executable: {:?}", exec_path_buf);
-                                debug!("args: {:?}", args);
-                                let exec_path_buf = if exec_path_buf.is_relative() {
-                                    canonicalize(exec_path_buf).unwrap()
-                                } else {
-                                    exec_path_buf
-                                };
-                                debug!("Execve event, executable: {:?}", exec_path_buf);
+                            // Create the full path to the executable.
+                            let exec_path_buf = PathBuf::from(executable.clone());
+                            debug!("Raw executable: {:?}", exec_path_buf);
+                            debug!("args: {:?}", args);
+                            let exec_path_buf = if exec_path_buf.is_relative() {
+                                canonicalize(exec_path_buf).unwrap()
+                            } else {
+                                exec_path_buf
+                            };
+                            debug!("Execve event, executable: {:?}", exec_path_buf);
 
-                                // Create this execution's unique ExecCommand struct.
-                                let command = ExecCommand(
-                                    exec_path_buf
-                                        .clone()
-                                        .into_os_string()
-                                        .into_string()
-                                        .unwrap(),
-                                    args.clone(),
-                                );
-                                // Hash this struct. We use this hash as the name of the exec's subdir
-                                // in the cache.
-                                let hashed_command = hash_command(command.clone());
-                                debug!(
-                                    "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
-                                    command, hashed_command
-                                );
+                            // Create this execution's unique ExecCommand struct.
+                            let command = ExecCommand(
+                                exec_path_buf
+                                    .clone()
+                                    .into_os_string()
+                                    .into_string()
+                                    .unwrap(),
+                                args.clone(),
+                            );
+                            // Hash this struct. We use this hash as the name of the exec's subdir
+                            // in the cache.
+                            let hashed_command = hash_command(command.clone());
+                            debug!(
+                                "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
+                                command, hashed_command
+                            );
 
-                                // If this flag is on, it means we want ptrace interception
-                                // and fact generation, but that's it. No checking the cache.
-                                if !FACT_GEN {
-                                    // Check the cache for the thing
-                                    if let Some(cache) = retrieve_existing_cache() {
-                                        let command = ExecCommand(
-                                            exec_path_buf
-                                                .clone()
-                                                .into_os_string()
-                                                .into_string()
-                                                .unwrap(),
-                                            args.clone(),
-                                        );
-                                        // Do we have this entry in the cache already?
-                                        if let Some(entry) = cache.get(&command) {
-                                            debug!(
-                                                "Checking all preconditions: execution is: {:?}",
-                                                command
-                                            );
-                                            // We check all the preconditions here.
-                                            if entry.check_all_preconditions(tracer.curr_proc) {
-                                                // Check if we should skip this execution.
-                                                // If we are gonna skip, we have to change:
-                                                // rax, orig_rax, arg1
-                                                skip_execution = true;
-                                                debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
-
-                                                if BACKGROUND_SERVING_THREADS {
-                                                    // Parallel serving.
-                                                    // First apply dir transitions.
-                                                    entry.apply_all_dir_transitions();
-
-                                                    // Next send stdout files (paths) to threads to print.
-                                                    let stdout_file_vec = entry.list_stdout_files();
-                                                    if let Some(stdout_sender) =
-                                                        stdout_send_end.clone()
-                                                    {
-                                                        for stdout_file in stdout_file_vec {
-                                                            stdout_sender
-                                                                .send(stdout_file)
-                                                                .unwrap();
-                                                        }
-                                                    }
-
-                                                    // Then send output files (paths) to threads to serve.
-                                                    let posts = entry.postconditions();
-
-                                                    if let Some(file_sender) = file_send_end.clone()
-                                                    {
-                                                        if let Some(postconditions) = posts {
-                                                            let file_postconditions =
-                                                                postconditions
-                                                                    .file_postconditions();
-                                                            let cache_subdir =
-                                                                PathBuf::from("./cache/");
-                                                            let comm_hash =
-                                                                hash_command(entry.command());
-                                                            let parent_cache_subdir = cache_subdir
-                                                                .join(comm_hash.to_string());
-                                                            for (accessor, fact_set) in
-                                                                file_postconditions
-                                                            {
-                                                                file_sender
-                                                                    .send((
-                                                                        accessor,
-                                                                        parent_cache_subdir.clone(),
-                                                                        fact_set,
-                                                                    ))
-                                                                    .unwrap();
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    // Normal serving, single threaded.
-                                                    entry.apply_all_transitions(NO_STDOUT);
-                                                }
-
-                                                let regs =
-                                                    tracer.get_registers().with_context(|| {
-                                                        context!(
-                                                            "Failed to get regs in skip exec event"
-                                                        )
-                                                    })?;
-                                                let mut regs = regs.make_modified();
-                                                let exit_syscall_num = libc::SYS_exit as u64;
-
-                                                // Change the arg1 to correct exit code.
-                                                regs.write_arg1(0);
-                                                // Change the orig rax val (Omar told me to, thus it is so.)
-                                                regs.write_syscall_number(exit_syscall_num);
-                                                // Change the rax val.
-                                                regs.write_rax(exit_syscall_num);
-                                                // Actually *set* those registers.
-                                                tracer.set_regs(&mut regs)?;
-                                                // Go to the next iteration of the loop so the process can exit.
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let next_event =
-                                    tracer.get_next_syscall().await.with_context(|| {
-                                        context!("Unable to get posthook after execve prehook.")
-                                    })?;
-
-                                // // MTIME
-                                // debug!("EXEC PATH BUF: {:?}", exec_path_buf);
-                                // let curr_metadata = metadata(&exec_path_buf).unwrap();
-                                // let exec_check = CheckMechanism::Mtime(curr_metadata.st_mtime());
-                                // // HASHING
-                                // // let exec_check =
-                                // //     CheckMechanism::Hash(generate_hash(exec_path_buf.clone()));
-                                // let new_exec_metadata = ExecMetadata::new(
-                                //     Proc(tracer.curr_proc),
-                                //     starting_cwd,
-                                //     args,
-                                //     envp,
-                                //     exec_path_buf_string,
-                                //     exec_check,
-                                // );
-                                match next_event {
-                                    TraceEvent::Exec(_) => {
-                                        // The execve succeeded!
-                                        s.in_scope(|| {
-                                            debug!("Execve succeeded!");
-                                        });
-
-                                        let exec_path_buf_string = exec_path_buf
+                            // If this flag is on, it means we want ptrace interception
+                            // and fact generation, but that's it. No checking the cache.
+                            if !FACT_GEN {
+                                // Check the cache for the thing
+                                if let Some(cache) = retrieve_existing_cache() {
+                                    let command = ExecCommand(
+                                        exec_path_buf
                                             .clone()
                                             .into_os_string()
                                             .into_string()
-                                            .unwrap();
-                                        // MTIME
-                                        debug!("EXEC PATH BUF: {:?}", exec_path_buf);
-                                        // let curr_metadata = metadata(&exec_path_buf).unwrap();
-                                        // let exec_check =
-                                        //     CheckMechanism::Mtime(curr_metadata.st_mtime());
-                                        // HASHING
-                                        // Here we only generate the hash of the executable if we have
-                                        // never seen this executable before in this execution.
-                                        let exec_check = CheckMechanism::Hash(Some(
-                                            computed_hashes.get_computed_hash(exec_path_buf),
-                                        ));
-                                        // This option always hashes the executable.
-                                        // let exec_check = CheckMechanism::Hash(generate_hash(
-                                        //     exec_path_buf.clone(),
-                                        // ));
-                                        // This does no check at all.
-                                        // let exec_check = CheckMechanism::Hash(Vec::new());
-                                        let new_exec_metadata = ExecMetadata::new(
-                                            Proc(tracer.curr_proc),
-                                            starting_cwd,
-                                            args,
-                                            envp,
-                                            exec_path_buf_string,
-                                            exec_check,
+                                            .unwrap(),
+                                        args.clone(),
+                                    );
+                                    // Do we have this entry in the cache already?
+                                    if let Some(entry) = cache.get(&command) {
+                                        debug!(
+                                            "Checking all preconditions: execution is: {:?}",
+                                            command
                                         );
+                                        // We check all the preconditions here.
+                                        if entry.check_all_preconditions(tracer.curr_proc) {
+                                            // Check if we should skip this execution.
+                                            // If we are gonna skip, we have to change:
+                                            // rax, orig_rax, arg1
+                                            skip_execution = true;
+                                            debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
 
-                                        if curr_execution.is_empty_root_exec() {
-                                            if DONT_CACHE_ROOT {
-                                                // If we know it's the root exec that hasn't exec'd,
-                                                // and we see the DONT_CACHE_ROOT flag is true, we update
-                                                // this Execution to be ignored.
-                                                println!("SETTING ROOT TO IGNORED");
-                                                curr_execution.set_to_ignored(new_exec_metadata);
+                                            if BACKGROUND_SERVING_THREADS {
+                                                // Parallel serving.
+                                                // First apply dir transitions.
+                                                entry.apply_all_dir_transitions();
+
+                                                // Next send stdout files (paths) to threads to print.
+                                                let stdout_file_vec = entry.list_stdout_files();
+                                                if let Some(stdout_sender) = stdout_send_end.clone()
+                                                {
+                                                    for stdout_file in stdout_file_vec {
+                                                        stdout_sender.send(stdout_file).unwrap();
+                                                    }
+                                                }
+
+                                                // Then send output files (paths) to threads to serve.
+                                                let posts = entry.postconditions();
+
+                                                if let Some(file_sender) = file_send_end.clone() {
+                                                    if let Some(postconditions) = posts {
+                                                        let file_postconditions =
+                                                            postconditions.file_postconditions();
+                                                        let cache_subdir =
+                                                            PathBuf::from("./cache/");
+                                                        let comm_hash =
+                                                            hash_command(entry.command());
+                                                        let parent_cache_subdir = cache_subdir
+                                                            .join(comm_hash.to_string());
+                                                        for (accessor, fact_set) in
+                                                            file_postconditions
+                                                        {
+                                                            file_sender
+                                                                .send((
+                                                                    accessor,
+                                                                    parent_cache_subdir.clone(),
+                                                                    fact_set,
+                                                                ))
+                                                                .unwrap();
+                                                        }
+                                                    }
+                                                }
                                             } else {
-                                                // Otherwise, we start caching by first updating the exec
-                                                // metadata.
-                                                curr_execution
-                                                    .update_successful_exec(new_exec_metadata);
+                                                // Normal serving, single threaded.
+                                                entry.apply_all_transitions(NO_STDOUT);
                                             }
-                                        // This is a child exec.
-                                        } else if curr_execution.pid() != tracer.curr_proc {
-                                            // Get the stdout fd from the current exec if it exists.
-                                            // let childs_stdout_fd = curr_execution
-                                            //     .get_stdout_duped_fd(tracer.curr_proc);
 
-                                            let childs_stdout_fd = if NO_STDOUT {
-                                                None
-                                            } else {
-                                                curr_execution.get_stdout_duped_fd(tracer.curr_proc)
-                                            };
+                                            let regs =
+                                                tracer.get_registers().with_context(|| {
+                                                    context!(
+                                                        "Failed to get regs in skip exec event"
+                                                    )
+                                                })?;
+                                            let mut regs = regs.make_modified();
+                                            let exit_syscall_num = libc::SYS_exit as u64;
 
-                                            // New RcExecution for the child exec.
-                                            let mut new_child_exec =
-                                                Execution::new(Proc(tracer.curr_proc));
-                                            new_child_exec
-                                                .update_successful_exec(new_exec_metadata);
-                                            let new_rc_child_exec =
-                                                RcExecution::new(new_child_exec);
-
-                                            if let Some(stdout_fd) = childs_stdout_fd {
-                                                new_rc_child_exec.add_stdout_duped_fd(
-                                                    stdout_fd,
-                                                    tracer.curr_proc,
-                                                );
-                                                curr_execution
-                                                    .remove_stdout_duped_fd(tracer.curr_proc)
-                                            }
-                                            // Add to parent's struct.
-                                            curr_execution
-                                                .add_child_execution(new_rc_child_exec.clone());
-                                            // Set curr execution to the new one.
-                                            curr_execution = new_rc_child_exec;
-                                        } else {
-                                            panic!("Process already called successful execve and is trying to do another!!");
+                                            // Change the arg1 to correct exit code.
+                                            regs.write_arg1(0);
+                                            // Change the orig rax val (Omar told me to, thus it is so.)
+                                            regs.write_syscall_number(exit_syscall_num);
+                                            // Change the rax val.
+                                            regs.write_rax(exit_syscall_num);
+                                            // Actually *set* those registers.
+                                            tracer.set_regs(&mut regs)?;
+                                            // Go to the next iteration of the loop so the process can exit.
+                                            continue;
                                         }
                                     }
-                                    TraceEvent::Posthook(_) => {
-                                        // If we get a posthook event after an Exec event, it means the exec
-                                        // failed.
-                                        s.in_scope(|| {
-                                            debug!("Execve failed!");
-                                        });
-                                        let regs = tracer.get_registers().with_context(|| {
-                                            context!("Failed to get regs in posthook")
-                                        })?;
-                                        let ret_val = regs.retval::<i32>();
-                                        let failed_exec = {
-                                            match ret_val {
-                                                -2 => FileEvent::FailedExec(
-                                                    SyscallFailure::FileDoesntExist,
-                                                ),
-                                                -13 => FileEvent::FailedExec(
-                                                    SyscallFailure::PermissionDenied,
-                                                ),
-                                                e => panic!(
-                                                    "Unexpected error returned by execve syscall!: {}",
-                                                    e
-                                                ),
-                                            }
+                                }
+                            }
+
+                            let next_event =
+                                tracer.get_next_syscall().await.with_context(|| {
+                                    context!("Unable to get posthook after execve prehook.")
+                                })?;
+
+                            match next_event {
+                                TraceEvent::Exec(_) => {
+                                    // The execve succeeded!
+                                    s.in_scope(|| {
+                                        debug!("Execve succeeded!");
+                                    });
+
+                                    let exec_path_buf_string = exec_path_buf
+                                        .clone()
+                                        .into_os_string()
+                                        .into_string()
+                                        .unwrap();
+                                    // MTIME
+                                    debug!("EXEC PATH BUF: {:?}", exec_path_buf);
+                                    // let curr_metadata = metadata(&exec_path_buf).unwrap();
+                                    // let exec_check =
+                                    //     CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                    // HASHING
+                                    // Here we only generate the hash of the executable if we have
+                                    // never seen this executable before in this execution.
+                                    // If we only want fact generation, we turn off hashing.
+                                    let exec_check = if FACT_GEN {
+                                        CheckMechanism::Hash(None)
+                                    } else {
+                                        CheckMechanism::Hash(Some(
+                                            computed_hashes.get_computed_hash(exec_path_buf),
+                                        ))
+                                    };
+                                    // This option always hashes the executable.
+                                    // let exec_check = CheckMechanism::Hash(generate_hash(
+                                    //     exec_path_buf.clone(),
+                                    // ));
+                                    // This does no check at all.
+                                    // let exec_check = CheckMechanism::Hash(Vec::new());
+                                    let new_exec_metadata = ExecMetadata::new(
+                                        Proc(tracer.curr_proc),
+                                        starting_cwd,
+                                        args,
+                                        envp,
+                                        exec_path_buf_string,
+                                        exec_check,
+                                    );
+
+                                    if curr_execution.is_empty_root_exec() {
+                                        if DONT_CACHE_ROOT {
+                                            // If we know it's the root exec that hasn't exec'd,
+                                            // and we see the DONT_CACHE_ROOT flag is true, we update
+                                            // this Execution to be ignored.
+                                            println!("SETTING ROOT TO IGNORED");
+                                            curr_execution.set_to_ignored(new_exec_metadata);
+                                        } else {
+                                            // Otherwise, we start caching by first updating the exec
+                                            // metadata.
+                                            curr_execution
+                                                .update_successful_exec(new_exec_metadata);
+                                        }
+                                    // This is a child exec.
+                                    } else if curr_execution.pid() != tracer.curr_proc {
+                                        // Get the stdout fd from the current exec if it exists.
+                                        // let childs_stdout_fd = curr_execution
+                                        //     .get_stdout_duped_fd(tracer.curr_proc);
+
+                                        let childs_stdout_fd = if NO_STDOUT {
+                                            None
+                                        } else {
+                                            curr_execution.get_stdout_duped_fd(tracer.curr_proc)
                                         };
 
-                                        // We add this as a file event in the current exec, so we know to expect this exec to fail next time.
-                                        curr_execution.add_new_file_event(
-                                            tracer.curr_proc,
-                                            failed_exec,
-                                            exec_path_buf,
-                                        );
-                                    }
-                                    e => panic!("Unexpected event after execve prehook: {:?}", e),
-                                }
-                                continue;
-                            }
-                            // Some events are special and we don't go to the posthook.
-                            // For more info, I invite you to subject yourself to the ptrace
-                            // man page :-)
-                            "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2"
-                            | "clone3" => {
-                                debug!("Special event: {}. Do not go to posthook.", name);
-                                continue;
-                            }
-                            "unlink" | "unlinkat" => {
-                                use std::os::unix::fs::MetadataExt;
-                                let full_path = get_full_path(&curr_execution, name, &tracer)?;
-                                // We get the total number of hardlinks in the unlink prehook.
-                                // We need to get this value here because it may change by the
-                                // time we get the posthook event.
-                                if full_path.exists() {
-                                    let meta = full_path.as_path().metadata().unwrap();
-                                    nlinks_before = meta.nlink();
-                                } else {
-                                    nlinks_before = 0;
-                                }
-                            }
-                            _ => {
-                                if NO_STDOUT {
-                                    iostream_redirected = true;
-                                } else if !iostream_redirected {
-                                    const STDOUT_FD: u32 = 1;
-                                    // const STDERR_FD: u32 = 2;
-                                    // TODO: Deal with PID recycling?
+                                        // New RcExecution for the child exec.
+                                        let mut new_child_exec =
+                                            Execution::new(Proc(tracer.curr_proc));
+                                        new_child_exec.update_successful_exec(new_exec_metadata);
+                                        let new_rc_child_exec = RcExecution::new(new_child_exec);
 
-                                    // We don't have to worry about creating a cache subdir for this
-                                    // exec if we are only doing ptrace or ptrace+factgen.
-                                    if !(PTRACE_ONLY || FACT_GEN) {
-                                        let exec = curr_execution.executable();
-                                        let args = curr_execution.args();
-                                        let comm_hash = hash_command(ExecCommand(exec, args));
-                                        let cache_subdir = canonicalize("./cache").unwrap();
-                                        let cache_subdir =
-                                            cache_subdir.join(format!("{:?}", comm_hash));
-                                        if !cache_subdir.exists() {
-                                            create_dir(cache_subdir.clone()).unwrap();
+                                        if let Some(stdout_fd) = childs_stdout_fd {
+                                            new_rc_child_exec
+                                                .add_stdout_duped_fd(stdout_fd, tracer.curr_proc);
+                                            curr_execution.remove_stdout_duped_fd(tracer.curr_proc)
                                         }
+                                        // Add to parent's struct.
+                                        curr_execution
+                                            .add_child_execution(new_rc_child_exec.clone());
+                                        // Set curr execution to the new one.
+                                        curr_execution = new_rc_child_exec;
+                                    } else {
+                                        panic!("Process already called successful execve and is trying to do another!!");
                                     }
-
-                                    // This is the first real system call this program is doing after exec-ing.
-                                    // We will redirect their stdout and stderr output here by writing them to files.
-                                    redirect_io_stream(
-                                        &stdout_file,
-                                        STDOUT_FD,
-                                        &mut tracer,
-                                        &curr_execution,
-                                    )
-                                    .await
-                                    .with_context(|| context!("Unable to redirect stdout."))?;
-                                    // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
-                                    //     .await
-                                    //     .with_context(|| context!("Unable to redirect stderr."))?;
-                                    // TODO: Add stderr redirection.
-
-                                    // So we know this has been done successfully.
-                                    iostream_redirected = true;
-
-                                    // Continue to let original system call run.
-                                    continue;
                                 }
+                                TraceEvent::Posthook(_) => {
+                                    // If we get a posthook event after an Exec event, it means the exec
+                                    // failed.
+                                    s.in_scope(|| {
+                                        debug!("Execve failed!");
+                                    });
+                                    let regs = tracer.get_registers().with_context(|| {
+                                        context!("Failed to get regs in posthook")
+                                    })?;
+                                    let ret_val = regs.retval::<i32>();
+                                    let failed_exec = {
+                                        match ret_val {
+                                            -2 => FileEvent::FailedExec(
+                                                SyscallFailure::FileDoesntExist,
+                                            ),
+                                            -13 => FileEvent::FailedExec(
+                                                SyscallFailure::PermissionDenied,
+                                            ),
+                                            e => panic!(
+                                                "Unexpected error returned by execve syscall!: {}",
+                                                e
+                                            ),
+                                        }
+                                    };
+
+                                    // We add this as a file event in the current exec, so we know to expect this exec to fail next time.
+                                    curr_execution.add_new_file_event(
+                                        tracer.curr_proc,
+                                        failed_exec,
+                                        exec_path_buf,
+                                    );
+                                }
+                                e => panic!("Unexpected event after execve prehook: {:?}", e),
+                            }
+                            continue;
+                        }
+                        // Some events are special and we don't go to the posthook.
+                        // For more info, I invite you to subject yourself to the ptrace
+                        // man page :-)
+                        "exit" | "exit_group" | "clone" | "vfork" | "fork" | "clone2"
+                        | "clone3" => {
+                            debug!("Special event: {}. Do not go to posthook.", name);
+                            continue;
+                        }
+                        "unlink" | "unlinkat" => {
+                            use std::os::unix::fs::MetadataExt;
+                            let full_path = get_full_path(&curr_execution, name, &tracer)?;
+                            // We get the total number of hardlinks in the unlink prehook.
+                            // We need to get this value here because it may change by the
+                            // time we get the posthook event.
+                            if full_path.exists() {
+                                let meta = full_path.as_path().metadata().unwrap();
+                                nlinks_before = meta.nlink();
+                            } else {
+                                nlinks_before = 0;
                             }
                         }
-                    } else {
-                        continue;
+                        _ => {
+                            if NO_STDOUT {
+                                iostream_redirected = true;
+                            } else if !iostream_redirected {
+                                const STDOUT_FD: u32 = 1;
+                                // const STDERR_FD: u32 = 2;
+                                // TODO: Deal with PID recycling?
+
+                                // We don't have to worry about creating a cache subdir for this
+                                // exec if we are only doing ptrace or ptrace+factgen.
+                                if !(PTRACE_ONLY || FACT_GEN || FG_AND_HASHING) {
+                                    let exec = curr_execution.executable();
+                                    let args = curr_execution.args();
+                                    let comm_hash = hash_command(ExecCommand(exec, args));
+                                    let cache_subdir = canonicalize("./cache").unwrap();
+                                    let cache_subdir =
+                                        cache_subdir.join(format!("{:?}", comm_hash));
+                                    if !cache_subdir.exists() {
+                                        create_dir(cache_subdir.clone()).unwrap();
+                                    }
+                                }
+
+                                // This is the first real system call this program is doing after exec-ing.
+                                // We will redirect their stdout and stderr output here by writing them to files.
+                                redirect_io_stream(
+                                    &stdout_file,
+                                    STDOUT_FD,
+                                    &mut tracer,
+                                    &curr_execution,
+                                )
+                                .await
+                                .with_context(|| context!("Unable to redirect stdout."))?;
+                                // redirection::redirect_io_stream(&stderr_file, STDERR_FD, &mut tracer)
+                                //     .await
+                                //     .with_context(|| context!("Unable to redirect stderr."))?;
+                                // TODO: Add stderr redirection.
+
+                                // So we know this has been done successfully.
+                                iostream_redirected = true;
+
+                                // Continue to let original system call run.
+                                continue;
+                            }
+                        }
                     }
 
                     trace!("Waiting for posthook event...");
@@ -957,7 +937,7 @@ pub async fn trace_process(
             // If the parent has no files in common with its child, then the parent
             // can just copy over the child's computed postconditions to its own
             // instead of recomputing the child's along with its own.
-            if !(skip_execution || PTRACE_ONLY || FACT_GEN) {
+            if !(skip_execution || PTRACE_ONLY || FACT_GEN || FG_AND_HASHING) {
                 // Add exit code to the exec struct, if this is the
                 // pid that exec'd the exec. execececececec.
                 if !curr_execution.is_ignored() {
@@ -1016,22 +996,24 @@ pub async fn trace_process(
                     let file_postconditions = postconditions.file_postconditions();
 
                     // Here is where we send the files to be copied to the background threads.
-                    if let Some(caching_sender) = caching_send_end {
-                        // Get the (source, dest) pairs of files to copy.
-                        let file_pairs = generate_list_of_files_to_copy_to_cache(
-                            &curr_execution,
-                            file_postconditions,
-                            NO_STDOUT,
-                        );
+                    if !DONT_COPY_OUTPUTS {
+                        if let Some(caching_sender) = caching_send_end {
+                            // Get the (source, dest) pairs of files to copy.
+                            let file_pairs = generate_list_of_files_to_copy_to_cache(
+                                &curr_execution,
+                                file_postconditions,
+                                NO_STDOUT,
+                            );
 
-                        // Send each pair across the channel.
-                        for pair in file_pairs {
-                            caching_sender.send(pair).unwrap();
+                            // Send each pair across the channel.
+                            for pair in file_pairs {
+                                caching_sender.send(pair).unwrap();
+                            }
+                        } else {
+                            // If we aren't using background threads to copy outputs, we have this function
+                            // with a single synchronous thread copying the outputs.
+                            copy_output_files_to_cache(&curr_execution, file_postconditions);
                         }
-                    } else {
-                        // If we aren't using background threads to copy outputs, we have this function
-                        // with a single synchronous thread copying the outputs.
-                        copy_output_files_to_cache(&curr_execution, file_postconditions);
                     }
                 }
             }
@@ -1332,6 +1314,7 @@ fn handle_open(
         open_flags,
         read_only_send_end,
         syscall_outcome,
+        FACT_GEN,
     );
 
     if let Some(event) = open_syscall_event {
