@@ -25,8 +25,8 @@ use crate::{
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
     execution_utils::{
-        background_thread_copying_outputs, check_cache_map_for_missing_input_file_hashes,
-        get_total_syscall_event_count_for_root, getdents_file_type,
+        background_thread_copying_outputs, get_total_syscall_event_count_for_root,
+        getdents_file_type,
     },
     recording::{append_dir_events, generate_list_of_files_to_copy_to_cache, LinkType},
     redirection::{close_stdout_duped_fd, redirect_io_stream},
@@ -558,6 +558,9 @@ pub async fn trace_process(
                                             // Go to the next iteration of the loop so the process can exit.
                                             continue;
                                         }
+                                        // } else {
+                                        //     panic!("Precondition check failed");
+                                        // }
                                     }
                                 }
                             }

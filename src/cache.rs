@@ -4,7 +4,7 @@ use crate::{
         CachedExecMetadata, ExecCommand,
     },
     condition_generator::check_preconditions,
-    condition_utils::{Fact, Postconditions, Preconditions},
+    condition_utils::{Postconditions, Preconditions},
     execution_utils::get_umask,
 };
 use nix::unistd::Pid;
@@ -264,18 +264,18 @@ impl CachedExecution {
         }
     }
 
-    pub fn check_cached_exec_for_missing_input_file_hashes(&self) {
-        if let Some(preconds) = self.preconditions.clone() {
-            let file_preconditions = preconds.file_preconditions();
-            for (full_path, fact_set) in file_preconditions {
-                for fact in fact_set {
-                    if fact == Fact::InputFileHashesMatch(None) {
-                        panic!("Missing input file hash: {:?}", full_path)
-                    }
-                }
-            }
-        }
-    }
+    // pub fn check_cached_exec_for_missing_input_file_hashes(&self) {
+    //     if let Some(preconds) = self.preconditions.clone() {
+    //         let file_preconditions = preconds.file_preconditions();
+    //         for (full_path, fact_set) in file_preconditions {
+    //             for fact in fact_set {
+    //                 if fact == Fact::InputFileHashesMatch(None) {
+    //                     panic!("Missing input file hash: {:?}", full_path)
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     // Get this execution's ExecCommand.
     pub fn command(&self) -> ExecCommand {
@@ -381,9 +381,9 @@ impl RcCachedExec {
         self.0.check_all_preconditions(pid)
     }
 
-    pub fn check_cached_exec_for_missing_input_file_hashes(&self) {
-        self.0.check_cached_exec_for_missing_input_file_hashes()
-    }
+    // pub fn check_cached_exec_for_missing_input_file_hashes(&self) {
+    //     self.0.check_cached_exec_for_missing_input_file_hashes()
+    // }
 
     pub fn list_stdout_files(&self) -> Vec<PathBuf> {
         self.0.list_stdout_files()

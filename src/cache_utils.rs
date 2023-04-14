@@ -70,9 +70,25 @@ impl CachedExecMetadata {
                 let curr_mtime = curr_metadata.st_mtime();
                 curr_mtime == cached_mtime
             }
-            CheckMechanism::Hash(_) => panic!(
-                "Hashing files not handled as a CheckMechanism, can't use it check executable!!"
-            ),
+            CheckMechanism::Hash(option_old_hash) => {
+                let executable_path = self.command.0.clone();
+                if let Some(old_hash) = option_old_hash {
+                    if !old_hash.is_empty() {
+                        let new_hash = generate_hash(executable_path.into());
+                        // if old_hash != new_hash {
+                        //     panic!(
+                        //         "Exec hashes don't match. Old: {:?}, New: {:?}",
+                        //         old_hash, new_hash
+                        //     );
+                        // }
+                        old_hash == new_hash
+                    } else {
+                        true
+                    }
+                } else {
+                    panic!("Cannot check fact for Hash(None)!!");
+                }
+            }
         }
     }
 
