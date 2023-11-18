@@ -150,9 +150,6 @@ impl CachedExecution {
     fn check_all_preconditions(&self, pid: Pid) -> bool {
         if !self.is_ignored {
             // if self.is_root {
-            //     return false;
-            // }
-            // if self.is_root {
             // This is special stuff for the bioinformatics workflow benchmarks.
             // You can move along and ignore this.
             // return false;
@@ -196,24 +193,24 @@ impl CachedExecution {
                 return false;
             }
 
-            // let vars = std::env::vars();
-            // let mut vec_vars = Vec::new();
-            // for (first, second) in vars {
-            //     vec_vars.push(format!("{}={}", first, second));
-            // }
-            // let cached_env_vars = self.cached_metadata.env_vars();
-            // if vec_vars != cached_env_vars {
-            //     debug!("Env vars mismatch");
-            //     debug!("Cached env vars: {:?}", cached_env_vars);
-            //     debug!("Current env vars: {:?}", vec_vars);
-            //     let cached_env_vars_set: HashSet<String> = HashSet::from_iter(cached_env_vars);
-            //     let env_vars_set: HashSet<String> = HashSet::from_iter(vec_vars);
-            //     let only_cached_has = cached_env_vars_set.difference(&env_vars_set);
-            //     let only_curr_has = env_vars_set.difference(&cached_env_vars_set);
-            //     debug!("Only cached has: {:?}", only_cached_has);
-            //     debug!("Only curr has: {:?}", only_curr_has);
-            //     return false;
-            // }
+            let vars = std::env::vars();
+            let mut vec_vars = Vec::new();
+            for (first, second) in vars {
+                vec_vars.push(format!("{}={}", first, second));
+            }
+            let cached_env_vars = self.cached_metadata.env_vars();
+            if vec_vars != cached_env_vars {
+                debug!("Env vars mismatch");
+                debug!("Cached env vars: {:?}", cached_env_vars);
+                debug!("Current env vars: {:?}", vec_vars);
+                let cached_env_vars_set: HashSet<String> = HashSet::from_iter(cached_env_vars);
+                let env_vars_set: HashSet<String> = HashSet::from_iter(vec_vars);
+                let only_cached_has = cached_env_vars_set.difference(&env_vars_set);
+                let only_curr_has = env_vars_set.difference(&cached_env_vars_set);
+                debug!("Only cached has: {:?}", only_cached_has);
+                debug!("Only curr has: {:?}", only_curr_has);
+                return false;
+            }
 
             let current_umask = get_umask(&pid);
             if self.cached_metadata.starting_umask() != current_umask {

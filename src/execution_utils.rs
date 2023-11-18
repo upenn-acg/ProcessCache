@@ -1,10 +1,6 @@
 use crossbeam::channel::{Receiver, Sender};
 
-use std::{
-    fs::{self, metadata},
-    os::linux::fs::MetadataExt,
-    path::PathBuf,
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::Context;
 use libc::{c_char, c_uchar, AT_FDCWD, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK};
@@ -116,27 +112,27 @@ pub fn generate_open_syscall_file_event(
             // TODO: Copy the input file to the cache for later checking.
             // Some(CheckMechanism::DiffFiles)
             // HASH
-            // let hash = if !fact_gen_only {
-            //     generate_hash(full_path.clone())
-            // } else {
-            //     Vec::new()
-            // };
-            // Some(CheckMechanism::Hash(Some(hash)))
+            let hash = if !fact_gen_only {
+                generate_hash(full_path.clone())
+            } else {
+                Vec::new()
+            };
+            Some(CheckMechanism::Hash(Some(hash)))
             // MTIME
-            let curr_metadata = metadata(&full_path).unwrap();
-            Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+            // let curr_metadata = metadata(&full_path).unwrap();
+            // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
         } else if syscall_outcome.is_ok() && open_flags.access_mode == AccessMode::Read {
             // DIFF FILES
             // TODO: Copy the input file to the cache for later checking.
             // Some(CheckMechanism::DiffFiles)
             // HASH
-            // if !fact_gen_only {
-            //     read_only_send_end.send(full_path.clone()).unwrap();
-            // }
-            // Some(CheckMechanism::Hash(None))
+            if !fact_gen_only {
+                read_only_send_end.send(full_path.clone()).unwrap();
+            }
+            Some(CheckMechanism::Hash(None))
             // MTIME
-            let curr_metadata = metadata(&full_path).unwrap();
-            Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
+            // let curr_metadata = metadata(&full_path).unwrap();
+            // Some(CheckMechanism::Mtime(curr_metadata.st_mtime()))
         } else {
             None
         };
@@ -260,8 +256,7 @@ pub fn getdents_file_type(file_type: c_uchar) -> dir::Type {
     } else if file_type == DT_SOCK {
         Type::Socket
     } else {
-        // panic!("Unknown file type: {}", file_type);
-        Type::Socket
+        panic!("Unknown file type: {}", file_type);
     }
 }
 

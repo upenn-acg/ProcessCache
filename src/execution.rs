@@ -11,8 +11,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::CStr,
-    fs::{canonicalize, create_dir, create_dir_all, metadata},
-    os::linux::fs::MetadataExt,
+    fs::{canonicalize, create_dir, create_dir_all},
     path::PathBuf,
     rc::Rc,
     thread,
@@ -80,7 +79,7 @@ const BACKGROUND_THREADS: bool = true;
 // to serve output files from the cache.
 const BACKGROUND_SERVING_THREADS: bool = true;
 // Toggle this to handle stdout for this execution or ignore it.
-const NO_STDOUT: bool = true;
+const NO_STDOUT: bool = false;
 // Flags for turning on and off different parts of ProcessCache.
 // For profiling purposes.
 // Run P$ with only ptrace system call interception.
@@ -585,26 +584,26 @@ pub async fn trace_process(
                                         .unwrap();
                                     // MTIME
                                     debug!("EXEC PATH BUF: {:?}", exec_path_buf);
-                                    let curr_metadata = metadata(&exec_path_buf).unwrap();
-                                    let exec_check =
-                                        CheckMechanism::Mtime(curr_metadata.st_mtime());
+                                    // let curr_metadata = metadata(&exec_path_buf).unwrap();
+                                    // let exec_check =
+                                    //     CheckMechanism::Mtime(curr_metadata.st_mtime());
                                     // HASHING
                                     // Here we only generate the hash of the executable if we have
                                     // never seen this executable before in this execution.
-                                    // // If we only want fact generation, we turn off hashing.
-                                    // let exec_check = if FACT_GEN {
-                                    //     CheckMechanism::Hash(None)
-                                    // } else {
-                                    //     CheckMechanism::Hash(Some(
-                                    //         computed_hashes.get_computed_hash(exec_path_buf),
-                                    //     ))
-                                    // };
+                                    // If we only want fact generation, we turn off hashing.
+                                    let exec_check = if FACT_GEN {
+                                        CheckMechanism::Hash(None)
+                                    } else {
+                                        CheckMechanism::Hash(Some(
+                                            computed_hashes.get_computed_hash(exec_path_buf),
+                                        ))
+                                    };
                                     // This option always hashes the executable.
                                     // let exec_check = CheckMechanism::Hash(generate_hash(
                                     //     exec_path_buf.clone(),
                                     // ));
                                     // This does no check at all.
-                                    // let exec_check = CheckMechanism::Hash(None);
+                                    // let exec_check = CheckMechanism::Hash(Vec::new());
                                     let new_exec_metadata = ExecMetadata::new(
                                         Proc(tracer.curr_proc),
                                         starting_cwd,
