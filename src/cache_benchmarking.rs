@@ -27,6 +27,14 @@ pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
             five_percent as u64
         }
+        10 => {
+            let ten_percent: f64 = (child_exec_count as f64) * (10.0 / 100.0);
+            ten_percent as u64
+        }
+        25 => {
+            let twenty_five_percent: f64 = (child_exec_count as f64) * (25.0 / 100.0);
+            twenty_five_percent as u64
+        }
         50 => child_exec_count / 2,
         90 => {
             let ninety_percent: f64 = (child_exec_count as f64) * (90.0 / 100.0);
@@ -97,7 +105,7 @@ pub fn remove_buildbwa_entries_from_existing_cache(percent_to_remove: i32) {
         // Actually remove the /cache subdirs.
         for hash in vec_of_dirs_to_remove {
             let cache_path =
-                PathBuf::from("/home/kship/kship/bioinformatics-workflows/bwa/bin/cache");
+                PathBuf::from("/home/kship/kship/bioinformatics-workflows/bwa/bwa-0.7.10/cache");
             let dir_path = cache_path.join(hash.to_string());
             if let Err(e) = remove_dir_all(dir_path.clone()) {
                 panic!("Failed to remove dir: {:?} because {:?}", dir_path, e);
@@ -127,6 +135,14 @@ pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
             five_percent as u64
+        }
+        10 => {
+            let ten_percent: f64 = (child_exec_count as f64) * (10.0 / 100.0);
+            ten_percent as u64
+        }
+        25 => {
+            let twenty_five_percent: f64 = (child_exec_count as f64) * (25.0 / 100.0);
+            twenty_five_percent as u64
         }
         50 => child_exec_count / 2,
         90 => {
@@ -197,7 +213,8 @@ pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
 
         // Actually remove the /cache subdirs.
         for hash in vec_of_dirs_to_remove {
-            let cache_path = PathBuf::from("/home/kship/kship/standard-RAxML/cache");
+            let cache_path =
+                PathBuf::from("/home/kship/kship/bioinformatics-workflows/standard-RAxML/cache");
             let dir_path = cache_path.join(hash.to_string());
             if let Err(e) = remove_dir_all(dir_path.clone()) {
                 panic!("Failed to remove dir: {:?} because {:?}", dir_path, e);
@@ -221,12 +238,21 @@ pub fn remove_buildraxml_entries_from_existing_cache(percent_to_remove: i32) {
 pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32) {
     // There are 31 gcc jobs that lead to an object file.
     // exec: "/usr/bin/gcc", arg count: 11.
-    let child_exec_count = 28;
+    // let child_exec_count = 28;
+    let child_exec_count = 87;
     // Calculate the number of child execs to remove.
     let num_to_remove_from_cache = match percent_to_remove {
         5 => {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
             five_percent as u64
+        }
+        10 => {
+            let ten_percent: f64 = (child_exec_count as f64) * (10.0 / 100.0);
+            ten_percent as u64
+        }
+        25 => {
+            let twenty_five_percent: f64 = (child_exec_count as f64) * (25.0 / 100.0);
+            twenty_five_percent as u64
         }
         50 => child_exec_count / 2,
         90 => {
@@ -297,7 +323,8 @@ pub fn remove_buildminigraph_entries_from_existing_cache(percent_to_remove: i32)
 
         // Actually remove the /cache subdirs.
         for hash in vec_of_dirs_to_remove {
-            let cache_path = PathBuf::from("/home/kship/kship/minigraph/cache");
+            let cache_path =
+                PathBuf::from("/home/kship/kship/bioinformatics-workflows/minigraph/cache");
             let dir_path = cache_path.join(hash.to_string());
             if let Err(e) = remove_dir_all(dir_path.clone()) {
                 panic!("Failed to remove dir: {:?} because {:?}", dir_path, e);
@@ -326,6 +353,14 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
             let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
             five_percent as u64
         }
+        10 => {
+            let ten_percent: f64 = (child_exec_count as f64) * (10.0 / 100.0);
+            ten_percent as u64
+        }
+        25 => {
+            let twenty_five_percent: f64 = (child_exec_count as f64) * (25.0 / 100.0);
+            twenty_five_percent as u64
+        }
         50 => child_exec_count / 2,
         90 => {
             let ninety_percent: f64 = (child_exec_count as f64) * (90.0 / 100.0);
@@ -342,12 +377,19 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
 
         // Get a list of job keys to remove from the cache.
         for key in existing_cache.keys() {
+            println!("Key: {:?}", key);
             if curr_count < num_to_remove_from_cache {
                 let exec = key.exec();
                 let arg_count = key.clone().args().len();
-                //ExecCommand("/home/kship/kship/bioinformatics-workflows/hmmbuild",
-                // ["./hmmer/bin/hmmbuild", "--cpu", "0", "./hmmer/out/100.aln", "./hmmer/in/100/100.fa"]), HASHED COMMAND: 15141315317065790283
-                // if exec == "/home/kship/kship/bioinformatics-workflows/hmmbuild" && arg_count > 3 {
+                // Key: ExecCommand("/home/kship/kship/bioinformatics-workflows/hmmer/bin/hmmbuild", ["./hmmer/bin/hmmbuild", "--cpu", "0", "./hmmer/out/523.aln", "./hmmer/in/523/523.fa"])
+                // Hmmer:
+                // if exec == "/home/kship/kship/bioinformatics-workflows/hmmer/bin/hmmbuild"
+                //     && arg_count > 3
+                // Clustal:
+                // if exec == "/home/kship/kship/bioinformatics-workflows/clustal/bin/clustalw2"
+                //     && arg_count > 2
+                // {
+                // Raxml:
                 if exec == "/home/kship/kship/bioinformatics-workflows/raxml/bin/raxml"
                     && arg_count > 2
                 {
@@ -362,8 +404,8 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
         // Remove from the cache, and add hash to a list of dirs to remove
         // from /cache.
         for exec_command in list_to_remove {
-            let existing_hmmer_job = hash_command(exec_command.clone());
-            vec_of_dirs_to_remove.push(existing_hmmer_job);
+            let existing_job = hash_command(exec_command.clone());
+            vec_of_dirs_to_remove.push(existing_job);
             existing_cache.remove(&exec_command);
         }
 
@@ -380,5 +422,181 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: i32) {
         serialize_execs_to_cache(existing_cache);
     } else {
         panic!("Cannot remove entries from nonexistent cache!!");
+    }
+}
+
+// PASH STUFF !
+// --------------------------------------------------------------------------
+
+// This IS NOT GENERAL.
+// This is for 1_1.sh of the pash benchmarks lol.
+// Returns a list of removed ExecCommands.
+// So we know which cache subdirs to delete
+pub fn remove_entries_from_existing_cache_struct(percent_to_remove: i32) -> Vec<ExecCommand> {
+    if let Some(mut existing_cache) = retrieve_existing_cache() {
+        // TODO: Handle for bioinfo / other pash
+        let child_exec_count = 1060;
+        let num_to_remove_from_cache = match percent_to_remove {
+            5 => {
+                let five_percent: f64 = (child_exec_count as f64) * (5.0 / 100.0);
+                five_percent as u64
+            }
+            10 => {
+                let ten_percent: f64 = (child_exec_count as f64) * (10.0 / 100.0);
+                ten_percent as u64
+            }
+            25 => {
+                let twenty_five_percent: f64 = (child_exec_count as f64) * (25.0 / 100.0);
+                twenty_five_percent as u64
+            }
+            50 => child_exec_count / 2,
+            90 => {
+                let ninety_percent: f64 = (child_exec_count as f64) * (90.0 / 100.0);
+                ninety_percent as u64
+            }
+            e => panic!("Unrecognized skip option: {:?}", e),
+        };
+
+        // Remove /usr/bin/ls
+        // Remove /usr/bin/head
+        // Remove five percent of ExecCommand("/usr/bin/bash", ["/usr/bin/bash", where there are MORE THAN 2 ARGS.
+        // (These are the output file generating ones).
+        // So first we go through the existing the cache and add these keys to a list.
+        let mut list_to_remove: Vec<ExecCommand> = Vec::new();
+        // let ls_command = ExecCommand(String::from("/usr/bin/ls"), vec![String::from("ls"), String::from("input/pg/")]);
+        // let head_command = ExecCommand(String::from("/usr/bin/head"), vec![String::from("head"), String::from("-n"), String::from("1060")]);
+        // list_to_remove.push(ls_command);
+        // list_to_remove.push(head_command);
+        let mut curr_count = 0;
+
+        for (key, _) in existing_cache.clone() {
+            if curr_count < num_to_remove_from_cache {
+                let exec = key.exec();
+                let args = key.args();
+                if exec == "/usr/bin/bash" && args.len() > 2 {
+                    list_to_remove.push(key);
+                    curr_count += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // println!("Keys to remove:");
+        // for key in list_to_remove.clone() {
+        //     println!("{:?}", key);
+        // }
+        // Then we actually remove them.
+        for key in list_to_remove.clone() {
+            existing_cache.remove(&key);
+        }
+        // Remove ls and head.
+        let ls_command = ExecCommand(
+            String::from("/usr/bin/ls"),
+            vec![String::from("ls"), String::from("input/pg/")],
+        );
+        let head_command = ExecCommand(
+            String::from("/usr/bin/head"),
+            vec![
+                String::from("head"),
+                String::from("-n"),
+                String::from("1060"),
+            ],
+        );
+        existing_cache.remove(&ls_command);
+        existing_cache.remove(&head_command);
+
+        // Then we serialize the cache back to disk.
+        serialize_execs_to_cache(existing_cache);
+
+        list_to_remove
+    } else {
+        panic!("Can't remove entries from a nonexistent cache!!");
+    }
+}
+
+// Takes in a list of ExecCommands that were removed from the existing cache.
+// We will hash 'em and turn 'em into paths to cache subdirs we will then
+// remove.
+// Get EVERYTHING ready to skip SOME jobs.
+pub fn remove_pash_dirs(exec_command_list: Vec<ExecCommand>) {
+    let cache_path = PathBuf::from("/home/kship/kship/bioinformatics-workflows/pash_nlp/cache");
+
+    // TODO: Remove /usr/bin/ls
+    // TODO: Remove /usr/bin/head
+    let ls_command = ExecCommand(
+        String::from("/usr/bin/ls"),
+        vec![String::from("ls"), String::from("input/pg/")],
+    );
+    let head_command = ExecCommand(
+        String::from("/usr/bin/head"),
+        vec![
+            String::from("head"),
+            String::from("-n"),
+            String::from("1060"),
+        ],
+    );
+    let hashed_ls_command = hash_command(ls_command);
+    let hashed_head_command = hash_command(head_command);
+
+    println!("Trying to remove ls");
+    let ls_cache_subdir_path = cache_path.join(hashed_ls_command.to_string());
+    if let Err(e) = remove_dir_all(ls_cache_subdir_path.clone()) {
+        panic!(
+            "Failed to remove dir: {:?} because {:?}",
+            ls_cache_subdir_path, e
+        );
+    }
+
+    println!("Trying to remove head");
+    let head_cache_subdir_path = cache_path.join(hashed_head_command.to_string());
+    if let Err(e) = remove_dir_all(head_cache_subdir_path.clone()) {
+        panic!(
+            "Failed to remove dir: {:?} because {:?}",
+            head_cache_subdir_path, e
+        );
+    }
+
+    for exec_command in exec_command_list {
+        // Remove the exec's cache subdir.
+        let hashed_command = hash_command(exec_command.clone());
+        // println!("Command I'm trying to remove dir for {:?}", exec_command);
+        let cache_subdir_path = cache_path.join(hashed_command.to_string());
+        if let Err(e) = remove_dir_all(cache_subdir_path.clone()) {
+            panic!(
+                "Failed to remove dir: {:?} because {:?}",
+                cache_subdir_path, e
+            );
+        }
+        // remove_dir_all(cache_subdir_path).unwrap();
+
+        // Remove it from the root exec's subdir as well.
+        // let root_executable = String::from("/usr/bin/bash");
+        // let root_args = vec![String::from("/usr/bin/bash"), String::from("bash_c_1_1.sh")];
+        // let root_exec_command = ExecCommand(root_executable, root_args);
+        // let hashed_root_command = hash_command(root_exec_command);
+        // 2_1
+        // let hashed_root_command: u64 = 1863920304175310196;
+        // 2_2
+        // let hashed_root_command: u64 = 7312860072276720428;
+        // 3_1
+        // let hashed_root_command: u64 = 16722961511146699481;
+        // 3_2
+        let hashed_root_command: u64 = 16885473537218455101;
+        let root_exec_cache_path = cache_path.join(hashed_root_command.to_string());
+        let childs_subdir_in_root = root_exec_cache_path.join(hashed_command.to_string());
+        println!(
+            "Child exec whose dir I'ma try to remove: {:?}",
+            exec_command
+        );
+        if let Err(e) = remove_dir_all(childs_subdir_in_root.clone()) {
+            panic!(
+                "Failed to remove dir: {:?} because {:?}",
+                childs_subdir_in_root, e
+            );
+        } else {
+            println!("Successfully removed dir: {:?}", childs_subdir_in_root);
+        }
+        // remove_dir_all(childs_subdir_in_root).unwrap();
     }
 }

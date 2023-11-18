@@ -1,3 +1,4 @@
+use cache_benchmarking::{remove_entries_from_existing_cache_struct, remove_pash_dirs};
 // We comment out certain benchmarking functions and then uncomment... and so on...
 // So I don't want to have to import them over and over each time.
 #[allow(unused_imports)]
@@ -96,6 +97,8 @@ fn main() -> anyhow::Result<()> {
     // conditions are not required to benefit from ProcessCache :-)
     let percent_to_remove = 0;
     // let percent_to_remove = 5;
+    // let percent_to_remove = 10;
+    // let percent_to_remove = 25;
     // let percent_to_remove = 50;
     // let percent_to_remove = 90;
 
@@ -108,7 +111,10 @@ fn main() -> anyhow::Result<()> {
         // MINIGRAPH BUILD
         // remove_buildminigraph_entries_from_existing_cache(percent_to_remove);
         // BIOINFO JOBS
-        remove_bioinfo_entries_from_existing_cache(percent_to_remove);
+        // remove_bioinfo_entries_from_existing_cache(percent_to_remove);
+        // PASH
+        let removed_entries = remove_entries_from_existing_cache_struct(percent_to_remove);
+        remove_pash_dirs(removed_entries);
 
         // Short circuit.
         return Ok(());
@@ -227,6 +233,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getegid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getgid)?;
+    loader.let_pass(libc::SYS_getgroups)?;
     loader.let_pass(libc::SYS_getpgrp)?;
     loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_getppid)?;
@@ -234,6 +241,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getuid)?;
     loader.let_pass(libc::SYS_ioctl)?;
     loader.let_pass(libc::SYS_lseek)?;
+    loader.let_pass(libc::SYS_mknod)?;
     loader.let_pass(libc::SYS_mmap)?;
     loader.let_pass(libc::SYS_mprotect)?;
     loader.let_pass(libc::SYS_mremap)?;

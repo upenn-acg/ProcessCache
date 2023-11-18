@@ -86,7 +86,8 @@ impl CachedExecMetadata {
                         true
                     }
                 } else {
-                    panic!("Cannot check fact for Hash(None)!!");
+                    // panic!("Cannot check fact for Hash(None)!!");
+                    true
                 }
             }
         }
@@ -232,7 +233,8 @@ pub fn generate_hash(path: PathBuf) -> Vec<u8> {
         if let Ok(mut f) = file {
             process::<Sha256, _>(&mut f)
         } else {
-            panic!("Cannot open file for hashing: {:?}", path);
+            // panic!("Cannot open file for hashing: {:?}", path);
+            Vec::new()
         }
     } else {
         Vec::new()
