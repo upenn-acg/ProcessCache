@@ -193,10 +193,15 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                         panic!("What kind of file is this??");
                     };
 
-                    curr_dir_entries.insert((file_name.into_string().unwrap(), file_type));
+                    let fname = file_name.into_string().unwrap();
+                    if fname.starts_with("stdout_") {
+                        continue;
+                    }
+                    curr_dir_entries.insert((fname, file_type));
                 }
 
-                let mut old_set = HashSet::from_iter(entries);
+                let mut old_set = HashSet::from_iter(entries.into_iter()
+                    .filter(|e| !e.0.starts_with("stdout_")));
                 let up_one = String::from("..");
                 let curr = String::from(".");
                 let stdout_file = format!("stdout_{:?}", pid.as_raw());
