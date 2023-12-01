@@ -65,6 +65,9 @@ pub struct Opt {
     /// in some time! It probably doesn't work. I have made a note to fix it.
     #[structopt(short, long, default_value = "output.txt")]
     pub output_file: String,
+    /// Remove the specified percentage of cache entries, and exit.
+    #[structopt(long, default_value = "0")]
+    pub cache_remove: u8,
     /// Arguments to executable.
     pub args: Vec<String>,
 }
@@ -94,13 +97,13 @@ fn main() -> anyhow::Result<()> {
     // This helps exercise the flexibility of ProcessCache, we can
     // skip all of your program, or some of your program! Perfect
     // conditions are not required to benefit from ProcessCache :-)
-    let percent_to_remove = 0;
+    // let percent_to_remove = 0;
     // let percent_to_remove = 5;
     // let percent_to_remove = 50;
     // let percent_to_remove = 90;
 
     // If percent_to_remove == 0, we just run ProcessCache normally.
-    if percent_to_remove != 0 {
+    if opt.cache_remove != 0 {
         // BWA BUILD
         // remove_buildbwa_entries_from_existing_cache(percent_to_remove);
         // RAXML BUILD
@@ -108,7 +111,7 @@ fn main() -> anyhow::Result<()> {
         // MINIGRAPH BUILD
         // remove_buildminigraph_entries_from_existing_cache(percent_to_remove);
         // BIOINFO JOBS
-        remove_bioinfo_entries_from_existing_cache(percent_to_remove);
+        remove_bioinfo_entries_from_existing_cache(opt.cache_remove);
 
         // Short circuit.
         return Ok(());
@@ -227,6 +230,7 @@ fn our_seccomp_rules() -> anyhow::Result<()> {
     loader.let_pass(libc::SYS_getegid)?;
     loader.let_pass(libc::SYS_geteuid)?;
     loader.let_pass(libc::SYS_getgid)?;
+    loader.let_pass(libc::SYS_getgroups)?;
     loader.let_pass(libc::SYS_getpgrp)?;
     loader.let_pass(libc::SYS_getpid)?;
     loader.let_pass(libc::SYS_getppid)?;
