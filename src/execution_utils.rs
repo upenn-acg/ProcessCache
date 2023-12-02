@@ -113,7 +113,7 @@ pub fn generate_open_syscall_file_event(
             // Some(CheckMechanism::DiffFiles)
             // HASH
             let hash = if !fact_gen_only {
-                generate_hash(full_path.clone())
+                generate_hash(&full_path)
             } else {
                 Vec::new()
             };

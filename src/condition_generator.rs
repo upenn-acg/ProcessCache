@@ -5,7 +5,7 @@ use nix::{
     NixPath,
 };
 use serde::{Deserialize, Serialize};
-
+use rayon::prelude::*;
 use core::panic;
 use std::{
     collections::{HashMap, HashSet},
@@ -13,7 +13,7 @@ use std::{
     hash::Hash,
     iter::FromIterator,
     os::unix::prelude::MetadataExt,
-    path::PathBuf,
+    path::{PathBuf, Path}, time::Instant,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -164,7 +164,7 @@ impl ExecSyscallEvents {
 
 // This function is for checking that a given Fact holds.
 // We call it to check each precondition.
-fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
+fn check_fact_holds(fact: &Fact, path_name: &PathBuf, pid: Pid) -> bool {
     debug!("Checking fact: {:?} for path: {:?}", fact, path_name);
     if path_name.starts_with("/proc") {
         true
@@ -209,11 +209,12 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 old_set.remove(&(curr, FileType::Dir));
                 old_set.remove(&(stdout_file, FileType::File));
 
-                let sets_are_equal = old_set == curr_dir_entries;
-                let proper_subset = old_set.is_subset(&curr_dir_entries);
+                // let sets_are_equal = old_set == curr_dir_entries;
+                let cde_ref: HashSet<&(String, FileType)> = curr_dir_entries.iter().map(|k| k).collect();
+                let proper_subset = old_set.is_subset(&cde_ref);
                 // This fact is true if the old set of directory entries matches the new one
                 // or it is a proper subset ( has to do with funny files like "."  and "..")
-                sets_are_equal || proper_subset
+                /*sets_are_equal || */ proper_subset
             }
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
@@ -235,7 +236,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 if let Some(old_hash) = option_old_hash {
                     if !old_hash.is_empty() {
                         let new_hash = generate_hash(path_name);
-                        old_hash == new_hash
+                        old_hash == &new_hash
                     } else {
                         true
                     }
@@ -248,19 +249,20 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
             Fact::HasDirPermission(flags, optional_root_dir) => {
                 debug!("Dir perm flags: {:?}", flags);
                 let dir = if let Some(root_dir) = optional_root_dir {
-                    root_dir
+                    root_dir.as_path()
                 } else {
-                    let path = path_name.parent().unwrap();
-                    PathBuf::from(path)
+                    // let path = path_name.parent().unwrap();
+                    // &PathBuf::from(path)
+                    path_name.parent().unwrap()
                 };
 
-                access(&dir, AccessFlags::from_bits(flags).unwrap()).is_ok()
+                access(dir, AccessFlags::from_bits(*flags).unwrap()).is_ok()
             }
             // Check that this process has the same permissions on this file as it had
             // during its caching run.
             Fact::HasPermission(flags) => {
                 debug!("Perm flags: {:?}", flags);
-                access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
+                access(path_name, AccessFlags::from_bits(*flags).unwrap()).is_ok()
             }
             // Check the cached mtime against the current mtime.
             Fact::Mtime(old_mtime) => {
@@ -268,26 +270,27 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 let curr_metadata = fs::metadata(&path_name).unwrap();
                 let curr_mtime = curr_metadata.mtime();
                 debug!("New mtime: {:?}", curr_mtime);
-                curr_mtime == old_mtime
+                curr_mtime == *old_mtime
             }
             // Check that this process still lacks the specified permissions it had before
             // on either a passed in directory, or just the parent dir of the path we are
             // checking.
             Fact::NoDirPermission(flags, optional_root_dir) => {
                 let dir = if let Some(root_dir) = optional_root_dir {
-                    root_dir
+                    root_dir.as_path()
                 } else {
-                    let path = path_name.parent().unwrap();
-                    PathBuf::from(path)
+                    // let path = path_name.parent().unwrap();
+                    // PathBuf::from(path)
+                    path_name.parent().unwrap()
                 };
                 debug!("Dir no perm flags: {:?}", flags);
-                access(&dir, AccessFlags::from_bits(flags).unwrap()).is_err()
+                access(dir, AccessFlags::from_bits(*flags).unwrap()).is_err()
             }
             // Check that this process still lacks the specified permissions on this file
             // that it also lacked during its caching run.
             Fact::NoPermission(flags) => {
                 debug!("No perm flags: {:?}", flags);
-                access(&path_name, AccessFlags::from_bits(flags).unwrap()).is_ok()
+                access(path_name, AccessFlags::from_bits(*flags).unwrap()).is_ok()
             }
             // Check that at least one of these Facts fails.
             // This should be only when we need to check permissions of the directory
@@ -299,18 +302,18 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                 // of the dir and perms of the file.
                 // Example is open append failing for perms:
                 // write access OR exec dir access is missing
-                let first_perms_hold = match *first {
+                let first_perms_hold = match first.as_ref() {
                     Fact::HasDirPermission(_, _)
                     | Fact::HasPermission(_)
                     | Fact::NoDirPermission(_, _)
-                    | Fact::NoPermission(_) => check_fact_holds(*first, path_name.clone(), pid),
+                    | Fact::NoPermission(_) => check_fact_holds(first, path_name, pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
-                let second_perms_hold = match *second {
+                let second_perms_hold = match second.as_ref() {
                     Fact::HasDirPermission(_, _)
                     | Fact::HasPermission(_)
                     | Fact::NoDirPermission(_, _)
-                    | Fact::NoPermission(_) => check_fact_holds(*second, path_name, pid),
+                    | Fact::NoPermission(_) => check_fact_holds(second, path_name, pid),
                     e => panic!("Unexpected Fact in Fact::Or: {:?}", e),
                 };
                 // Technically, if both of these failed, it would be valid too.
@@ -352,10 +355,10 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                     st_blksize: new_metadata.blksize() as i64,
                     st_blocks: new_metadata.blocks() as i64,
                 };
-                old_stat == new_stat
+                *old_stat == new_stat
             }
             Fact::StatFsStructMatches(old_statfs) => {
-                if let Ok(statfs) = statfs(&path_name) {
+                if let Ok(statfs) = statfs(path_name) {
                     let new_statfs = MyStatFs {
                         optimal_transfer_size: statfs.optimal_transfer_size(),
                         block_size: statfs.block_size(),
@@ -366,7 +369,7 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
                         files: statfs.files(),
                         files_free: statfs.files_free(),
                     };
-                    old_statfs == new_statfs
+                    *old_statfs == new_statfs
                 } else {
                     panic!("Failed to call statfs in check_fact_holds()!")
                 }
@@ -377,35 +380,67 @@ fn check_fact_holds(fact: Fact, path_name: PathBuf, pid: Pid) -> bool {
 
 // Checks file preconditions and directory preconditions for the given
 // execution.
-pub fn check_preconditions(conditions: Preconditions, pid: Pid) -> bool {
+pub fn check_preconditions(conditions: &Preconditions, pid: Pid) -> bool {
     let dir_preconds = conditions.dir_preconditions();
     let file_preconds = conditions.file_preconditions();
 
-    for (path_name, fact_set) in dir_preconds {
-        for fact in fact_set {
-            // We short circuit on the first failing file Fact, and report it.
-            if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
-                debug!(
-                    "Dir fact that doesn't hold: {:?}, path: {:?}",
-                    fact, path_name
-                );
-                return false;
-            }
-        }
+    let dir_pcs_hold = dir_preconds.par_iter()
+        .all(|(path_name,fact_set)| {
+            return fact_set.par_iter().all(|fact| {
+                if !check_fact_holds(fact, path_name, pid) {
+                    debug!(
+                        "Dir fact that doesn't hold: {:?}, path: {:?}",
+                        fact, path_name
+                    );
+                    return false;
+                }
+                return true    
+            })
+    });
+    if !dir_pcs_hold {
+        return false
     }
-    for (path_name, fact_set) in file_preconds {
-        for fact in fact_set {
-            // We short circuit on the first failing directory Fact, and report it.
-            if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
-                debug!(
-                    "File fact that doesn't hold: {:?}, path: {:?}",
-                    fact, path_name
-                );
-                return false;
-            }
-        }
-    }
-    true
+    let file_pcs_hold = file_preconds.par_iter()
+        .all(|(path_name,fact_set)| {
+            return fact_set.par_iter().all(|fact| {
+                if !check_fact_holds(fact, path_name, pid) {
+                    debug!(
+                        "File fact that doesn't hold: {:?}, path: {:?}",
+                        fact, path_name
+                    );
+                    return false;
+                }
+                return true;
+            })
+        });
+
+    // for (path_name, fact_set) in dir_preconds {
+    //     for fact in fact_set {
+    //         // We short circuit on the first failing file Fact, and report it.
+    //         if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
+    //             debug!(
+    //                 "Dir fact that doesn't hold: {:?}, path: {:?}",
+    //                 fact, path_name
+    //             );
+    //             return false;
+    //         }
+    //     }
+    // }
+    // for (path_name, fact_set) in file_preconds {
+    //     for fact in fact_set {
+    //         // We short circuit on the first failing directory Fact, and report it.
+    //         if !check_fact_holds(fact.clone(), path_name.clone(), pid) {
+    //             debug!(
+    //                 "File fact that doesn't hold: {:?}, path: {:?}",
+    //                 fact, path_name
+    //             );
+    //             return false;
+    //         }
+    //     }
+    // }
+
+    // true
+    return file_pcs_hold
 }
 
 // Function that takes ExecSyscallEvents and generates the file preconditions

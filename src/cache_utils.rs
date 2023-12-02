@@ -74,7 +74,7 @@ impl CachedExecMetadata {
                 let executable_path = self.command.0.clone();
                 if let Some(old_hash) = option_old_hash {
                     if !old_hash.is_empty() {
-                        let new_hash = generate_hash(executable_path.into());
+                        let new_hash = generate_hash(&PathBuf::from(executable_path));
                         // if old_hash != new_hash {
                         //     panic!(
                         //         "Exec hashes don't match. Old: {:?}, New: {:?}",
@@ -226,9 +226,9 @@ pub fn rename_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
 // Generate the hash of a file's contents.
 // Used when we use file hashing as our input
 // checking mechanism.
-pub fn generate_hash(path: PathBuf) -> Vec<u8> {
+pub fn generate_hash(path: &PathBuf) -> Vec<u8> {
     if !path.is_dir() {
-        let file = File::open(&path);
+        let file = File::open(path);
         if let Ok(mut f) = file {
             process::<Sha256, _>(&mut f)
         } else {

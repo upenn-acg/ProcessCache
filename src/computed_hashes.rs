@@ -19,7 +19,7 @@ impl ComputedHashes {
         let entry = self
             .0
             .entry(full_path.clone())
-            .or_insert_with(|| generate_hash(full_path));
+            .or_insert_with(|| generate_hash(&full_path));
 
         entry.to_vec()
     }

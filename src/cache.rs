@@ -16,7 +16,7 @@ use std::{
     io::{self, Read, Write},
     iter::FromIterator,
     path::PathBuf,
-    rc::Rc,
+    rc::Rc, time::Instant,
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, span, trace, Level};
@@ -222,9 +222,13 @@ impl CachedExecution {
 
             // Preconditions are recursively created now
             // so we only have to check the root.
-            let my_preconds = self.preconditions.clone();
-            if let Some(preconds) = my_preconds {
-                check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()))
+            // let my_preconds = self.preconditions.clone();
+            if let Some(preconds) = &self.preconditions {
+                let start_time = Instant::now();
+                let pc = check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
+                let elapsed_time = Instant::now() - start_time;
+                println!("spent {} milliseconds checking preconditions", elapsed_time.as_millis());
+                pc
             } else {
                 panic!("Trying to check preconditions for non-ignored cache entry but there are none!!")
             }
@@ -256,7 +260,7 @@ impl CachedExecution {
 
             if let Some(preconds) = my_preconds {
                 if !self.is_ignored {
-                    check_preconditions(preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
+                    check_preconditions(&preconds, Pid::from_raw(self.cached_metadata.caller_pid()));
                 } else {
                     panic!("Trying to check preconditions of ignored cached execution!!")
                 }

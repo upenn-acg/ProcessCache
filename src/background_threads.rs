@@ -16,7 +16,7 @@ pub fn background_thread_read_only_hashing(
         // and put it in the map.
         computed_hashes
             .entry(full_path.clone())
-            .or_insert_with(|| generate_hash(full_path));
+            .or_insert_with(|| generate_hash(&full_path));
     }
 
     // Return the computed hashes at thread exit.

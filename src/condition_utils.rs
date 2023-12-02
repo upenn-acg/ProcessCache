@@ -32,12 +32,12 @@ impl Preconditions {
         Preconditions { dir, file }
     }
 
-    pub fn dir_preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.dir.clone()
+    pub fn dir_preconditions(&self) -> &HashMap<PathBuf, HashSet<Fact>> {
+        &self.dir
     }
 
-    pub fn file_preconditions(&self) -> HashMap<PathBuf, HashSet<Fact>> {
-        self.file.clone()
+    pub fn file_preconditions(&self) -> &HashMap<PathBuf, HashSet<Fact>> {
+        &self.file
     }
 }
 
