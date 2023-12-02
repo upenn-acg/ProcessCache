@@ -337,6 +337,11 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: u8) {
 
     // The root execution's ExecCommand struct for hmmer: ExecCommand("/home/kship/kship/bioinformatics-workflows/all_hmmer_jobs", ["./target/release/all_hmmer_jobs"])
     if let Some(mut existing_cache) = retrieve_existing_cache() {
+        if percent_to_remove > 100 {
+            println!("{:?}", &existing_cache);
+            return
+        }
+
         let mut curr_count = 0;
         let mut list_to_remove: Vec<ExecCommand> = Vec::new();
         let mut vec_of_dirs_to_remove: Vec<u64> = Vec::new();
@@ -378,7 +383,7 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: u8) {
         }
 
         // Actually remove the /cache subdirs.
-        let cache_path = PathBuf::from("/home/devietti/bioinformatics-workflows/cache");
+        let cache_path = PathBuf::from("./cache");
         for hash in vec_of_dirs_to_remove {
             // let cache_path = PathBuf::from("/home/kship/kship/bioinformatics-workflows/cache");
             let dir_path = cache_path.join(hash.to_string());
