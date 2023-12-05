@@ -1,4 +1,5 @@
 use crossbeam::channel::Receiver;
+use lazy_static::lazy_static;
 use nix::pty::SessionId;
 use tracing::debug;
 
@@ -8,7 +9,7 @@ use std::{
     hash::{Hash, Hasher},
     io::{self, Read, Write},
     os::linux::fs::MetadataExt,
-    path::PathBuf,
+    path::PathBuf, sync::Mutex,
 };
 
 use serde::{Deserialize, Serialize};
@@ -223,14 +224,30 @@ pub fn rename_dirs(dir_postconditions: HashMap<Accessor, HashSet<Fact>>) {
     }
 }
 
+lazy_static! {
+    pub static ref HASH_CACHE_MAP: Mutex<HashMap<PathBuf, Vec<u8>>> = Mutex::new(HashMap::new());
+}
+
 // Generate the hash of a file's contents.
 // Used when we use file hashing as our input
 // checking mechanism.
 pub fn generate_hash(path: &PathBuf) -> Vec<u8> {
     if !path.is_dir() {
+        { // check our hash cache
+            let hmap = HASH_CACHE_MAP.lock().unwrap();
+            let maybe_hash = hmap.get(path);
+            if let Some(h) = maybe_hash {
+                return h.clone()
+            }
+        }
+
+        // need to actually hash the file
         let file = File::open(path);
         if let Ok(mut f) = file {
-            process::<Sha256, _>(&mut f)
+            let hash = process::<Sha256, _>(&mut f);
+            let mut hmap = HASH_CACHE_MAP.lock().unwrap();
+            hmap.insert(path.into(), hash.clone());
+            return hash
         } else {
             panic!("Cannot open file for hashing: {:?}", path);
         }

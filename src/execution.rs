@@ -1308,8 +1308,15 @@ fn handle_open(
         excl_flag,
         file_existed_at_start,
         offset_mode,
-        access_mode,
+        access_mode: access_mode.clone(),
     };
+
+    if access_mode == AccessMode::Write || access_mode == AccessMode::Both {
+        let mut hmap = HASH_CACHE_MAP.lock().unwrap();
+        if hmap.contains_key(&file_name_arg) {
+            hmap.remove(&file_name_arg);
+        }
+    }
 
     let open_syscall_event = generate_open_syscall_file_event(
         execution,
