@@ -347,7 +347,7 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: u8) {
         let mut vec_of_dirs_to_remove: Vec<u64> = Vec::new();
 
         // we will only remove exec units whose executable has one of these suffixes
-        let executable_suffixes = ["raxml", "montage"];
+        let executable_suffixes = ["raxml", "montage", "hmmbuild"];
 
         let total_cache_keys = existing_cache.keys()
             .filter(|k| executable_suffixes.iter().any(|pat| k.exec().ends_with(pat)))
@@ -364,7 +364,7 @@ pub fn remove_bioinfo_entries_from_existing_cache(percent_to_remove: u8) {
                 // if exec == "/home/kship/kship/bioinformatics-workflows/hmmbuild" && arg_count > 3 {
                 //if exec == "/home/kship/kship/bioinformatics-workflows/raxml/bin/raxml"
                 //    && arg_count > 2
-                if executable_suffixes.iter().any(|pat| key.exec().ends_with(pat)) {
+                if executable_suffixes.iter().any(|pat| key.exec().ends_with(pat)) && key.1.len() > 2 {
                     list_to_remove.push(key.clone());
                     curr_count += 1;
                 }
