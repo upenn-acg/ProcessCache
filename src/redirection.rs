@@ -109,7 +109,7 @@ pub async fn redirect_io_stream(
                 regs.retval::<i32>()
             ));
         } else {
-            info!(
+            debug!(
                 "Output redirection file created. fd: {:?}",
                 regs.retval::<i32>()
             );
@@ -162,7 +162,7 @@ pub async fn redirect_io_stream(
             .restore_state(tracer)
             .with_context(|| context!("Unable to restore register state."))?;
 
-        info!("Output redirected to file!");
+        debug!("Output redirected to file!");
     } else {
         debug!("Already redirected stdout for this bad boi (process) :)");
     }

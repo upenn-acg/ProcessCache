@@ -20,7 +20,7 @@ use std::{
 use crate::{
     async_runtime::AsyncRuntime,
     background_threads::background_thread_read_only_hashing,
-    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout},
+    cache_utils::{background_thread_serving_outputs, background_thread_serving_stdout, HASH_CACHE_MAP},
     computed_hashes::RcComputedHashes,
     condition_generator::{Accessor, ExecSyscallEvents},
     condition_utils::{Fact, FileType},
@@ -461,7 +461,7 @@ pub async fn trace_process(
                             // Hash this struct. We use this hash as the name of the exec's subdir
                             // in the cache.
                             let hashed_command = hash_command(command.clone());
-                            debug!(
+                            info!(
                                 "EXECCOMMAND: {:?}, HASHED COMMAND: {:?}",
                                 command, hashed_command
                             );
@@ -491,7 +491,7 @@ pub async fn trace_process(
                                             // If we are gonna skip, we have to change:
                                             // rax, orig_rax, arg1
                                             skip_execution = true;
-                                            debug!("Trying to change system call after the execve into exit call! (Skip the execution!)");
+                                            info!("Trying to change system call after the execve into exit call! (Skip the execution!)");
 
                                             if BACKGROUND_SERVING_THREADS {
                                                 // Parallel serving.
@@ -772,7 +772,7 @@ pub async fn trace_process(
                     let _ = sys_span.enter();
                     let ret_val = regs.retval::<i32>();
 
-                    span!(Level::INFO, "Posthook", ret_val).in_scope(|| info!(name));
+                    span!(Level::DEBUG, "Posthook", ret_val).in_scope(|| debug!(name));
 
                     // Each syscall has its own handle_syscall() function in the posthook.
                     match name {
@@ -1292,7 +1292,7 @@ fn handle_open(
         .read_c_string(path_arg_bytes)
         .with_context(|| context!("Cannot read `open` path."))?;
     let file_name_arg = PathBuf::from(path_arg);
-    sys_span.in_scope(|| info!("File name arg: {:?}", file_name_arg));
+    sys_span.in_scope(|| debug!("File name arg: {:?}", file_name_arg));
 
     let full_path = get_full_path(execution, syscall_name, tracer)?;
     sys_span.in_scope(|| debug!("Full path: {:?}", full_path));

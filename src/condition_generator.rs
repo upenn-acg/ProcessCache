@@ -88,7 +88,7 @@ impl ExecSyscallEvents {
 
     // Add new directory access to the struct.
     pub fn add_new_dir_event(&mut self, caller_pid: Pid, dir_event: DirEvent, full_path: PathBuf) {
-        let s = span!(Level::INFO, stringify!(add_new_dir_event), pid=?caller_pid);
+        let s = span!(Level::DEBUG, stringify!(add_new_dir_event), pid=?caller_pid);
         let _ = s.enter();
 
         s.in_scope(|| "in add_new_dir_event");
@@ -114,7 +114,7 @@ impl ExecSyscallEvents {
         file_event: FileEvent,
         full_path: PathBuf,
     ) {
-        let s = span!(Level::INFO, stringify!(add_new_file_event), pid=?caller_pid);
+        let s = span!(Level::DEBUG, stringify!(add_new_file_event), pid=?caller_pid);
         let _ = s.enter();
 
         let fpath = full_path.clone().into_os_string().into_string().unwrap();
@@ -388,7 +388,7 @@ pub fn check_preconditions(conditions: &Preconditions, pid: Pid) -> bool {
         .all(|(path_name,fact_set)| {
             return fact_set.par_iter().all(|fact| {
                 if !check_fact_holds(fact, path_name, pid) {
-                    debug!(
+                    info!(
                         "Dir fact that doesn't hold: {:?}, path: {:?}",
                         fact, path_name
                     );
@@ -404,7 +404,7 @@ pub fn check_preconditions(conditions: &Preconditions, pid: Pid) -> bool {
         .all(|(path_name,fact_set)| {
             return fact_set.par_iter().all(|fact| {
                 if !check_fact_holds(fact, path_name, pid) {
-                    debug!(
+                    info!(
                         "File fact that doesn't hold: {:?}, path: {:?}",
                         fact, path_name
                     );
@@ -467,7 +467,7 @@ pub fn generate_preconditions(
 pub fn generate_dir_preconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> HashMap<PathBuf, HashSet<Fact>> {
-    let sys_span = span!(Level::INFO, "generate_dir_preconditions");
+    let sys_span = span!(Level::DEBUG, "generate_dir_preconditions");
     let _ = sys_span.enter();
     let mut curr_dir_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
 
@@ -928,7 +928,7 @@ pub fn generate_file_preconditions(
     dir_preconditions: HashMap<PathBuf, HashSet<Fact>>,
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 ) -> HashMap<PathBuf, HashSet<Fact>> {
-    let sys_span = span!(Level::INFO, "generate_file_preconditions");
+    let sys_span = span!(Level::DEBUG, "generate_file_preconditions");
     let _ = sys_span.enter();
     let mut curr_file_preconditions: HashMap<PathBuf, HashSet<Fact>> = HashMap::new();
 
@@ -1863,7 +1863,7 @@ pub fn generate_postconditions(events: ExecSyscallEvents) -> Postconditions {
 pub fn generate_dir_postconditions(
     dir_events: HashMap<Accessor, Vec<DirEvent>>,
 ) -> (HashMap<Accessor, HashSet<Fact>>, HashMap<PathBuf, PathBuf>) {
-    let sys_span = span!(Level::INFO, "generate_dir_postconditions");
+    let sys_span = span!(Level::DEBUG, "generate_dir_postconditions");
     let _ = sys_span.enter();
 
     let mut curr_dir_postconditions = HashMap::new();
@@ -2078,7 +2078,7 @@ pub fn generate_dir_postconditions(
 pub fn generate_file_postconditions(
     file_events: HashMap<Accessor, Vec<FileEvent>>,
 ) -> HashMap<Accessor, HashSet<Fact>> {
-    let sys_span = span!(Level::INFO, "generate_file_postconditions");
+    let sys_span = span!(Level::DEBUG, "generate_file_postconditions");
     let _ = sys_span.enter();
 
     let mut curr_file_postconditions = HashMap::new();
