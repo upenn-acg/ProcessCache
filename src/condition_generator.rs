@@ -193,28 +193,20 @@ fn check_fact_holds(fact: &Fact, path_name: &PathBuf, pid: Pid) -> bool {
                         panic!("What kind of file is this??");
                     };
 
-                    let fname = file_name.into_string().unwrap();
-                    if fname.starts_with("stdout_") {
+                    if file_name.to_str().unwrap().starts_with("stdout_") {
                         continue;
                     }
-                    curr_dir_entries.insert((fname, file_type));
+                    curr_dir_entries.insert((file_name.to_string_lossy().into_owned(), file_type));
                 }
 
-                let mut old_set = HashSet::from_iter(entries.into_iter()
-                    .filter(|e| !e.0.starts_with("stdout_")));
-                let up_one = String::from("..");
-                let curr = String::from(".");
-                let stdout_file = format!("stdout_{:?}", pid.as_raw());
-                old_set.remove(&(up_one, FileType::Dir));
-                old_set.remove(&(curr, FileType::Dir));
-                old_set.remove(&(stdout_file, FileType::File));
+                let old_set = HashSet::from_iter(entries.into_iter()
+                    .filter(|e| !e.0.starts_with("stdout_") && e.0 != ".." && e.0 != "."));
 
-                // let sets_are_equal = old_set == curr_dir_entries;
+                // need to repack this so we get references to the set entries
                 let cde_ref: HashSet<&(String, FileType)> = curr_dir_entries.iter().map(|k| k).collect();
-                let proper_subset = old_set.is_subset(&cde_ref);
                 // This fact is true if the old set of directory entries matches the new one
-                // or it is a proper subset ( has to do with funny files like "."  and "..")
-                /*sets_are_equal || */ proper_subset
+                // or it is a proper subset (has to do with funny files like "."  and "..")
+                old_set.is_subset(&cde_ref)
             }
             Fact::DoesntExist => !path_name.exists(),
             Fact::Exists => path_name.exists(),
@@ -439,9 +431,9 @@ pub fn check_preconditions(conditions: &Preconditions, pid: Pid) -> bool {
     //     }
     // }
 
-    // true
+// true
     return file_pcs_hold
-}
+    }
 
 // Function that takes ExecSyscallEvents and generates the file preconditions
 // and file postconditions. It returns a new Preconditions struct.
